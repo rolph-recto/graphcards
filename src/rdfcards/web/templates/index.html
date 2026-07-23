@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Decks{% endblock %}
+{% block masthead %}<p class="deck-name">Local study</p>{% endblock %}
+{% block content %}
+  <h1>Your decks</h1>
+  <p class="intro">
+    Study cards that are due, or choose an advanced mode for extra practice.
+  </p>
+
+  {% if controller.session and not controller.session.complete %}
+    <aside class="resume">
+      <p>
+        <strong>Study session in progress</strong><br>
+        <span class="muted">
+          {{ controller.session.deck.name }} · {{ controller.session.mode.label }}
+        </span>
+      </p>
+      <a href="{{ url_for('study') }}">Resume</a>
+    </aside>
+  {% endif %}
+
+  <section class="deck-list" aria-label="Study decks">
+    {% for deck, status in decks %}
+      <article class="deck">
+        <div class="deck-head">
+          <div>
+            <h2>{{ deck.name }}</h2>
+            <div class="stats">
+              <span><strong>{{ status.active }}</strong> active</span>
+              <span><strong>{{ status.new }}</strong> new</span>
+              <span><strong>{{ status.due }}</strong> due</span>
+              <span><strong>{{ status.future }}</strong> future</span>
+            </div>
+          </div>
+          <div class="deck-actions">
+            <form method="post" action="{{ url_for('start_session') }}">
+              <input type="hidden" name="csrf_token" value="{{ controller.csrf_token }}">
+              <input type="hidden" name="deck_name" value="{{ deck.name }}">
+              <input type="hidden" name="mode" value="due">
+              <button class="primary" type="submit"{% if not status.due %} disabled{% endif %}>
+                {% if status.due %}
+                  Study {{ status.due }} due card(s)
+                {% else %}
+                  No cards due
+                {% endif %}
+              </button>
+            </form>
+            <a class="status-link" href="{{ url_for('card_status', deck_name=deck.name) }}">
+              View card status
+            </a>
+          </div>
+        </div>
+
+        <details class="advanced">
+          <summary>Advanced study</summary>
+          <div class="advanced-grid">
+            {% for mode, description in advanced_modes %}
+              <form class="advanced-option" method="post"
+                    action="{{ url_for('start_session') }}">
+                <input type="hidden" name="csrf_token" value="{{ controller.csrf_token }}">
+                <input type="hidden" name="deck_name" value="{{ deck.name }}">
+                <input type="hidden" name="mode" value="{{ mode.value }}">
+                <h3>{{ mode.label }}</h3>
+                <p>{{ description }}</p>
+                <div class="fields{% if mode.value == 'practice' %} single{% endif %}">
+                  {% if mode.value != "practice" %}
+                    <label>
+                      Days
+                      <input name="days" type="number" min="1" max="365" value="1"
+                             inputmode="numeric">
+                    </label>
+                  {% endif %}
+                  <label>
+                    Card limit
+                    <input name="limit" type="number" min="0" value="20"
+                           inputmode="numeric">
+                  </label>
+                </div>
+                <button type="submit">{{ mode.label }}</button>
+              </form>
+            {% endfor %}
+          </div>
+        </details>
+      </article>
+    {% else %}
+      <p class="muted">No decks are configured.</p>
+    {% endfor %}
+  </section>
+{% endblock %}

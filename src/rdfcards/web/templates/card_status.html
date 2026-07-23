@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% set main_class = "status-main" %}
+{% block title %}{{ deck.name }} card status{% endblock %}
+{% block masthead %}<p class="deck-name">{{ deck.name }}</p>{% endblock %}
+{% block content %}
+  <nav class="study-nav"><a href="{{ url_for('index') }}">← All decks</a></nav>
+  <header class="status-header">
+    <div>
+      <h1>{{ deck.name }}</h1>
+      <p class="muted">Card schedules and FSRS memory metrics.</p>
+    </div>
+    <p class="muted">{{ active_count }} active card(s)</p>
+  </header>
+
+  <form class="status-filters" method="get"
+        action="{{ url_for('card_status', deck_name=deck.name) }}">
+    <label>
+      Schedule
+      <select name="schedule">
+        {% for value, label in schedule_options %}
+          <option value="{{ value.value }}"{% if value == query.schedule %} selected{% endif %}>
+            {{ label }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      FSRS state
+      <select name="state">
+        {% for value, label in state_options %}
+          <option value="{{ value.value }}"{% if value == query.state %} selected{% endif %}>
+            {{ label }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Sort by
+      <select name="sort">
+        {% for value, label in sort_options %}
+          <option value="{{ value.value }}"{% if value == query.sort %} selected{% endif %}>
+            {{ label }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Direction
+      <select name="direction">
+        {% for value, label in direction_options %}
+          <option value="{{ value.value }}"{% if value == query.direction %} selected{% endif %}>
+            {{ label }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Apply</button>
+  </form>
+
+  {% if rows %}
+    <div class="table-wrap">
+      <table class="status-table">
+        <thead>
+          <tr>
+            <th>Card</th>
+            <th>Schedule</th>
+            <th>Review history</th>
+            <th>Next review</th>
+            <th>FSRS metrics</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr>
+              <td>
+                <div class="card-front">
+                  {% if row.front is not none %}
+                    {{ row.front }}
+                  {% else %}
+                    <span class="muted">Unable to render</span>
+                  {% endif %}
+                </div>
+                <div class="card-meta">
+                  <span>{{ row.status.card_key.target_kind.value }} card</span>
+                  <code>{{ row.identity }}</code>
+                  <code>{{ row.status.card_id }}</code>
+                </div>
+              </td>
+              <td>
+                <div class="badges">
+                  {% for badge in row.badges %}<span class="badge">{{ badge }}</span>{% endfor %}
+                </div>
+                <span class="metric-note">{{ row.fsrs_label }}</span>
+              </td>
+              <td>
+                <span class="review-summary">
+                  <span>{{ row.status.review_count }} review(s)</span>
+                  <span>Last rating: {{ row.last_rating }}</span>
+                  {% if row.last_review %}
+                    <span class="date-value">
+                      <time datetime="{{ row.last_review.exact }}">{{ row.last_review.relative }}</time>
+                      <small>{{ row.last_review.exact }}</small>
+                    </span>
+                  {% else %}
+                    —
+                  {% endif %}
+                </span>
+              </td>
+              <td>
+                <span class="date-value">
+                  <time datetime="{{ row.next_review.exact }}">{{ row.next_review.relative }}</time>
+                  <small>{{ row.next_review.exact }}</small>
+                </span>
+              </td>
+              <td>
+                <span class="fsrs-metrics">
+                  <span>Stability: {{ row.stability }}</span>
+                  <span>Difficulty: {{ row.difficulty }}</span>
+                  <span>Retrievability: {{ row.retrievability }}</span>
+                </span>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <nav class="pagination" aria-label="Card status pages">
+      <span>{{ pagination.first }}–{{ pagination.last }} of {{ pagination.total }} card(s) · Page {{ pagination.page }} of {{ pagination.pages }}</span>
+      <span class="pagination-links">
+        {% if pagination.previous_url %}
+          <a class="button" href="{{ pagination.previous_url }}">Previous</a>
+        {% endif %}
+        {% if pagination.next_url %}
+          <a class="button" href="{{ pagination.next_url }}">Next</a>
+        {% endif %}
+      </span>
+    </nav>
+  {% else %}
+    <p class="empty-status">{{ empty_message }}</p>
+  {% endif %}
+{% endblock %}

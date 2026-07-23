@@ -28,8 +28,13 @@ class StudyService:
         self.scheduler = scheduler
 
     def sync(self, deck: DeckDefinition, now: datetime | None = None) -> tuple[int, int]:
-        presentations = execute_presentations(self.graph, deck)
+        presentations = self.render_all(deck)
         return self.repository.sync_deck(deck.name, presentations, now or utc_now())
+
+    def render_all(self, deck: DeckDefinition) -> dict[str, DeckKind]:
+        """Render every current presentation for a deck in one query."""
+
+        return execute_presentations(self.graph, deck)
 
     def render(self, deck: DeckDefinition, card: StoredCard) -> DeckKind:
         presentations = execute_presentations(self.graph, deck, card.card_key)
@@ -54,10 +59,14 @@ class StudyService:
         updated_card, review_log = self.scheduler.review_card(
             card.card(), rating, review_datetime=review_time
         )
-        self.repository.save_review(card.card_id, deck.name, updated_card, review_log)
-        # Reload the committed representation rather than returning an FSRS object
-        # that might differ from what storage accepted.
-        stored = self.repository.get_card(card.card_id)
-        if stored is None:
-            raise RuntimeError("reviewed card disappeared from storage")
-        return stored
+        card_json = self.repository.save_review(
+            card.card_id,
+            deck.name,
+            updated_card,
+            review_log,
+        )
+        return StoredCard(
+            card_id=card.card_id,
+            card_key=card.card_key,
+            card_json=card_json,
+        )

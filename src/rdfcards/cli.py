@@ -20,6 +20,7 @@ from rdfcards.errors import PresentationError, RdfCardsError
 from rdfcards.presentation import execute_presentations, load_graph
 from rdfcards.scaffold import available_templates, initialize_workspace
 from rdfcards.storage import CardStatus, Repository, datetime_to_text, utc_now
+from rdfcards.web import run_server
 
 
 def _nonnegative_int(value: str) -> int:
@@ -64,6 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=20,
         help="maximum cards to review; 0 means unlimited (default: %(default)s)",
     )
+    subparsers.add_parser("serve", help="open the local web study interface")
     return parser
 
 
@@ -256,9 +258,19 @@ def main(
                 error,
                 rng or random.Random(),
             )
+        elif args.command == "serve":
+            run_server(
+                config,
+                output=output,
+                error=error,
+                rng=rng or random.Random(),
+            )
         return 0
     except KeyboardInterrupt:
-        print("\nInterrupted; the current card was not reviewed.", file=error)
+        if args.command == "serve":
+            print("\nWeb server stopped.", file=error)
+        else:
+            print("\nInterrupted; the current card was not reviewed.", file=error)
         return 130
     except EOFError:
         print("\nInput ended; the current card was not reviewed.", file=error)

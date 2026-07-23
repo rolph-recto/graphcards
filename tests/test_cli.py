@@ -9,7 +9,7 @@ import pytest
 from fsrs import Rating
 from rdflib import Literal, URIRef
 
-from rdfcards.cli import _rate_presentation, _run_study, main
+from rdfcards.cli import _rate_presentation, _run_study, build_parser, main
 from rdfcards.config import AppConfig, DeckDefinition, load_config
 from rdfcards.decks import Basic, DeckKind, MultipleChoice
 from rdfcards.models import CardKey
@@ -332,6 +332,52 @@ def test_basic_study_records_rating(workspace: Path, count_reviews) -> None:
     config = load_config(config_path)
     with Repository(config.state_path) as repository:
         assert count_reviews(repository) == 1
+
+
+def test_serve_dispatches_to_web_hub(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[Path] = []
+
+    def fake_server(config, **_kwargs):
+        calls.append(config.state_path)
+
+    monkeypatch.setattr("rdfcards.cli.run_server", fake_server)
+    code, output, error = run_cli(
+        "--config",
+        str(workspace / "rdfcards.toml"),
+        "serve",
+    )
+
+    assert code == 0
+    assert calls == [workspace / ".rdfcards" / "state.sqlite3"]
+    assert output == ""
+    assert error == ""
+
+
+def test_study_no_longer_accepts_web_flag() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["study", "capitals-basic", "--web"])
+
+
+def test_interrupting_serve_has_server_message(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def interrupt_server(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("rdfcards.cli.run_server", interrupt_server)
+    code, output, error = run_cli(
+        "--config",
+        str(workspace / "rdfcards.toml"),
+        "serve",
+    )
+
+    assert code == 130
+    assert output == ""
+    assert "Web server stopped." in error
 
 
 def test_multiple_choice_study_records_manual_rating(workspace: Path) -> None:

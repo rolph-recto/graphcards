@@ -197,6 +197,7 @@ rdfcards [-c PATH] validate [--deck NAME]
 rdfcards [-c PATH] sync [--deck NAME]
 rdfcards [-c PATH] status [--deck NAME] [--full]
 rdfcards [-c PATH] study NAME [--limit N]
+rdfcards [-c PATH] serve
 ```
 
 `validate` does not create or modify study state. `status --full` follows each deck summary with
@@ -206,6 +207,17 @@ A limit of zero means no session limit. Both basic and multiple-choice cards sho
 wait for Enter, reveal the back, and ask for one of the four FSRS ratings. Multiple-choice fronts
 include shuffled choices, and their back is the correct choice.
 
+Run `serve` to open the Flask-based browser study interface. RDFCards synchronizes every
+configured deck, binds its single-threaded local server to an automatically selected port on
+`127.0.0.1`, prints and opens the local URL, and keeps serving until Ctrl-C. The deck list shows
+current card counts and supports regular due-card study, reviewing recently forgotten cards,
+schedule-free deck practice, and reviewing future cards ahead of time. Each deck also links to a
+read-only card-status page with the formatted front, RDF identity, review history, next review,
+FSRS state, stability, difficulty, and current retrievability. Status pages can be filtered by
+schedule or FSRS state, sorted by scheduling metrics, and show 100 cards per page. Browser sessions
+use stable card snapshots, preserve the current card across refreshes, and save a scheduled review
+only after a valid rating is submitted.
+
 All scheduling timestamps are UTC. Changing FSRS configuration affects future reviews; existing
 cards are not automatically rescheduled.
 
@@ -214,9 +226,10 @@ cards are not automatically rescheduled.
 ```console
 uv run pytest
 uv run ruff check .
+uv run ruff format --check .
 uv build
 ```
 
-The application is intentionally local and single-user. Remote SPARQL endpoints, web interfaces,
-media rendering, synchronization, blank-node canonicalization, and FSRS parameter optimization
-are outside v1.
+The application is intentionally local and single-user. Remote SPARQL endpoints, remotely hosted
+web interfaces, media rendering, synchronization, blank-node canonicalization, and FSRS parameter
+optimization are outside v1.

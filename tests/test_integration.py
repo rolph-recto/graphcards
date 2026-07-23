@@ -15,11 +15,22 @@ from rdfcards.decks import Basic
 from rdfcards.errors import PresentationError, StorageError
 from rdfcards.models import CardKey, TargetKind
 from rdfcards.presentation import execute_presentations, load_graph
-from rdfcards.storage import Repository
+from rdfcards.storage import Repository, datetime_to_text
 
 
 def app_for(config: AppConfig, repository: Repository) -> StudyService:
     return StudyService(load_graph(config.sources), repository, config.fsrs.create_scheduler())
+
+
+def set_card_due(repository: Repository, card_id: str, due: datetime) -> None:
+    stored = repository.get_card(card_id)
+    assert stored is not None
+    card = stored.card()
+    card.due = due
+    repository.connection.execute(
+        "UPDATE cards SET card_json = ?, due_at = ? WHERE card_id = ?",
+        (card.to_json(), datetime_to_text(due), card_id),
+    )
 
 
 def test_sync_is_idempotent_and_entities_are_shared_across_decks(config: AppConfig) -> None:
@@ -63,6 +74,74 @@ def test_sync_is_idempotent_and_entities_are_shared_across_decks(config: AppConf
             card.card_id for card in repository.due_cards(basic_copy.name, now, None)
         }
         assert reviewed_triple.card_id not in triple_copy_due
+
+
+def test_advanced_card_selectors_use_global_history_and_schedule_windows(
+    config: AppConfig,
+) -> None:
+    now = datetime(2026, 1, 3, tzinfo=UTC)
+    deck = config.deck("capitals-basic")
+    deck_copy = DeckDefinition(
+        name="capitals-basic-copy",
+        kind=deck.kind,
+        query_path=deck.query_path,
+        target=deck.target,
+    )
+    with Repository(config.state_path) as repository:
+        app = app_for(config, repository)
+        app.sync(deck, now)
+        app.sync(deck_copy, now)
+        older, recent = repository.due_cards(deck.name, now, None)
+        app.review(deck, older, Rating.Again, now - timedelta(days=2))
+        app.review(deck, recent, Rating.Again, now)
+
+        forgotten = repository.forgotten_cards(
+            deck_copy.name,
+            now - timedelta(days=1),
+            None,
+        )
+        assert [card.card_id for card in forgotten] == [recent.card_id]
+        assert {card.card_id for card in repository.active_cards(deck_copy.name)} == {
+            older.card_id,
+            recent.card_id,
+        }
+
+        set_card_due(repository, recent.card_id, now + timedelta(hours=12))
+        set_card_due(repository, older.card_id, now + timedelta(days=2))
+        ahead = repository.future_cards(
+            deck_copy.name,
+            now,
+            now + timedelta(days=1),
+            1,
+        )
+        assert [card.card_id for card in ahead] == [recent.card_id]
+
+
+def test_due_mirror_mismatch_is_detected_before_indexed_filters_can_omit_it(
+    config: AppConfig,
+) -> None:
+    now = datetime(2026, 1, 3, tzinfo=UTC)
+    deck = config.deck("capitals-basic")
+    with Repository(config.state_path) as repository:
+        app_for(config, repository).sync(deck, now)
+        card = repository.due_cards(deck.name, now, 1)[0]
+        repository.connection.execute(
+            "UPDATE cards SET due_at = ? WHERE card_id = ?",
+            (datetime_to_text(now + timedelta(days=1)), card.card_id),
+        )
+
+        with pytest.raises(StorageError, match="due timestamp does not match"):
+            repository.due_cards(deck.name, now, None)
+        with pytest.raises(StorageError, match="due timestamp does not match"):
+            repository.future_cards(deck.name, now, now + timedelta(days=2), None)
+        with pytest.raises(StorageError, match="due timestamp does not match"):
+            repository.status(deck.name, now)
+        with pytest.raises(StorageError, match="due timestamp does not match"):
+            repository.active_cards(deck.name)
+        with pytest.raises(StorageError, match="due timestamp does not match"):
+            repository.get_card(card.card_id)
+        with pytest.raises(StorageError, match="due timestamp does not match"):
+            repository.card_statuses(deck.name)
 
 
 def test_removed_and_restored_triple_keeps_schedule(config: AppConfig, workspace: Path) -> None:
@@ -344,6 +423,23 @@ def test_malformed_stored_n3_is_reported_as_storage_corruption(config: AppConfig
             repository.get_card(card.card_id)
 
 
+def test_non_text_card_schedule_is_reported_as_storage_corruption(
+    config: AppConfig,
+) -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    deck = config.deck("capitals-basic")
+    with Repository(config.state_path) as repository:
+        app_for(config, repository).sync(deck, now)
+        card = repository.due_cards(deck.name, now, 1)[0]
+        repository.connection.execute(
+            "UPDATE cards SET card_json = ? WHERE card_id = ?",
+            (sqlite3.Binary(b"{}"), card.card_id),
+        )
+
+        with pytest.raises(StorageError, match="schedule is not JSON text"):
+            repository.get_card(card.card_id)
+
+
 def test_card_and_log_update_roll_back_together(config: AppConfig, count_reviews) -> None:
     now = datetime(2026, 1, 1, tzinfo=UTC)
     deck = config.deck("capitals-basic")
@@ -376,6 +472,41 @@ def test_status_counts_new_due_and_future(config: AppConfig) -> None:
         app.review(deck, repository.due_cards(deck.name, now, 1)[0], Rating.Good, now)
         updated = repository.status(deck.name, now)
         assert (updated.active, updated.new, updated.due, updated.future) == (2, 1, 1, 1)
+
+
+def test_card_statuses_include_latest_global_review_and_fsrs_metrics(
+    config: AppConfig,
+) -> None:
+    first_review = datetime(2026, 1, 1, tzinfo=UTC)
+    latest_review = first_review + timedelta(minutes=2)
+    deck = config.deck("capitals-basic")
+    shared_deck = DeckDefinition(
+        name="capitals-status-copy",
+        kind=deck.kind,
+        query_path=deck.query_path,
+        target=deck.target,
+    )
+    with Repository(config.state_path) as repository:
+        app = app_for(config, repository)
+        app.sync(deck, first_review)
+        app.sync(shared_deck, first_review)
+        card = repository.due_cards(deck.name, first_review, 1)[0]
+        reviewed = app.review(deck, card, Rating.Again, first_review)
+        reviewed = app.review(deck, reviewed, Rating.Good, latest_review)
+
+        status = next(
+            row for row in repository.card_statuses(shared_deck.name) if row.card_id == card.card_id
+        )
+
+        assert status.review_count == 2
+        assert status.last_review_at == latest_review
+        assert status.last_rating is Rating.Good
+        assert status.fsrs_state == reviewed.card().state.name.lower()
+        assert status.fsrs_step == reviewed.card().step
+        assert status.stability == reviewed.card().stability
+        assert status.difficulty == reviewed.card().difficulty
+        assert status.due_at == reviewed.card().due
+        assert status.stored_card() == reviewed
 
 
 def test_fresh_database_uses_schema_v3_identity_fields(tmp_path: Path) -> None:

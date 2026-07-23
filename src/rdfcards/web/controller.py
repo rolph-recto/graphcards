@@ -1,0 +1,131 @@
+"""Application controller for the local deck hub."""
+
+from __future__ import annotations
+
+import random
+import secrets
+from datetime import datetime, timedelta
+from http import HTTPStatus
+
+from rdflib import Graph
+
+from rdfcards.app import StudyService
+from rdfcards.config import AppConfig, DeckDefinition
+from rdfcards.errors import ConfigError, PresentationError
+from rdfcards.storage import DeckStatus, Repository, utc_now
+from rdfcards.web.status import StatusCard
+from rdfcards.web.study import RequestFailure, StudyMode, StudySession
+
+
+class StudyController:
+    """Deck catalog, persistent services, and the optional active session."""
+
+    def __init__(
+        self,
+        config: AppConfig,
+        graph: Graph,
+        repository: Repository,
+        rng: random.Random,
+    ) -> None:
+        self.config = config
+        self.repository = repository
+        self.rng = rng
+        self.csrf_token = secrets.token_urlsafe(32)
+        self.study_service = StudyService(graph, repository, config.fsrs.create_scheduler())
+        self.session: StudySession | None = None
+        sync_time = utc_now()
+        for deck in config.decks:
+            self.study_service.sync(deck, sync_time)
+
+    def deck_statuses(self) -> tuple[tuple[DeckDefinition, DeckStatus], ...]:
+        now = utc_now()
+        return tuple((deck, self.repository.status(deck.name, now)) for deck in self.config.decks)
+
+    def card_statuses(
+        self,
+        deck: DeckDefinition,
+        now: datetime,
+    ) -> tuple[StatusCard, ...]:
+        """Load active schedules and derive their time-dependent FSRS metric."""
+
+        rows: list[StatusCard] = []
+        for status in self.repository.card_statuses(deck.name):
+            retrievability = None
+            if status.stability is not None and status.last_review_at is not None:
+                retrievability = self.study_service.scheduler.get_card_retrievability(
+                    status.stored_card().card(),
+                    current_datetime=now,
+                )
+            rows.append(StatusCard(status=status, retrievability=retrievability))
+        return tuple(rows)
+
+    def card_fronts(
+        self,
+        deck: DeckDefinition,
+        cards: tuple[StatusCard, ...],
+    ) -> dict[str, str | None]:
+        """Format current fronts in one deck query, isolating per-card failures."""
+
+        presentations = self.study_service.render_all(deck)
+        fronts: dict[str, str | None] = {}
+        for row in cards:
+            presentation = presentations.get(row.status.card_id)
+            if presentation is None:
+                fronts[row.status.card_id] = None
+                continue
+            try:
+                fronts[row.status.card_id] = presentation.front_text(
+                    random.Random(row.status.card_id)
+                )
+            except PresentationError:
+                fronts[row.status.card_id] = None
+        return fronts
+
+    def start_session(
+        self,
+        *,
+        csrf_token: str,
+        deck_name: str,
+        mode: StudyMode,
+        days: int,
+        requested_limit: int,
+    ) -> StudySession:
+        if not secrets.compare_digest(csrf_token, self.csrf_token):
+            raise RequestFailure(HTTPStatus.FORBIDDEN, "This session form is not valid.")
+        try:
+            deck = self.config.deck(deck_name)
+        except ConfigError as error:
+            raise RequestFailure(HTTPStatus.BAD_REQUEST, str(error)) from error
+
+        now = utc_now()
+        limit = None if requested_limit == 0 else requested_limit
+        if mode is StudyMode.DUE:
+            cards = self.repository.due_cards(deck.name, now, None)
+        elif mode is StudyMode.FORGOTTEN:
+            cards = self.repository.forgotten_cards(
+                deck.name,
+                now - timedelta(days=days),
+                limit,
+            )
+        elif mode is StudyMode.PRACTICE:
+            cards = self.repository.active_cards(deck.name)
+            self.rng.shuffle(cards)
+            if limit is not None:
+                cards = cards[:limit]
+        else:
+            cards = self.repository.future_cards(
+                deck.name,
+                now,
+                now + timedelta(days=days),
+                limit,
+            )
+        self.session = StudySession(
+            deck,
+            self.study_service,
+            cards,
+            mode,
+            days,
+            requested_limit,
+            self.rng,
+        )
+        return self.session

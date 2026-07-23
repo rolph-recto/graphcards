@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% set wrapper_class = "study-shell" %}
+{% block title %}{{ status.value }} {{ status.phrase }}{% endblock %}
+{% block content %}
+  <article class="card">
+    <div class="content">
+      <p class="error-code">{{ status.value }} {{ status.phrase }}</p>
+      <h1>Study request failed</h1>
+      <p class="summary">{{ message }}</p>
+      <p class="summary"><a href="{{ url_for('index') }}">Return to the deck list</a></p>
+    </div>
+  </article>
+{% endblock %}

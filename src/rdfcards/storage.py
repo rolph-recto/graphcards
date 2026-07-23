@@ -7,7 +7,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fsrs import Card, ReviewLog
+from fsrs import Card, Rating, ReviewLog
 
 from rdfcards.decks import DeckKind
 from rdfcards.errors import StorageError
@@ -32,13 +32,31 @@ def datetime_to_text(value: datetime) -> str:
     return datetime_as_utc(value).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def _datetime_from_text(value: object) -> datetime:
+    """Decode and validate timestamps read from storage."""
+
+    if not isinstance(value, str):
+        raise StorageError("stored timestamp is not text")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise StorageError("stored timestamp is invalid") from error
+    parsed = datetime_as_utc(parsed)
+    if datetime_to_text(parsed) != value:
+        raise StorageError("stored timestamp is not canonical UTC")
+    return parsed
+
+
 class StoredCard(RdfModel):
     card_id: str
     card_key: CardKey
     card_json: str
 
     def card(self) -> Card:
-        return Card.from_json(self.card_json)
+        try:
+            return Card.from_json(self.card_json)
+        except (json.JSONDecodeError, KeyError, OverflowError, TypeError, ValueError) as error:
+            raise StorageError("stored card schedule is invalid") from error
 
 
 class DeckStatus(RdfModel):
@@ -53,9 +71,24 @@ class CardStatus(RdfModel):
 
     card_id: str
     card_key: CardKey
+    card_json: str
     fsrs_state: str
+    fsrs_step: int | None
+    stability: float | None
+    difficulty: float | None
     review_count: int
     due_at: datetime
+    last_review_at: datetime | None
+    last_rating: Rating | None
+
+    def stored_card(self) -> StoredCard:
+        """Rebuild the complete stored card used for read-only FSRS calculations."""
+
+        return StoredCard(
+            card_id=self.card_id,
+            card_key=self.card_key,
+            card_json=self.card_json,
+        )
 
 
 class Repository:
@@ -216,6 +249,7 @@ class Repository:
         return CardKey.from_n3(target, tuple(values))
 
     def due_cards(self, deck_name: str, now: datetime, limit: int | None) -> list[StoredCard]:
+        self._validate_active_due_mirrors(deck_name)
         parameters: list[object] = [deck_name, datetime_to_text(now)]
         limit_sql = ""
         if limit is not None:
@@ -223,7 +257,7 @@ class Repository:
             parameters.append(limit)
         rows = self.connection.execute(
             """
-            SELECT c.card_id, c.target_kind, c.identity_json, c.card_json
+            SELECT c.card_id, c.target_kind, c.identity_json, c.card_json, c.due_at
             FROM cards AS c
             JOIN deck_cards AS dc ON dc.card_id = c.card_id
             WHERE dc.deck_name = ? AND dc.active = 1 AND c.due_at <= ?
@@ -234,10 +268,92 @@ class Repository:
         ).fetchall()
         return [self._stored_card(row) for row in rows]
 
+    def active_cards(self, deck_name: str) -> list[StoredCard]:
+        """Return every active deck member in schedule order."""
+
+        rows = self.connection.execute(
+            """
+            SELECT c.card_id, c.target_kind, c.identity_json, c.card_json, c.due_at
+            FROM cards AS c
+            JOIN deck_cards AS dc ON dc.card_id = c.card_id
+            WHERE dc.deck_name = ? AND dc.active = 1
+            ORDER BY c.due_at, c.card_id
+            """,
+            (deck_name,),
+        ).fetchall()
+        return [self._stored_card(row) for row in rows]
+
+    def forgotten_cards(
+        self,
+        deck_name: str,
+        since: datetime,
+        limit: int | None,
+    ) -> list[StoredCard]:
+        """Return active cards failed since a timestamp, newest failure first."""
+
+        parameters: list[object] = [deck_name, datetime_to_text(since)]
+        limit_sql = ""
+        if limit is not None:
+            limit_sql = " LIMIT ?"
+            parameters.append(limit)
+        rows = self.connection.execute(
+            """
+            SELECT c.card_id, c.target_kind, c.identity_json, c.card_json, c.due_at
+            FROM cards AS c
+            JOIN deck_cards AS dc ON dc.card_id = c.card_id
+            WHERE dc.deck_name = ? AND dc.active = 1 AND EXISTS (
+                SELECT 1
+                FROM reviews AS r
+                WHERE r.card_id = c.card_id AND r.rating = 1 AND r.reviewed_at >= ?
+            )
+            ORDER BY (
+                SELECT MAX(r.reviewed_at)
+                FROM reviews AS r
+                WHERE r.card_id = c.card_id AND r.rating = 1
+            ) DESC, c.card_id
+            """
+            + limit_sql,
+            parameters,
+        ).fetchall()
+        return [self._stored_card(row) for row in rows]
+
+    def future_cards(
+        self,
+        deck_name: str,
+        after: datetime,
+        through: datetime,
+        limit: int | None,
+    ) -> list[StoredCard]:
+        """Return active cards due after now through an inclusive horizon."""
+
+        self._validate_active_due_mirrors(deck_name)
+        parameters: list[object] = [
+            deck_name,
+            datetime_to_text(after),
+            datetime_to_text(through),
+        ]
+        limit_sql = ""
+        if limit is not None:
+            limit_sql = " LIMIT ?"
+            parameters.append(limit)
+        rows = self.connection.execute(
+            """
+            SELECT c.card_id, c.target_kind, c.identity_json, c.card_json, c.due_at
+            FROM cards AS c
+            JOIN deck_cards AS dc ON dc.card_id = c.card_id
+            WHERE dc.deck_name = ? AND dc.active = 1
+              AND c.due_at > ? AND c.due_at <= ?
+            ORDER BY c.due_at, c.card_id
+            """
+            + limit_sql,
+            parameters,
+        ).fetchall()
+        return [self._stored_card(row) for row in rows]
+
     def get_card(self, card_id: str) -> StoredCard | None:
         row = self.connection.execute(
             """
-            SELECT card_id, target_kind, identity_json, card_json
+            SELECT card_id, target_kind, identity_json, card_json, due_at
             FROM cards WHERE card_id = ?
             """,
             (card_id,),
@@ -250,11 +366,23 @@ class Repository:
             raise StorageError(
                 f"stored card identity does not match its card hash {row['card_id']}"
             )
-        return StoredCard(
+        card_json = row["card_json"]
+        if not isinstance(card_json, str):
+            raise StorageError("stored card schedule is not JSON text")
+        stored = StoredCard(
             card_id=row["card_id"],
             card_key=card_key,
-            card_json=row["card_json"],
+            card_json=card_json,
         )
+        mirrored_due = _datetime_from_text(row["due_at"])
+        if mirrored_due != datetime_as_utc(stored.card().due):
+            raise StorageError("stored card due timestamp does not match its schedule")
+        return stored
+
+    def _validate_active_due_mirrors(self, deck_name: str) -> None:
+        """Validate all active mirrors before an indexed filter can omit corruption."""
+
+        self.active_cards(deck_name)
 
     def save_review(
         self,
@@ -262,10 +390,11 @@ class Repository:
         deck_name: str,
         card: Card,
         review_log: ReviewLog,
-    ) -> None:
+    ) -> str:
         """Persist updated FSRS state and its review log in one transaction."""
 
         reviewed_at = datetime_to_text(review_log.review_datetime)
+        card_json = card.to_json()
         with self.connection:
             cursor = self.connection.execute(
                 """
@@ -273,7 +402,7 @@ class Repository:
                 WHERE card_id = ?
                 """,
                 (
-                    card.to_json(),
+                    card_json,
                     datetime_to_text(card.due),
                     reviewed_at,
                     card_id,
@@ -294,8 +423,10 @@ class Repository:
                     review_log.to_json(),
                 ),
             )
+        return card_json
 
     def status(self, deck_name: str, now: datetime) -> DeckStatus:
+        self._validate_active_due_mirrors(deck_name)
         timestamp = datetime_to_text(now)
         row = self.connection.execute(
             """
@@ -327,12 +458,28 @@ class Repository:
                 c.identity_json,
                 c.card_json,
                 c.due_at,
-                COUNT(r.id) AS review_count
+                (
+                    SELECT COUNT(*)
+                    FROM reviews AS r
+                    WHERE r.card_id = c.card_id
+                ) AS review_count,
+                (
+                    SELECT r.reviewed_at
+                    FROM reviews AS r
+                    WHERE r.card_id = c.card_id
+                    ORDER BY r.reviewed_at DESC, r.id DESC
+                    LIMIT 1
+                ) AS last_review_at,
+                (
+                    SELECT r.rating
+                    FROM reviews AS r
+                    WHERE r.card_id = c.card_id
+                    ORDER BY r.reviewed_at DESC, r.id DESC
+                    LIMIT 1
+                ) AS last_rating
             FROM cards AS c
             JOIN deck_cards AS dc ON dc.card_id = c.card_id
-            LEFT JOIN reviews AS r ON r.card_id = c.card_id
             WHERE dc.deck_name = ? AND dc.active = 1
-            GROUP BY c.card_id
             ORDER BY c.due_at, c.card_id
             """,
             (deck_name,),
@@ -341,13 +488,36 @@ class Repository:
         for row in rows:
             stored = self._stored_card(row)
             card = stored.card()
+            history_last_review = (
+                _datetime_from_text(row["last_review_at"])
+                if row["last_review_at"] is not None
+                else None
+            )
+            card_last_review = (
+                datetime_as_utc(card.last_review) if card.last_review is not None else None
+            )
+            last_rating_value = row["last_rating"]
+            if history_last_review != card_last_review or (history_last_review is None) != (
+                last_rating_value is None
+            ):
+                raise StorageError("stored card schedule and review history do not match")
+            try:
+                last_rating = Rating(last_rating_value) if last_rating_value is not None else None
+            except ValueError as error:
+                raise StorageError("stored review has an invalid rating") from error
             statuses.append(
                 CardStatus(
                     card_id=stored.card_id,
                     card_key=stored.card_key,
+                    card_json=stored.card_json,
                     fsrs_state=card.state.name.lower(),
+                    fsrs_step=card.step,
+                    stability=card.stability,
+                    difficulty=card.difficulty,
                     review_count=row["review_count"],
                     due_at=datetime_as_utc(card.due),
+                    last_review_at=history_last_review,
+                    last_rating=last_rating,
                 )
             )
         return tuple(statuses)
