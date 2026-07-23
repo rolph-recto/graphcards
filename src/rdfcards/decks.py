@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import random
+import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from inspect import isabstract
-from typing import ClassVar, Self
+from typing import Annotated, ClassVar, Self
 
-from pydantic import model_validator
+from pydantic import Field, ValidationError, model_validator
 from rdflib import Literal
 from rdflib.namespace import XSD
 from rdflib.term import Identifier
 
 from rdfcards.errors import PresentationError
 from rdfcards.models import CardKey, RdfModel, TargetKind
+
+DEFAULT_MAX_CHOICES = 4
 
 
 class DeckKind(RdfModel, ABC):
@@ -89,6 +92,7 @@ class DeckKind(RdfModel, ABC):
         target: TargetKind,
         deck_name: str,
         expected: set[str],
+        max_choices: int | None,
     ) -> dict[str, Self]:
         """Convert validated SPARQL rows into presentations keyed by card ID."""
 
@@ -156,7 +160,9 @@ class Basic(DeckKind):
         target: TargetKind,
         deck_name: str,
         expected: set[str],
+        max_choices: int | None,
     ) -> dict[str, Self]:
+        del max_choices
         # Identical duplicate rows are harmless, but differing presentations
         # for one identity are ambiguous.
         grouped: dict[CardKey, set[tuple[Identifier, Identifier]]] = defaultdict(set)
@@ -178,13 +184,21 @@ class Basic(DeckKind):
         return cls._by_digest(presentations)
 
 
+class ChoiceOption(RdfModel):
+    """One candidate answer and its normalized distractor-selection priority."""
+
+    choice: Identifier
+    priority: Annotated[int, Field(strict=True, ge=0)] = 0
+
+
 class MultipleChoice(DeckKind):
     """A self-rated presentation with shuffled choices and a correct back."""
 
     config_name = "multiple_choice"
     required_variables = frozenset({"front", "choice", "is_correct"})
 
-    choices: tuple[Identifier, ...]
+    choices: tuple[ChoiceOption, ...]
+    max_choices: Annotated[int, Field(strict=True, ge=2)] = DEFAULT_MAX_CHOICES
 
     @model_validator(mode="after")
     def validate_choices(self) -> MultipleChoice:
@@ -192,9 +206,10 @@ class MultipleChoice(DeckKind):
 
         if len(self.choices) < 2:
             raise ValueError("a multiple-choice presentation needs at least two choices")
-        if len(set(self.choices)) != len(self.choices):
+        choice_values = tuple(option.choice for option in self.choices)
+        if len(set(choice_values)) != len(choice_values):
             raise ValueError("a multiple-choice presentation cannot contain duplicate choices")
-        if self.back not in self.choices:
+        if self.back not in choice_values:
             raise ValueError("the multiple-choice back must be one of its choices")
         return self
 
@@ -217,6 +232,31 @@ class MultipleChoice(DeckKind):
             )
         return converted
 
+    @staticmethod
+    def _priority(value: Identifier | None, deck_name: str, row_number: int) -> int:
+        if value is None:
+            return 0
+        if not isinstance(value, Literal) or value.datatype != XSD.integer:
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} ?priority must be an xsd:integer literal"
+            )
+        if re.fullmatch(r"[+-]?[0-9]+", str(value)) is None:
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} has an invalid xsd:integer "
+                "lexical value for ?priority"
+            )
+        converted = value.toPython()
+        if isinstance(converted, bool) or not isinstance(converted, int):
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} has an invalid xsd:integer "
+                "value for ?priority"
+            )
+        if converted < 0:
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} ?priority must be zero or greater"
+            )
+        return converted
+
     @classmethod
     def group(
         cls,
@@ -225,9 +265,10 @@ class MultipleChoice(DeckKind):
         target: TargetKind,
         deck_name: str,
         expected: set[str],
+        max_choices: int | None,
     ) -> dict[str, Self]:
         fronts: dict[CardKey, set[Identifier]] = defaultdict(set)
-        choices: dict[CardKey, dict[Identifier, bool]] = defaultdict(dict)
+        choices: dict[CardKey, dict[Identifier, tuple[bool, int]]] = defaultdict(dict)
         for row_number, row in enumerate(result, start=1):  # type: ignore[arg-type]
             values = cls._row_values(row)
             cls._require_bound(values, expected, deck_name, row_number)
@@ -235,12 +276,21 @@ class MultipleChoice(DeckKind):
             fronts[card_key].add(values["front"])
             choice = values["choice"]
             is_correct = cls._boolean(values["is_correct"], deck_name, row_number)
-            if choice in choices[card_key] and choices[card_key][choice] != is_correct:
-                raise PresentationError(
-                    f"deck {deck_name!r} marks the same choice both correct and incorrect "
-                    f"for card {card_key.digest}"
-                )
-            choices[card_key][choice] = is_correct
+            priority = cls._priority(values.get("priority"), deck_name, row_number)
+            existing = choices[card_key].get(choice)
+            if existing is not None:
+                existing_correct, existing_priority = existing
+                if existing_correct != is_correct:
+                    raise PresentationError(
+                        f"deck {deck_name!r} marks the same choice both correct and incorrect "
+                        f"for card {card_key.digest}"
+                    )
+                if existing_priority != priority:
+                    raise PresentationError(
+                        f"deck {deck_name!r} assigns conflicting priorities to the same choice "
+                        f"for card {card_key.digest}"
+                    )
+            choices[card_key][choice] = (is_correct, priority)
 
         presentations: list[Self] = []
         for card_key, front_values in fronts.items():
@@ -253,24 +303,64 @@ class MultipleChoice(DeckKind):
                 raise PresentationError(
                     f"deck {deck_name!r} needs at least two choices for card {card_key.digest}"
                 )
-            if sum(card_choices.values()) != 1:
+            if sum(is_correct for is_correct, _priority in card_choices.values()) != 1:
                 raise PresentationError(
                     f"deck {deck_name!r} needs exactly one correct choice for card "
                     f"{card_key.digest}"
                 )
-            presentations.append(
-                cls(
-                    card_key=card_key,
-                    front=next(iter(front_values)),
-                    back=next(value for value, is_correct in card_choices.items() if is_correct),
-                    choices=tuple(card_choices),
+            try:
+                presentations.append(
+                    cls(
+                        card_key=card_key,
+                        front=next(iter(front_values)),
+                        back=next(
+                            value
+                            for value, (is_correct, _priority) in card_choices.items()
+                            if is_correct
+                        ),
+                        choices=tuple(
+                            ChoiceOption(choice=value, priority=priority)
+                            for value, (_is_correct, priority) in card_choices.items()
+                        ),
+                        max_choices=(
+                            max_choices if max_choices is not None else DEFAULT_MAX_CHOICES
+                        ),
+                    )
                 )
-            )
+            except ValidationError as error:
+                message = str(error.errors(include_url=False)[0]["msg"])
+                raise PresentationError(
+                    f"deck {deck_name!r} has an invalid multiple-choice presentation "
+                    f"for card {card_key.digest}: {message.removeprefix('Value error, ')}"
+                ) from error
         return cls._by_digest(presentations)
 
+    def selected_choices(self, rng: random.Random) -> tuple[Identifier, ...]:
+        """Select prioritized distractors and shuffle the displayed choices."""
+
+        tiers: dict[int, list[Identifier]] = defaultdict(list)
+        for option in self.choices:
+            if option.choice != self.back:
+                tiers[option.priority].append(option.choice)
+
+        remaining = self.max_choices - 1
+        distractors: list[Identifier] = []
+        for priority in sorted(tiers, reverse=True):
+            tier = sorted(tiers[priority], key=lambda choice: choice.n3())
+            rng.shuffle(tier)
+            distractors.extend(tier[:remaining])
+            remaining -= min(remaining, len(tier))
+            if remaining == 0:
+                break
+
+        selected = [self.back, *distractors]
+        rng.shuffle(selected)
+        return tuple(selected)
+
     def front_text(self, rng: random.Random) -> str:
-        choices = list(self.choices)
-        rng.shuffle(choices)
         lines = [str(self.front)]
-        lines.extend(f"  {index}. {choice}" for index, choice in enumerate(choices, start=1))
+        lines.extend(
+            f"  {index}. {choice}"
+            for index, choice in enumerate(self.selected_choices(rng), start=1)
+        )
         return "\n".join(lines)

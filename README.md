@@ -14,6 +14,7 @@ uv sync
 uv run rdfcards init demo
 uv run rdfcards templates
 uv run rdfcards init capitals-demo --template capitals
+uv run rdfcards init priority-demo --template priority-capitals
 ```
 
 `init` requires a destination and creates an empty `rdfcards.toml` with no sources or decks.
@@ -21,7 +22,9 @@ It refuses to overwrite an existing configuration. Add your RDF sources, present
 and deck definitions before validating or studying the workspace. The optional `--template NAME`
 flag creates a bundled workspace template instead. Run `rdfcards templates` to list the names
 available in the installed package; `capitals` provides working triple-backed
-basic cards and entity-backed multiple-choice cards.
+basic cards and entity-backed multiple-choice cards. `priority-capitals` is a
+focused multiple-choice example with five candidates, four displayed choices,
+several priority tiers, and a cutoff tie.
 
 ## Configuration
 
@@ -44,6 +47,13 @@ name = "capitals-basic"
 target = "triple"
 kind = "basic"
 query = "queries/capitals-basic.rq"
+
+[[decks]]
+name = "capitals-choice"
+target = "entity"
+kind = "multiple_choice"
+query = "queries/capitals-choice.rq"
+max_choices = 4
 ```
 
 All configured RDF sources are loaded into one RDFLib graph. RDFLib determines the format from
@@ -87,18 +97,61 @@ WHERE {
 
 A `kind = "multiple_choice"` deck binds `?front`, `?choice`, and `?is_correct`. Each choice is
 one row and `?is_correct` must be an `xsd:boolean`. Each card must have one front, at least two
-distinct choices, and exactly one correct choice. This entity-backed query is representative:
+distinct choices, and exactly one correct choice.
+
+The query may also bind `?priority` for each choice. A bound priority must be an `xsd:integer`
+literal with a value of zero or greater; malformed lexical values, other RDF datatypes, and
+negative values are rejected. An omitted or unbound priority defaults to zero. Larger numbers
+have higher priority. Duplicate rows for the same choice must agree on both correctness and the
+effective priority.
+
+Multiple-choice decks accept `max_choices`, a strict integer of at least two that defaults to
+four. It counts the correct answer as well as distractors. RDFCards validates the complete query
+result, always includes the correct answer, and then fills the remaining slots by exhausting
+higher-priority distractor tiers before considering lower-priority tiers. Ties within a tier are
+randomized, and the final selected choices are shuffled for display. If the query returns fewer
+choices than the configured maximum, all choices are shown.
+
+This entity-backed query is representative:
 
 ```sparql
-SELECT ?entity ?front ?choice ?is_correct
+PREFIX ex: <https://example.org/>
+
+SELECT ?entity ?front ?choice ?is_correct ?priority
 WHERE {
-  ?entity <https://example.org/capital> ?correctAnswer .
-  ?candidate a <https://example.org/City> .
+  ?entity ex:capital ?correctAnswer .
+
+  {
+    {
+      SELECT ?entity ?candidate (0 AS ?priority)
+      WHERE { ?entity ex:capital ?candidate }
+    }
+    UNION
+    {
+      SELECT ?entity ?candidate (3 AS ?priority)
+      WHERE {
+        VALUES (?entity ?candidate) {
+          (ex:France ex:Berlin)
+          (ex:Germany ex:Paris)
+        }
+      }
+    }
+  }
+
+  ?candidate a ex:City .
   BIND(STR(?entity) AS ?front)
   BIND(STR(?candidate) AS ?choice)
   BIND(?candidate = ?correctAnswer AS ?is_correct)
 }
 ```
+
+Additional `UNION` branches can supply lower-priority choice groups. The bundled
+`priority-capitals` template contains a complete example with four subqueries and a randomized
+cutoff tie.
+
+Invalid `max_choices` values are configuration errors. Invalid priority bindings and conflicting
+choice rows are presentation errors, so `validate`, `sync`, terminal study, and browser study all
+report the same query contract.
 
 The query is run once to synchronize deck membership. Immediately before a due card is shown,
 it is run again with either `?subject`/`?predicate`/`?object` or `?entity` pre-bound to the
@@ -205,7 +258,7 @@ a card-level table containing the identity hash, target, due status, FSRS state,
 UTC due time, and RDF identity. `study` synchronizes its selected deck before selecting due cards.
 A limit of zero means no session limit. Both basic and multiple-choice cards show the front,
 wait for Enter, reveal the back, and ask for one of the four FSRS ratings. Multiple-choice fronts
-include shuffled choices, and their back is the correct choice.
+include their priority-selected shuffled choices, and their back is the correct choice.
 
 Run `serve` to open the Flask-based browser study interface. RDFCards synchronizes every
 configured deck, binds its single-threaded local server to an automatically selected port on

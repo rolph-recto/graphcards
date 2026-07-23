@@ -19,3 +19,4 @@ name = "capitals-choice"
 target = "entity"
 kind = "multiple_choice"
 query = "queries/capitals-choice.rq"
+max_choices = 4

@@ -129,6 +129,65 @@ def test_unknown_configuration_fields_are_rejected(tmp_path: Path) -> None:
         load_config(path)
 
 
+def test_multiple_choice_max_choices_defaults_to_four(tmp_path: Path) -> None:
+    deck = DeckDefinition(
+        name="choices",
+        target=TargetKind.ENTITY,
+        kind=MultipleChoice,
+        query_path=tmp_path / "query.rq",
+    )
+
+    assert deck.max_choices is None
+    assert deck.effective_max_choices == 4
+
+
+def test_multiple_choice_accepts_explicit_max_choices(tmp_path: Path) -> None:
+    deck = DeckDefinition(
+        name="choices",
+        target=TargetKind.ENTITY,
+        kind=MultipleChoice,
+        query_path=tmp_path / "query.rq",
+        max_choices=6,
+    )
+
+    assert deck.effective_max_choices == 6
+
+
+@pytest.mark.parametrize("value", [0, 1, True, 2.5, "2"])
+def test_invalid_configured_max_choices_is_rejected(tmp_path: Path, value: object) -> None:
+    with pytest.raises(ValidationError, match="max_choices"):
+        DeckDefinition(
+            name="choices",
+            target=TargetKind.ENTITY,
+            kind=MultipleChoice,
+            query_path=tmp_path / "query.rq",
+            max_choices=value,
+        )
+
+
+def test_basic_deck_rejects_max_choices(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="only valid for multiple_choice"):
+        DeckDefinition(
+            name="basic",
+            target=TargetKind.ENTITY,
+            kind=Basic,
+            query_path=tmp_path / "query.rq",
+            max_choices=4,
+        )
+
+
+def test_invalid_toml_max_choices_is_a_config_error(tmp_path: Path) -> None:
+    path = tmp_path / "rdfcards.toml"
+    path.write_text(
+        '[[decks]]\nname="choices"\ntarget="entity"\nkind="multiple_choice"\n'
+        'query="choices.rq"\nmax_choices=1\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="max_choices"):
+        load_config(path)
+
+
 def test_fsrs_step_overflow_is_an_actionable_config_error() -> None:
     settings = FsrsSettings(learning_steps_minutes=(10**18,))
     with pytest.raises(ConfigError, match="invalid FSRS settings"):

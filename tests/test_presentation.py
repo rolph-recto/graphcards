@@ -22,6 +22,7 @@ def run_query(
     query: str,
     kind: type[DeckKind] = Basic,
     target: TargetKind = TargetKind.TRIPLE,
+    max_choices: int | None = None,
 ) -> dict[str, object]:
     query_path = tmp_path / "query.rq"
     query_path.write_text(PREFIX + query, encoding="utf-8")
@@ -30,6 +31,7 @@ def run_query(
         target=target,
         kind=kind,
         query_path=query_path,
+        max_choices=max_choices,
     )
     return execute_presentations(Graph(), deck)
 
@@ -85,8 +87,126 @@ def test_multiple_choice_contract(tmp_path: Path) -> None:
     )
     presentation = next(iter(presentations.values()))
     assert isinstance(presentation, MultipleChoice)
-    assert presentation.choices == (Literal("yes"), Literal("no"))
+    assert tuple(option.choice for option in presentation.choices) == (
+        Literal("yes"),
+        Literal("no"),
+    )
+    assert tuple(option.priority for option in presentation.choices) == (0, 0)
+    assert presentation.max_choices == 4
     assert presentation.back == Literal("yes")
+
+
+def test_multiple_choice_normalizes_optional_priorities(tmp_path: Path) -> None:
+    presentations = run_query(
+        tmp_path,
+        """
+        SELECT ?subject ?predicate ?object ?front ?choice ?is_correct ?priority WHERE {
+          VALUES (?subject ?predicate ?object ?front ?choice ?is_correct ?priority) {
+            (ex:s ex:p ex:o "question" "correct" true 0)
+            (ex:s ex:p ex:o "question" "high" false 3)
+            (ex:s ex:p ex:o "question" "default" false UNDEF)
+          }
+        }
+        """,
+        MultipleChoice,
+        max_choices=2,
+    )
+
+    presentation = next(iter(presentations.values()))
+    assert isinstance(presentation, MultipleChoice)
+    assert tuple((option.choice, option.priority) for option in presentation.choices) == (
+        (Literal("correct"), 0),
+        (Literal("high"), 3),
+        (Literal("default"), 0),
+    )
+    assert presentation.max_choices == 2
+
+
+def test_multiple_choice_accepts_duplicate_missing_and_zero_priority(tmp_path: Path) -> None:
+    presentations = run_query(
+        tmp_path,
+        """
+        SELECT ?subject ?predicate ?object ?front ?choice ?is_correct ?priority WHERE {
+          VALUES (?subject ?predicate ?object ?front ?choice ?is_correct ?priority) {
+            (ex:s ex:p ex:o "question" "correct" true UNDEF)
+            (ex:s ex:p ex:o "question" "incorrect" false UNDEF)
+            (ex:s ex:p ex:o "question" "incorrect" false 0)
+          }
+        }
+        """,
+        MultipleChoice,
+    )
+
+    presentation = next(iter(presentations.values()))
+    assert isinstance(presentation, MultipleChoice)
+    assert len(presentation.choices) == 2
+
+
+@pytest.mark.parametrize(
+    ("priority", "message"),
+    [
+        ('"1"', "xsd:integer literal"),
+        ("1.5", "xsd:integer literal"),
+        ("true", "xsd:integer literal"),
+        ("-1", "zero or greater"),
+        ('"not-an-integer"^^xsd:integer', "invalid xsd:integer"),
+    ],
+)
+def test_multiple_choice_rejects_invalid_priority(
+    tmp_path: Path,
+    priority: str,
+    message: str,
+) -> None:
+    with pytest.raises(PresentationError, match=message):
+        run_query(
+            tmp_path,
+            f"""
+            SELECT ?subject ?predicate ?object ?front ?choice ?is_correct ?priority WHERE {{
+              VALUES (?subject ?predicate ?object ?front ?choice ?is_correct ?priority) {{
+                (ex:s ex:p ex:o "question" "correct" true 0)
+                (ex:s ex:p ex:o "question" "incorrect" false {priority})
+              }}
+            }}
+            """,
+            MultipleChoice,
+        )
+
+
+def test_multiple_choice_rejects_conflicting_duplicate_priorities(tmp_path: Path) -> None:
+    with pytest.raises(PresentationError, match="conflicting priorities"):
+        run_query(
+            tmp_path,
+            """
+            SELECT ?subject ?predicate ?object ?front ?choice ?is_correct ?priority WHERE {
+              VALUES (?subject ?predicate ?object ?front ?choice ?is_correct ?priority) {
+                (ex:s ex:p ex:o "question" "correct" true 0)
+                (ex:s ex:p ex:o "question" "incorrect" false 1)
+                (ex:s ex:p ex:o "question" "incorrect" false 2)
+              }
+            }
+            """,
+            MultipleChoice,
+        )
+
+
+def test_multiple_choice_validates_lower_tiers_that_will_not_be_displayed(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(PresentationError, match="xsd:integer literal"):
+        run_query(
+            tmp_path,
+            """
+            SELECT ?subject ?predicate ?object ?front ?choice ?is_correct ?priority WHERE {
+              VALUES (?subject ?predicate ?object ?front ?choice ?is_correct ?priority) {
+                (ex:s ex:p ex:o "question" "correct" true 0)
+                (ex:s ex:p ex:o "question" "high" false 2)
+                (ex:s ex:p ex:o "question" "unused low" false "invalid")
+              }
+            }
+            """,
+            MultipleChoice,
+            max_choices=2,
+        )
 
 
 def test_entity_basic_contract(tmp_path: Path) -> None:

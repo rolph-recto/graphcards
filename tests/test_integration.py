@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -10,11 +11,12 @@ from fsrs import Rating
 from rdflib import URIRef
 
 from rdfcards.app import StudyService
-from rdfcards.config import AppConfig, DeckDefinition
-from rdfcards.decks import Basic
+from rdfcards.config import AppConfig, DeckDefinition, load_config
+from rdfcards.decks import Basic, MultipleChoice
 from rdfcards.errors import PresentationError, StorageError
 from rdfcards.models import CardKey, TargetKind
 from rdfcards.presentation import execute_presentations, load_graph
+from rdfcards.scaffold import initialize_workspace
 from rdfcards.storage import Repository, datetime_to_text
 
 
@@ -31,6 +33,35 @@ def set_card_due(repository: Repository, card_id: str, due: datetime) -> None:
         "UPDATE cards SET card_json = ?, due_at = ? WHERE card_id = ?",
         (card.to_json(), datetime_to_text(due), card_id),
     )
+
+
+def test_priority_capitals_template_exhausts_tiers_and_keeps_correct_answer(
+    tmp_path: Path,
+) -> None:
+    initialize_workspace(tmp_path, template="priority-capitals")
+    config = load_config(tmp_path / "rdfcards.toml")
+    deck = config.deck("priority-capitals")
+    presentations = execute_presentations(load_graph(config.sources), deck)
+    by_front = {str(presentation.front): presentation for presentation in presentations.values()}
+
+    france = by_front["Capital of France?"]
+    assert isinstance(france, MultipleChoice)
+    assert {str(option.choice): option.priority for option in france.choices} == {
+        "Paris": 0,
+        "Berlin": 3,
+        "Rome": 2,
+        "Madrid": 1,
+        "Lisbon": 1,
+    }
+    france_selected = {str(choice) for choice in france.selected_choices(random.Random(0))}
+    assert {"Paris", "Berlin", "Rome"} <= france_selected
+    assert len(france_selected & {"Madrid", "Lisbon"}) == 1
+
+    germany = by_front["Capital of Germany?"]
+    assert isinstance(germany, MultipleChoice)
+    selected = {str(choice) for choice in germany.selected_choices(random.Random(0))}
+    assert {"Berlin", "Paris", "Rome"} <= selected
+    assert len(selected & {"Madrid", "Lisbon"}) == 1
 
 
 def test_sync_is_idempotent_and_entities_are_shared_across_decks(config: AppConfig) -> None:

@@ -79,6 +79,7 @@ def execute_presentations(
         target=deck.target,
         deck_name=deck.name,
         expected=expected,
+        max_choices=deck.effective_max_choices,
     )
     if card_key is not None:
         unexpected = [item.card_key for item in presentations.values() if item.card_key != card_key]

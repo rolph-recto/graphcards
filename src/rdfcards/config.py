@@ -20,7 +20,7 @@ from pydantic import (
     model_validator,
 )
 
-from rdfcards.decks import DeckKind
+from rdfcards.decks import DEFAULT_MAX_CHOICES, DeckKind, MultipleChoice
 from rdfcards.errors import ConfigError
 from rdfcards.models import TargetKind
 
@@ -90,6 +90,7 @@ class DeckDefinition(FrozenModel):
     target: TargetKind
     kind: type[DeckKind]
     query_path: Path = Field(validation_alias="query")
+    max_choices: Annotated[int, Field(strict=True, ge=2)] | None = None
 
     @field_validator("kind", mode="before")
     @classmethod
@@ -101,6 +102,20 @@ class DeckDefinition(FrozenModel):
     @classmethod
     def resolve_query_path(cls, value: object, info: ValidationInfo) -> Path:
         return _resolve_path(value, info)
+
+    @model_validator(mode="after")
+    def validate_max_choices(self) -> DeckDefinition:
+        if self.max_choices is not None and not issubclass(self.kind, MultipleChoice):
+            raise ValueError("max_choices is only valid for multiple_choice decks")
+        return self
+
+    @property
+    def effective_max_choices(self) -> int | None:
+        """Return the presentation limit understood by the configured deck kind."""
+
+        if issubclass(self.kind, MultipleChoice):
+            return self.max_choices if self.max_choices is not None else DEFAULT_MAX_CHOICES
+        return None
 
 
 class AppConfig(FrozenModel):

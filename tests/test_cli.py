@@ -11,7 +11,7 @@ from rdflib import Literal, URIRef
 
 from rdfcards.cli import _rate_presentation, _run_study, build_parser, main
 from rdfcards.config import AppConfig, DeckDefinition, load_config
-from rdfcards.decks import Basic, DeckKind, MultipleChoice
+from rdfcards.decks import Basic, ChoiceOption, DeckKind, MultipleChoice
 from rdfcards.models import CardKey
 from rdfcards.storage import Repository
 
@@ -44,7 +44,10 @@ def presentation(kind: type[DeckKind]) -> DeckKind:
             card_key=key,
             front=Literal("question"),
             back=Literal("correct"),
-            choices=(Literal("correct"), Literal("incorrect")),
+            choices=(
+                ChoiceOption(choice=Literal("correct")),
+                ChoiceOption(choice=Literal("incorrect")),
+            ),
         )
     return Basic(card_key=key, front=Literal("front"), back=Literal("back"))
 
@@ -88,6 +91,40 @@ def test_shared_interaction_hides_back_until_reveal(kind: type[DeckKind]) -> Non
     if kind is MultipleChoice:
         assert "1. correct" in snapshots[0]
         assert "2. incorrect" in snapshots[0]
+
+
+def test_terminal_multiple_choice_uses_priority_limit_and_keeps_correct_answer() -> None:
+    key = CardKey.triple(
+        URIRef("https://example.org/subject"),
+        URIRef("https://example.org/predicate"),
+        URIRef("https://example.org/object"),
+    )
+    limited = MultipleChoice(
+        card_key=key,
+        front=Literal("question"),
+        back=Literal("correct"),
+        choices=(
+            ChoiceOption(choice=Literal("correct")),
+            ChoiceOption(choice=Literal("high-a"), priority=2),
+            ChoiceOption(choice=Literal("high-b"), priority=2),
+            ChoiceOption(choice=Literal("low"), priority=1),
+        ),
+        max_choices=3,
+    )
+    output = io.StringIO()
+
+    rating = _rate_presentation(
+        limited,
+        inputs("", "3"),
+        output,
+        NoShuffleRandom(),
+    )
+
+    assert rating is Rating.Good
+    assert "1. correct" in output.getvalue()
+    assert "2. high-a" in output.getvalue()
+    assert "3. high-b" in output.getvalue()
+    assert "low" not in output.getvalue()
 
 
 @pytest.mark.parametrize("kind", [Basic, MultipleChoice])
@@ -149,6 +186,31 @@ def test_init_creates_named_template(tmp_path: Path) -> None:
     assert (destination / "queries" / "capitals-choice.rq").is_file()
 
 
+def test_init_creates_priority_capitals_example(tmp_path: Path) -> None:
+    destination = tmp_path / "priority-demo"
+    code, output, error = run_cli(
+        "init",
+        str(destination),
+        "--template",
+        "priority-capitals",
+    )
+
+    assert code == 0
+    assert "template 'priority-capitals'" in output
+    assert error == ""
+    config_path = destination / "rdfcards.toml"
+    config = load_config(config_path)
+    deck = config.deck("priority-capitals")
+    assert deck.max_choices == 4
+    assert (destination / "README.md").is_file()
+    assert (destination / "queries" / "priority-capitals.rq").is_file()
+
+    code, output, error = run_cli("--config", str(config_path), "validate")
+    assert code == 0
+    assert output == "priority-capitals: valid (2 cards)\n"
+    assert error == ""
+
+
 def test_init_rejects_unknown_template(tmp_path: Path) -> None:
     code, _, error = run_cli("init", str(tmp_path / "demo"), "--template", "missing")
     assert code == 2
@@ -160,7 +222,7 @@ def test_templates_lists_names_without_loading_config() -> None:
     code, output, error = run_cli("--config", "missing.toml", "templates")
 
     assert code == 0
-    assert output == "capitals\n"
+    assert output == "capitals\npriority-capitals\n"
     assert error == ""
 
 

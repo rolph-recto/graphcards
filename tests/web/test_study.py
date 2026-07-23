@@ -10,7 +10,7 @@ from rdflib import Literal
 
 from rdfcards.app import StudyService
 from rdfcards.config import AppConfig
-from rdfcards.decks import Basic
+from rdfcards.decks import Basic, ChoiceOption, MultipleChoice
 from rdfcards.errors import PresentationError
 from rdfcards.presentation import load_graph
 from rdfcards.storage import Repository, utc_now
@@ -413,3 +413,49 @@ def test_session_uses_custom_deck_kind_front_text(config: AppConfig) -> None:
 
         assert session.current is not None
         assert session.current.front == "Web custom: custom front"
+
+
+def test_browser_multiple_choice_uses_priority_limit_and_keeps_correct_answer(
+    config: AppConfig,
+) -> None:
+    class NoShuffleRandom(random.Random):
+        def shuffle(self, values: list[object]) -> None:
+            del values
+
+    deck = config.deck("capitals-choice")
+    graph = load_graph(config.sources)
+    with Repository(config.state_path) as repository:
+        app = StudyService(graph, repository, config.fsrs.create_scheduler())
+        now = utc_now()
+        app.sync(deck, now)
+        cards = repository.due_cards(deck.name, now, 1)
+
+        def render_limited(_deck, card):
+            return MultipleChoice(
+                card_key=card.card_key,
+                front=Literal("question"),
+                back=Literal("correct"),
+                choices=(
+                    ChoiceOption(choice=Literal("correct")),
+                    ChoiceOption(choice=Literal("high-a"), priority=2),
+                    ChoiceOption(choice=Literal("high-b"), priority=2),
+                    ChoiceOption(choice=Literal("low"), priority=1),
+                ),
+                max_choices=3,
+            )
+
+        app.render = render_limited  # type: ignore[method-assign]
+        session = StudySession(
+            deck,
+            app,
+            cards,
+            StudyMode.DUE,
+            1,
+            0,
+            NoShuffleRandom(),
+        )
+
+        assert session.current is not None
+        assert session.current.front == "question\n  1. correct\n  2. high-a\n  3. high-b"
+        assert session.current.back == "correct"
+        assert "low" not in session.current.front
