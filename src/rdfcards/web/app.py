@@ -19,6 +19,7 @@ from rdfcards.web.controller import StudyController
 from rdfcards.web.status import (
     CARD_PAGE_SIZE,
     DIRECTION_OPTIONS,
+    HISTORY_RANGE_OPTIONS,
     SCHEDULE_OPTIONS,
     SORT_OPTIONS,
     STATE_OPTIONS,
@@ -316,8 +317,14 @@ def create_flask_app(controller: StudyController) -> Flask:
             )
         start = (query.page - 1) * CARD_PAGE_SIZE
         page_cards = tuple(ordered[start : start + CARD_PAGE_SIZE])
-        fronts = current.card_fronts(deck, page_cards) if page_cards else {}
-        rows = tuple(status_row(row, fronts.get(row.status.card_id), now) for row in page_cards)
+        rows = tuple(
+            status_row(
+                row,
+                now,
+                current.config.display_timezone,
+            )
+            for row in page_cards
+        )
         empty_message = None
         if not rows:
             empty_message = (
@@ -346,6 +353,8 @@ def create_flask_app(controller: StudyController) -> Flask:
             state_options=STATE_OPTIONS,
             sort_options=SORT_OPTIONS,
             direction_options=DIRECTION_OPTIONS,
+            history=current.card_history(deck, query.range, now),
+            history_range_options=HISTORY_RANGE_OPTIONS,
         )
 
     return app

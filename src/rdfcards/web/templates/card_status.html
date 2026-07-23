@@ -7,13 +7,135 @@
   <header class="status-header">
     <div>
       <h1>{{ deck.name }}</h1>
-      <p class="muted">Card schedules and FSRS memory metrics.</p>
+      <p class="muted">Review activity and FSRS memory metrics.</p>
     </div>
     <p class="muted">{{ active_count }} active card(s)</p>
   </header>
 
+  <section class="history" id="history" aria-labelledby="history-title">
+    <header class="history-header">
+      <div>
+        <h2 id="history-title">Review history</h2>
+        <p class="muted">
+          Immutable review activity · {{ history.range_label }} · {{ history.timezone }}
+        </p>
+      </div>
+      <form class="history-range" method="get"
+            action="{{ url_for('card_status', deck_name=deck.name) }}#history">
+        <input type="hidden" name="schedule" value="{{ query.schedule.value }}">
+        <input type="hidden" name="state" value="{{ query.state.value }}">
+        <input type="hidden" name="sort" value="{{ query.sort.value }}">
+        <input type="hidden" name="direction" value="{{ query.direction.value }}">
+        <label>
+          Date range
+          <select name="range">
+            {% for value, label in history_range_options %}
+              <option value="{{ value.value }}"
+                      {% if value == history.selected_range %} selected{% endif %}>
+                {{ label }}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit">Apply</button>
+      </form>
+    </header>
+
+    <div class="history-stats">
+      <article>
+        <strong>{{ history.total_reviews }}</strong>
+        <span>reviews in range</span>
+      </article>
+      <article>
+        <strong>{{ history.active_days }}</strong>
+        <span>active day(s)</span>
+      </article>
+      <article>
+        <strong>{{ history.current_streak }}</strong>
+        <span>current streak</span>
+      </article>
+      <article>
+        <strong>{{ history.longest_streak }}</strong>
+        <span>longest streak</span>
+      </article>
+      <article>
+        <strong>{{ history.again_rate }}</strong>
+        <span>Again rate</span>
+      </article>
+      <article>
+        <strong>{{ history.average_growth }}</strong>
+        <span>average interval growth</span>
+        <small>{{ history.interval_coverage }}</small>
+      </article>
+      <article>
+        <strong>{{ history.average_interval }}</strong>
+        <span>average next interval</span>
+      </article>
+      <article>
+        <strong>{{ history.average_retrievability }}</strong>
+        <span>FSRS retrievability at review</span>
+        <small>{{ history.retrievability_coverage }}</small>
+      </article>
+    </div>
+
+    <div class="history-grid">
+      <figure class="history-panel">
+        <figcaption>Review volume over time</figcaption>
+        <div class="history-bars">
+          {% for bucket in history.buckets %}
+            <div class="history-bar">
+              <span>{{ bucket.label }}</span>
+              <progress max="{{ history.volume_maximum }}" value="{{ bucket.count }}">
+                {{ bucket.count }}
+              </progress>
+              <strong>{{ bucket.count }}</strong>
+            </div>
+          {% endfor %}
+        </div>
+      </figure>
+
+      <figure class="history-panel rating-panel">
+        <figcaption>Rating distribution</figcaption>
+        <svg class="rating-distribution" viewBox="0 0 100 12"
+             preserveAspectRatio="none" role="img"
+             aria-label="Rating distribution across {{ history.total_reviews }} review(s)">
+          <rect class="rating-track" x="0" y="0" width="100" height="12"></rect>
+          {% for rating in history.ratings %}
+            {% if rating.percentage %}
+              <rect class="rating-segment {{ rating.class_name }}"
+                    x="{{ "%.6f"|format(rating.offset) }}" y="0"
+                    width="{{ "%.6f"|format(rating.percentage) }}" height="12">
+                <title>
+                  {{ rating.label }}: {{ rating.count }} review(s),
+                  {{ "%.1f"|format(rating.percentage) }}%
+                </title>
+              </rect>
+            {% endif %}
+          {% endfor %}
+        </svg>
+        <ul class="rating-legend">
+          {% for rating in history.ratings %}
+            <li>
+              <span class="rating-key {{ rating.class_name }}" aria-hidden="true"></span>
+              <span>{{ rating.label }}</span>
+              <strong>{{ rating.count }}</strong>
+              <small>{{ "%.1f"|format(rating.percentage) }}%</small>
+            </li>
+          {% endfor %}
+        </ul>
+      </figure>
+    </div>
+  </section>
+
+  <section class="card-status" id="card-status" aria-labelledby="card-status-title">
+    <header class="section-header">
+      <h2 id="card-status-title">Card status</h2>
+      <p class="muted">Current schedules and per-card FSRS details.</p>
+    </header>
+
   <form class="status-filters" method="get"
         action="{{ url_for('card_status', deck_name=deck.name) }}">
+    <input type="hidden" name="range" value="{{ query.range.value }}">
     <label>
       Schedule
       <select name="schedule">
@@ -71,20 +193,9 @@
         </thead>
         <tbody>
           {% for row in rows %}
-            <tr>
+            <tr class="status-card">
               <td>
-                <div class="card-front">
-                  {% if row.front is not none %}
-                    {{ row.front }}
-                  {% else %}
-                    <span class="muted">Unable to render</span>
-                  {% endif %}
-                </div>
-                <div class="card-meta">
-                  <span>{{ row.status.card_key.target_kind.value }} card</span>
-                  <code>{{ row.identity }}</code>
-                  <code>{{ row.status.card_id }}</code>
-                </div>
+                <code class="card-identity">{{ row.identity }}</code>
               </td>
               <td>
                 <div class="badges">
@@ -98,8 +209,8 @@
                   <span>Last rating: {{ row.last_rating }}</span>
                   {% if row.last_review %}
                     <span class="date-value">
-                      <time datetime="{{ row.last_review.exact }}">{{ row.last_review.relative }}</time>
-                      <small>{{ row.last_review.exact }}</small>
+                      <time datetime="{{ row.last_review.exact }}">{{ row.last_review.display }}</time>
+                      <small>{{ row.last_review.relative }}</small>
                     </span>
                   {% else %}
                     —
@@ -108,8 +219,8 @@
               </td>
               <td>
                 <span class="date-value">
-                  <time datetime="{{ row.next_review.exact }}">{{ row.next_review.relative }}</time>
-                  <small>{{ row.next_review.exact }}</small>
+                  <time datetime="{{ row.next_review.exact }}">{{ row.next_review.display }}</time>
+                  <small>{{ row.next_review.relative }}</small>
                 </span>
               </td>
               <td>
@@ -138,4 +249,5 @@
   {% else %}
     <p class="empty-status">{{ empty_message }}</p>
   {% endif %}
+  </section>
 {% endblock %}

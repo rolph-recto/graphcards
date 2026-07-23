@@ -1,4 +1,5 @@
 state_path = ".rdfcards/state.sqlite3"
+display_timezone = "UTC"
 sources = ["data/knowledge.ttl"]
 
 [fsrs]

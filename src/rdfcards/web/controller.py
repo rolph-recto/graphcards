@@ -11,9 +11,9 @@ from rdflib import Graph
 
 from rdfcards.app import StudyService
 from rdfcards.config import AppConfig, DeckDefinition
-from rdfcards.errors import ConfigError, PresentationError
+from rdfcards.errors import ConfigError
 from rdfcards.storage import DeckStatus, Repository, utc_now
-from rdfcards.web.status import StatusCard
+from rdfcards.web.status import HistoryRange, HistoryView, StatusCard, history_view
 from rdfcards.web.study import RequestFailure, StudyMode, StudySession
 
 
@@ -59,27 +59,21 @@ class StudyController:
             rows.append(StatusCard(status=status, retrievability=retrievability))
         return tuple(rows)
 
-    def card_fronts(
+    def card_history(
         self,
         deck: DeckDefinition,
-        cards: tuple[StatusCard, ...],
-    ) -> dict[str, str | None]:
-        """Format current fronts in one deck query, isolating per-card failures."""
+        selected_range: HistoryRange,
+        now: datetime,
+    ) -> HistoryView:
+        """Aggregate immutable review events for one deck."""
 
-        presentations = self.study_service.render_all(deck)
-        fronts: dict[str, str | None] = {}
-        for row in cards:
-            presentation = presentations.get(row.status.card_id)
-            if presentation is None:
-                fronts[row.status.card_id] = None
-                continue
-            try:
-                fronts[row.status.card_id] = presentation.front_text(
-                    random.Random(row.status.card_id)
-                )
-            except PresentationError:
-                fronts[row.status.card_id] = None
-        return fronts
+        records = self.repository.review_history(deck.name, now)
+        return history_view(
+            records,
+            selected_range,
+            now,
+            self.config.display_timezone,
+        )
 
     def start_session(
         self,

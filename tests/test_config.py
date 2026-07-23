@@ -67,6 +67,19 @@ def test_empty_config_is_valid(tmp_path: Path) -> None:
     assert config.decks == ()
 
 
+def test_display_timezone_is_validated(tmp_path: Path) -> None:
+    path = tmp_path / "rdfcards.toml"
+    path.write_text('display_timezone = "America/New_York"\n', encoding="utf-8")
+
+    config = load_config(path)
+
+    assert config.display_timezone.key == "America/New_York"
+
+    path.write_text('display_timezone = "not/a-zone"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="display_timezone"):
+        load_config(path)
+
+
 def test_deck_kind_resolves_configuration_names() -> None:
     assert DeckKind.from_name("basic") is Basic
     assert DeckKind.from_name("multiple_choice") is MultipleChoice

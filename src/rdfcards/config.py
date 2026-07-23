@@ -6,6 +6,7 @@ import tomllib
 from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any
+from zoneinfo import ZoneInfo
 
 from fsrs import Scheduler
 from pydantic import (
@@ -120,6 +121,7 @@ class DeckDefinition(FrozenModel):
 
 class AppConfig(FrozenModel):
     state_path: Path = Path(".rdfcards/state.sqlite3")
+    display_timezone: ZoneInfo = Field(default_factory=lambda: ZoneInfo("UTC"))
     sources: tuple[Path, ...] = ()
     decks: tuple[DeckDefinition, ...] = ()
     fsrs: FsrsSettings = Field(default_factory=FsrsSettings)

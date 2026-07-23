@@ -33,6 +33,7 @@ Empty `sources` and `decks` arrays are valid.
 
 ```toml
 state_path = ".rdfcards/state.sqlite3"
+display_timezone = "America/New_York"
 sources = ["data/knowledge.ttl"]
 
 [fsrs]
@@ -58,7 +59,9 @@ max_choices = 4
 
 All configured RDF sources are loaded into one RDFLib graph. RDFLib determines the format from
 the filename. The state database is separate from the RDF files and may safely be excluded from
-version control. Pydantic validates configuration and the immutable card and presentation models.
+version control. `display_timezone` accepts an IANA timezone name and defaults to `UTC`; it controls
+browser date labels, history buckets, and streak-day boundaries without changing UTC storage.
+Pydantic validates configuration and the immutable card and presentation models.
 
 ## Presentation query contract
 
@@ -233,13 +236,17 @@ CREATE TABLE reviews (
     review_json TEXT NOT NULL
 );
 CREATE INDEX reviews_card_idx ON reviews(card_id, reviewed_at);
+CREATE INDEX reviews_deck_time_idx ON reviews(deck_name, reviewed_at, id);
 
 PRAGMA user_version = 3;
 ```
 
 `identity_json` is a JSON array of canonical RDF N3 terms. It contains one IRI for entity cards
-or the subject, predicate, and object for triple cards. `card_json` and `review_json` are the
-serialized py-fsrs objects. All timestamp columns contain UTC ISO 8601 text.
+or the subject, predicate, and object for triple cards. `card_json` is the serialized py-fsrs
+card. `review_json` contains the py-fsrs review log plus optional immutable interval and
+pre-review retrievability values used by browser analytics. Records created before those values
+were available still contribute to volume, ratings, and streaks. All timestamp columns contain
+UTC ISO 8601 text.
 
 ## Commands
 
@@ -265,14 +272,20 @@ configured deck, binds its single-threaded local server to an automatically sele
 `127.0.0.1`, prints and opens the local URL, and keeps serving until Ctrl-C. The deck list shows
 current card counts and supports regular due-card study, reviewing recently forgotten cards,
 schedule-free deck practice, and reviewing future cards ahead of time. Each deck also links to a
-read-only card-status page with the formatted front, RDF identity, review history, next review,
-FSRS state, stability, difficulty, and current retrievability. Status pages can be filtered by
-schedule or FSRS state, sorted by scheduling metrics, and show 100 cards per page. Browser sessions
-use stable card snapshots, preserve the current card across refreshes, and save a scheduled review
-only after a valid rating is submitted.
+read-only page that shows review history first, followed by current card status using N3 RDF
+identities, next review, FSRS state, stability, difficulty, and current retrievability. Status can
+be filtered by schedule or FSRS state, sorted by scheduling metrics, and show 100 cards per page.
+The same page
+includes immutable review analytics for selectable 30-day, 90-day, one-year, and all-time ranges:
+review volume, rating distribution and Again rate, active-day streaks, interval growth, and
+pre-review FSRS retrievability where recorded. History follows the deck used for each review and
+continues to include cards that are no longer active in that deck. Browser sessions use stable
+card snapshots, preserve the current card across refreshes, and save a scheduled review only after
+a valid rating is submitted.
 
-All scheduling timestamps are UTC. Changing FSRS configuration affects future reviews; existing
-cards are not automatically rescheduled.
+All scheduling timestamps are stored in UTC. The browser formats them in `display_timezone`.
+Changing FSRS configuration affects future reviews; existing cards are not automatically
+rescheduled.
 
 ## Development
 

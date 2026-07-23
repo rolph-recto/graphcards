@@ -540,6 +540,45 @@ def test_card_statuses_include_latest_global_review_and_fsrs_metrics(
         assert status.stored_card() == reviewed
 
 
+def test_review_history_uses_event_deck_and_validates_immutable_metrics(
+    config: AppConfig,
+) -> None:
+    first_review = datetime(2026, 1, 1, tzinfo=UTC)
+    second_review = first_review + timedelta(days=1)
+    deck = config.deck("capitals-basic")
+    shared_deck = DeckDefinition(
+        name="capitals-history-copy",
+        kind=deck.kind,
+        query_path=deck.query_path,
+        target=deck.target,
+    )
+    with Repository(config.state_path) as repository:
+        app = app_for(config, repository)
+        app.sync(deck, first_review)
+        app.sync(shared_deck, first_review)
+        card = repository.due_cards(deck.name, first_review, 1)[0]
+        reviewed = app.review(deck, card, Rating.Good, first_review)
+        app.review(deck, reviewed, Rating.Hard, second_review)
+
+        records = repository.review_history(deck.name, second_review)
+
+        assert len(records) == 2
+        assert records[0].previous_interval_seconds is None
+        assert records[0].scheduled_interval_seconds is not None
+        assert records[0].retrievability is None
+        assert records[1].previous_interval_seconds == records[0].scheduled_interval_seconds
+        assert records[1].scheduled_interval_seconds is not None
+        assert records[1].retrievability is not None
+        assert repository.review_history(shared_deck.name, second_review) == ()
+
+        repository.connection.execute(
+            "UPDATE reviews SET review_json = ? WHERE id = ?",
+            ("not JSON", records[0].review_id),
+        )
+        with pytest.raises(StorageError, match="review log is invalid"):
+            repository.review_history(deck.name, second_review)
+
+
 def test_fresh_database_uses_schema_v3_identity_fields(tmp_path: Path) -> None:
     with Repository(tmp_path / "state.sqlite3") as repository:
         version = repository.connection.execute("PRAGMA user_version").fetchone()[0]

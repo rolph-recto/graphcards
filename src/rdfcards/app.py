@@ -56,14 +56,32 @@ class StudyService:
                 f"{card.card_key.target_kind} card"
             )
         review_time = datetime_as_utc(now or utc_now())
+        source_card = card.card()
+        previous_interval_seconds = (
+            (
+                datetime_as_utc(source_card.due) - datetime_as_utc(source_card.last_review)
+            ).total_seconds()
+            if source_card.last_review is not None
+            else None
+        )
+        retrievability = (
+            self.scheduler.get_card_retrievability(
+                source_card,
+                current_datetime=review_time,
+            )
+            if source_card.stability is not None and source_card.last_review is not None
+            else None
+        )
         updated_card, review_log = self.scheduler.review_card(
-            card.card(), rating, review_datetime=review_time
+            source_card, rating, review_datetime=review_time
         )
         card_json = self.repository.save_review(
             card.card_id,
             deck.name,
             updated_card,
             review_log,
+            previous_interval_seconds=previous_interval_seconds,
+            retrievability=retrievability,
         )
         return StoredCard(
             card_id=card.card_id,

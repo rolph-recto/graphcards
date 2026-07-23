@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fsrs import Card, Rating, ReviewLog
+from pydantic import ConfigDict, Field, ValidationError, field_validator
 
 from rdfcards.decks import DeckKind
 from rdfcards.errors import StorageError
@@ -91,6 +92,61 @@ class CardStatus(RdfModel):
         )
 
 
+class ReviewPayload(RdfModel):
+    """Validated immutable data stored in one review JSON document."""
+
+    model_config = RdfModel.model_config | ConfigDict(
+        populate_by_name=True,
+        serialize_by_alias=True,
+    )
+
+    fsrs_card_id: int = Field(alias="card_id")
+    rating: Rating
+    reviewed_at: datetime = Field(alias="review_datetime")
+    review_duration: int | None = Field(default=None, ge=0)
+    previous_interval_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+    )
+    scheduled_interval_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+    )
+    retrievability: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        allow_inf_nan=False,
+    )
+
+    @field_validator("reviewed_at")
+    @classmethod
+    def normalize_reviewed_at(cls, value: datetime) -> datetime:
+        return datetime_as_utc(value)
+
+    def as_json(self) -> str:
+        return json.dumps(
+            self.model_dump(mode="json", by_alias=True),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+
+class ReviewRecord(RdfModel):
+    """One immutable review event decoded and checked against its SQL mirrors."""
+
+    review_id: int = Field(gt=0)
+    card_id: str = Field(min_length=1)
+    deck_name: str = Field(min_length=1)
+    rating: Rating
+    reviewed_at: datetime
+    previous_interval_seconds: float | None
+    scheduled_interval_seconds: float | None
+    retrievability: float | None
+
+
 class Repository:
     """Own the schema and transactional persistence operations."""
 
@@ -155,6 +211,13 @@ class Repository:
                 );
                 CREATE INDEX reviews_card_idx ON reviews(card_id, reviewed_at);
                 PRAGMA user_version = 3;
+                """
+            )
+        with self.connection:
+            self.connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS reviews_deck_time_idx
+                ON reviews(deck_name, reviewed_at, id)
                 """
             )
 
@@ -390,11 +453,28 @@ class Repository:
         deck_name: str,
         card: Card,
         review_log: ReviewLog,
+        *,
+        previous_interval_seconds: float | None,
+        retrievability: float | None,
     ) -> str:
         """Persist updated FSRS state and its review log in one transaction."""
 
         reviewed_at = datetime_to_text(review_log.review_datetime)
         card_json = card.to_json()
+        try:
+            payload = ReviewPayload(
+                fsrs_card_id=review_log.card_id,
+                rating=review_log.rating,
+                reviewed_at=review_log.review_datetime,
+                review_duration=review_log.review_duration,
+                previous_interval_seconds=previous_interval_seconds,
+                scheduled_interval_seconds=(
+                    datetime_as_utc(card.due) - datetime_as_utc(review_log.review_datetime)
+                ).total_seconds(),
+                retrievability=retrievability,
+            )
+        except ValidationError as error:
+            raise StorageError("review analytics metadata is invalid") from error
         with self.connection:
             cursor = self.connection.execute(
                 """
@@ -420,10 +500,54 @@ class Repository:
                     deck_name,
                     review_log.rating.value,
                     reviewed_at,
-                    review_log.to_json(),
+                    payload.as_json(),
                 ),
             )
         return card_json
+
+    @staticmethod
+    def _review_record(row: sqlite3.Row) -> ReviewRecord:
+        review_json = row["review_json"]
+        if not isinstance(review_json, str):
+            raise StorageError("stored review log is not JSON text")
+        try:
+            payload = ReviewPayload.model_validate_json(review_json)
+        except ValidationError as error:
+            raise StorageError("stored review log is invalid") from error
+        reviewed_at = _datetime_from_text(row["reviewed_at"])
+        try:
+            rating = Rating(row["rating"])
+        except (TypeError, ValueError) as error:
+            raise StorageError("stored review has an invalid rating") from error
+        if payload.reviewed_at != reviewed_at or payload.rating is not rating:
+            raise StorageError("stored review log does not match its indexed fields")
+        try:
+            return ReviewRecord(
+                review_id=row["id"],
+                card_id=row["card_id"],
+                deck_name=row["deck_name"],
+                rating=rating,
+                reviewed_at=reviewed_at,
+                previous_interval_seconds=payload.previous_interval_seconds,
+                scheduled_interval_seconds=payload.scheduled_interval_seconds,
+                retrievability=payload.retrievability,
+            )
+        except ValidationError as error:
+            raise StorageError("stored review record is invalid") from error
+
+    def review_history(self, deck_name: str, through: datetime) -> tuple[ReviewRecord, ...]:
+        """Return immutable deck review events through a UTC instant."""
+
+        rows = self.connection.execute(
+            """
+            SELECT id, card_id, deck_name, rating, reviewed_at, review_json
+            FROM reviews
+            WHERE deck_name = ? AND reviewed_at <= ?
+            ORDER BY reviewed_at, id
+            """,
+            (deck_name, datetime_to_text(through)),
+        ).fetchall()
+        return tuple(self._review_record(row) for row in rows)
 
     def status(self, deck_name: str, now: datetime) -> DeckStatus:
         self._validate_active_due_mirrors(deck_name)
