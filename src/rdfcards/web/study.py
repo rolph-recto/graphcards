@@ -108,10 +108,17 @@ class StudySession:
             return
         self.current = None
 
-    def _require_current(self, session_token: str, card_id: str) -> CurrentCard:
+    def _require_current(
+        self,
+        session_token: str,
+        card_id: str,
+        *,
+        refresh: bool = True,
+    ) -> CurrentCard:
         if not secrets.compare_digest(session_token, self.session_token):
             raise RequestFailure(HTTPStatus.FORBIDDEN, "This study form is not valid.")
-        self.refresh_availability()
+        if refresh:
+            self.refresh_availability()
         if self.current is None:
             raise RequestFailure(HTTPStatus.CONFLICT, "This study session is already complete.")
         if card_id != self.current.card.card_id:
@@ -131,7 +138,9 @@ class StudySession:
         current.revealed = True
 
     def rate(self, session_token: str, card_id: str, rating: Rating) -> None:
-        current = self._require_current(session_token, card_id)
+        # Keep a deleted current card in place long enough for the repository's
+        # snapshot-safe review path to produce the actionable stale-card error.
+        current = self._require_current(session_token, card_id, refresh=False)
         if self.is_practice:
             raise RequestFailure(
                 HTTPStatus.CONFLICT,
