@@ -1,3 +1,5 @@
+**IMPORTANT**: before you do anything else, run the `beans prime` command and heed its output.
+
 - Use Pydantic v2 models for configuration and domain validation.
 - Translate Pydantic, RDF parser, and storage corruption failures into the repository's
   user-facing error types where appropriate.
