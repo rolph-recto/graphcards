@@ -11,8 +11,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import TextIO
 
+from fsrs import Rating
+
 from rdfcards.app import StudyService
 from rdfcards.config import AppConfig, DeckDefinition, load_config
+from rdfcards.decks import DeckKind
 from rdfcards.errors import PresentationError, RdfCardsError
 from rdfcards.presentation import execute_presentations, load_graph
 from rdfcards.scaffold import available_templates, initialize_workspace
@@ -138,6 +141,38 @@ def _run_status(config: AppConfig, deck_name: str | None, full: bool, output: Te
                 _print_status_table(repository.card_statuses(deck.name), now, output)
 
 
+def _rate_presentation(
+    presentation: DeckKind,
+    input_fn: Callable[[], str],
+    output: TextIO,
+    rng: random.Random,
+) -> Rating | None:
+    """Run the terminal reveal-and-rate interaction shared by every deck kind."""
+
+    def prompt(message: str) -> str:
+        print(message, end="", flush=True, file=output)
+        return input_fn().strip()
+
+    print(f"\nFront: {presentation.front_text(rng)}", file=output)
+    while True:
+        answer = prompt("Press Enter to reveal, or q to quit: ")
+        if answer.casefold() == "q":
+            return None
+        if not answer:
+            break
+        print("Please press Enter to reveal, or q to quit.", file=output)
+
+    print(f"Back:  {presentation.back}", file=output)
+    ratings = {"1": Rating.Again, "2": Rating.Hard, "3": Rating.Good, "4": Rating.Easy}
+    while True:
+        answer = prompt("Rate 1=Again 2=Hard 3=Good 4=Easy, or q to quit: ")
+        if answer.casefold() == "q":
+            return None
+        if answer in ratings:
+            return ratings[answer]
+        print("Please enter 1, 2, 3, 4, or q.", file=output)
+
+
 def _run_study(
     config: AppConfig,
     deck_name: str,
@@ -166,9 +201,9 @@ def _run_study(
             except PresentationError as presentation_error:
                 print(f"Skipping {card.card_id}: {presentation_error}", file=error)
                 continue
-            rating = presentation.answer(input_fn, output, rng)
+            rating = _rate_presentation(presentation, input_fn, output, rng)
             if rating is None:
-                # No review is persisted until a complete answer produces a rating.
+                # No review is persisted until a complete interaction produces a rating.
                 print(f"Stopped. Reviewed {reviewed} card(s).", file=output)
                 return
             app.review(deck, card, rating, utc_now())

@@ -1,15 +1,14 @@
-"""Polymorphic deck kinds that own presentation grouping and terminal interaction."""
+"""Polymorphic deck kinds that own presentation grouping and front formatting."""
 
 from __future__ import annotations
 
 import random
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Callable
 from inspect import isabstract
-from typing import ClassVar, Self, TextIO
+from typing import ClassVar, Self
 
-from fsrs import Rating
+from pydantic import model_validator
 from rdflib import Literal
 from rdflib.namespace import XSD
 from rdflib.term import Identifier
@@ -19,7 +18,7 @@ from rdfcards.models import CardKey, RdfModel, TargetKind
 
 
 class DeckKind(RdfModel, ABC):
-    """A generated presentation and the behavior associated with its deck kind."""
+    """A generated front/back presentation with kind-specific query behavior."""
 
     config_name: ClassVar[str]
     required_variables: ClassVar[frozenset[str]]
@@ -27,6 +26,7 @@ class DeckKind(RdfModel, ABC):
 
     card_key: CardKey
     front: Identifier
+    back: Identifier
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
@@ -92,14 +92,11 @@ class DeckKind(RdfModel, ABC):
     ) -> dict[str, Self]:
         """Convert validated SPARQL rows into presentations keyed by card ID."""
 
-    @abstractmethod
-    def answer(
-        self,
-        input_fn: Callable[[], str],
-        output: TextIO,
-        rng: random.Random,
-    ) -> Rating | None:
-        """Present one card and return its rating, or None when the user quits."""
+    def front_text(self, rng: random.Random) -> str:
+        """Format the front; kinds may use the RNG for presentation-only variation."""
+
+        del rng
+        return str(self.front)
 
     @staticmethod
     def _row_values(row: object) -> dict[str, Identifier]:
@@ -144,19 +141,12 @@ class DeckKind(RdfModel, ABC):
             by_digest[card_id] = presentation
         return by_digest
 
-    @staticmethod
-    def _prompt(input_fn: Callable[[], str], output: TextIO, message: str) -> str:
-        print(message, end="", flush=True, file=output)
-        return input_fn().strip()
-
 
 class Basic(DeckKind):
     """A front/back presentation that the student rates manually."""
 
     config_name = "basic"
     required_variables = frozenset({"front", "back"})
-
-    back: Identifier
 
     @classmethod
     def group(
@@ -187,44 +177,26 @@ class Basic(DeckKind):
             presentations.append(cls(card_key=card_key, front=front, back=back))
         return cls._by_digest(presentations)
 
-    def answer(
-        self,
-        input_fn: Callable[[], str],
-        output: TextIO,
-        rng: random.Random,
-    ) -> Rating | None:
-        del rng  # Basic cards do not need randomness, but all deck kinds share one answer API.
-        print(f"\nFront: {self.front}", file=output)
-        answer = self._prompt(input_fn, output, "Press Enter to reveal, or q to quit: ")
-        if answer.casefold() == "q":
-            return None
-        print(f"Back:  {self.back}", file=output)
-        ratings = {"1": Rating.Again, "2": Rating.Hard, "3": Rating.Good, "4": Rating.Easy}
-        while True:
-            answer = self._prompt(
-                input_fn,
-                output,
-                "Rate 1=Again 2=Hard 3=Good 4=Easy, or q to quit: ",
-            )
-            if answer.casefold() == "q":
-                return None
-            if answer in ratings:
-                return ratings[answer]
-            print("Please enter 1, 2, 3, 4, or q.", file=output)
-
-
-class Choice(RdfModel):
-    value: Identifier
-    is_correct: bool
-
 
 class MultipleChoice(DeckKind):
-    """A choice presentation graded automatically as Again or Good."""
+    """A self-rated presentation with shuffled choices and a correct back."""
 
     config_name = "multiple_choice"
     required_variables = frozenset({"front", "choice", "is_correct"})
 
-    choices: tuple[Choice, ...]
+    choices: tuple[Identifier, ...]
+
+    @model_validator(mode="after")
+    def validate_choices(self) -> MultipleChoice:
+        """Keep directly constructed presentations as valid as query-built ones."""
+
+        if len(self.choices) < 2:
+            raise ValueError("a multiple-choice presentation needs at least two choices")
+        if len(set(self.choices)) != len(self.choices):
+            raise ValueError("a multiple-choice presentation cannot contain duplicate choices")
+        if self.back not in self.choices:
+            raise ValueError("the multiple-choice back must be one of its choices")
+        return self
 
     @staticmethod
     def _boolean(value: Identifier, deck_name: str, row_number: int) -> bool:
@@ -290,39 +262,15 @@ class MultipleChoice(DeckKind):
                 cls(
                     card_key=card_key,
                     front=next(iter(front_values)),
-                    choices=tuple(
-                        Choice(value=value, is_correct=is_correct)
-                        for value, is_correct in card_choices.items()
-                    ),
+                    back=next(value for value, is_correct in card_choices.items() if is_correct),
+                    choices=tuple(card_choices),
                 )
             )
         return cls._by_digest(presentations)
 
-    def answer(
-        self,
-        input_fn: Callable[[], str],
-        output: TextIO,
-        rng: random.Random,
-    ) -> Rating | None:
+    def front_text(self, rng: random.Random) -> str:
         choices = list(self.choices)
         rng.shuffle(choices)
-        print(f"\nQuestion: {self.front}", file=output)
-        for index, choice in enumerate(choices, start=1):
-            print(f"  {index}. {choice.value}", file=output)
-        while True:
-            answer = self._prompt(input_fn, output, f"Choose 1-{len(choices)}, or q to quit: ")
-            if answer.casefold() == "q":
-                return None
-            try:
-                choice_index = int(answer) - 1
-            except ValueError:
-                choice_index = -1
-            if 0 <= choice_index < len(choices):
-                selected = choices[choice_index]
-                correct = next(choice for choice in choices if choice.is_correct)
-                if selected.is_correct:
-                    print("Correct.", file=output)
-                    return Rating.Good
-                print(f"Incorrect. Correct answer: {correct.value}", file=output)
-                return Rating.Again
-            print(f"Please enter a number from 1 to {len(choices)}, or q.", file=output)
+        lines = [str(self.front)]
+        lines.extend(f"  {index}. {choice}" for index, choice in enumerate(choices, start=1))
+        return "\n".join(lines)

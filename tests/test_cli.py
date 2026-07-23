@@ -5,20 +5,20 @@ import random
 from pathlib import Path
 from typing import ClassVar
 
-from rdfcards.cli import _run_study, main
+import pytest
+from fsrs import Rating
+from rdflib import Literal, URIRef
+
+from rdfcards.cli import _rate_presentation, _run_study, main
 from rdfcards.config import AppConfig, DeckDefinition, load_config
-from rdfcards.decks import Basic, DeckKind
+from rdfcards.decks import Basic, DeckKind, MultipleChoice
+from rdfcards.models import CardKey
 from rdfcards.storage import Repository
 
 
-class CorrectFirstRandom:
+class NoShuffleRandom(random.Random):
     def shuffle(self, choices: list[object]) -> None:
-        choices.sort(key=lambda choice: not choice.is_correct)  # type: ignore[attr-defined]
-
-
-class IncorrectFirstRandom:
-    def shuffle(self, choices: list[object]) -> None:
-        choices.sort(key=lambda choice: choice.is_correct)  # type: ignore[attr-defined]
+        del choices
 
 
 def inputs(*values: str):
@@ -31,6 +31,90 @@ def run_cli(*args: str, input_fn=None, rng=None) -> tuple[int, str, str]:
     error = io.StringIO()
     code = main(args, input_fn=input_fn or inputs(), output=output, error=error, rng=rng)
     return code, output.getvalue(), error.getvalue()
+
+
+def presentation(kind: type[DeckKind]) -> DeckKind:
+    key = CardKey.triple(
+        URIRef("https://example.org/subject"),
+        URIRef("https://example.org/predicate"),
+        URIRef("https://example.org/object"),
+    )
+    if kind is MultipleChoice:
+        return MultipleChoice(
+            card_key=key,
+            front=Literal("question"),
+            back=Literal("correct"),
+            choices=(Literal("correct"), Literal("incorrect")),
+        )
+    return Basic(card_key=key, front=Literal("front"), back=Literal("back"))
+
+
+@pytest.mark.parametrize("kind", [Basic, MultipleChoice])
+@pytest.mark.parametrize(
+    ("answer", "rating"),
+    [
+        ("1", Rating.Again),
+        ("2", Rating.Hard),
+        ("3", Rating.Good),
+        ("4", Rating.Easy),
+    ],
+)
+def test_shared_interaction_maps_every_rating(
+    kind: type[DeckKind], answer: str, rating: Rating
+) -> None:
+    result = _rate_presentation(
+        presentation(kind), inputs("", answer), io.StringIO(), NoShuffleRandom()
+    )
+
+    assert result is rating
+
+
+@pytest.mark.parametrize("kind", [Basic, MultipleChoice])
+def test_shared_interaction_hides_back_until_reveal(kind: type[DeckKind]) -> None:
+    output = io.StringIO()
+    snapshots: list[str] = []
+    answers = iter(("", "3"))
+
+    def staged_input() -> str:
+        snapshots.append(output.getvalue())
+        return next(answers)
+
+    result = _rate_presentation(presentation(kind), staged_input, output, NoShuffleRandom())
+
+    assert result is Rating.Good
+    assert "Front:" in snapshots[0]
+    assert "Back:" not in snapshots[0]
+    assert "Back:" in snapshots[1]
+    if kind is MultipleChoice:
+        assert "1. correct" in snapshots[0]
+        assert "2. incorrect" in snapshots[0]
+
+
+@pytest.mark.parametrize("kind", [Basic, MultipleChoice])
+def test_shared_interaction_retries_invalid_reveal_and_rating(kind: type[DeckKind]) -> None:
+    output = io.StringIO()
+
+    result = _rate_presentation(
+        presentation(kind),
+        inputs("not enter", "", "invalid", "2"),
+        output,
+        NoShuffleRandom(),
+    )
+
+    assert result is Rating.Hard
+    assert "Please press Enter to reveal, or q to quit." in output.getvalue()
+    assert "Please enter 1, 2, 3, 4, or q." in output.getvalue()
+
+
+@pytest.mark.parametrize("kind", [Basic, MultipleChoice])
+@pytest.mark.parametrize("answers", [("q",), ("", "q")])
+def test_shared_interaction_can_quit_without_a_rating(
+    kind: type[DeckKind], answers: tuple[str, ...]
+) -> None:
+    assert (
+        _rate_presentation(presentation(kind), inputs(*answers), io.StringIO(), NoShuffleRandom())
+        is None
+    )
 
 
 def test_init_creates_workspace_and_refuses_overwrite(tmp_path: Path) -> None:
@@ -167,8 +251,8 @@ def test_full_status_reflects_a_persisted_review(workspace: Path) -> None:
         "capitals-choice",
         "--limit",
         "1",
-        input_fn=inputs("1"),
-        rng=CorrectFirstRandom(),
+        input_fn=inputs("", "3"),
+        rng=NoShuffleRandom(),
     )
     assert code == 0
 
@@ -184,23 +268,27 @@ def test_full_status_reflects_a_persisted_review(workspace: Path) -> None:
     assert "  1        " in output
 
 
-def test_study_delegates_answering_to_custom_deck_kind(config: AppConfig) -> None:
+def test_study_uses_custom_deck_kind_front_text(config: AppConfig) -> None:
     class CustomKind(DeckKind):
         config_name = "custom_cli"
         required_variables = Basic.required_variables
-        answered: ClassVar[bool] = False
+        rendered: ClassVar[bool] = False
 
         @classmethod
         def group(cls, *args, **kwargs):
             presentations = Basic.group(*args, **kwargs)
             return {
-                card_id: cls(card_key=presentation.card_key, front=presentation.front)
+                card_id: cls(
+                    card_key=presentation.card_key,
+                    front=presentation.front,
+                    back=presentation.back,
+                )
                 for card_id, presentation in presentations.items()
             }
 
-        def answer(self, *_args):
-            type(self).answered = True
-            return None
+        def front_text(self, rng: random.Random) -> str:
+            type(self).rendered = True
+            return super().front_text(rng)
 
     source_deck = config.deck("capitals-basic")
     deck = DeckDefinition(
@@ -216,13 +304,13 @@ def test_study_delegates_answering_to_custom_deck_kind(config: AppConfig) -> Non
         custom_config,
         deck.name,
         1,
-        input_fn=inputs(),
+        input_fn=inputs("q"),
         output=output,
         error=io.StringIO(),
         rng=random.Random(0),
     )
 
-    assert CustomKind.answered
+    assert CustomKind.rendered
     assert "Stopped. Reviewed 0 card(s)." in output.getvalue()
 
 
@@ -246,7 +334,7 @@ def test_basic_study_records_rating(workspace: Path, count_reviews) -> None:
         assert count_reviews(repository) == 1
 
 
-def test_multiple_choice_correct_answer_maps_to_good(workspace: Path) -> None:
+def test_multiple_choice_study_records_manual_rating(workspace: Path) -> None:
     config_path = str(workspace / "rdfcards.toml")
     code, output, error = run_cli(
         "--config",
@@ -255,47 +343,34 @@ def test_multiple_choice_correct_answer_maps_to_good(workspace: Path) -> None:
         "capitals-choice",
         "--limit",
         "1",
-        input_fn=inputs("1"),
-        rng=CorrectFirstRandom(),
+        input_fn=inputs("", "4"),
+        rng=NoShuffleRandom(),
     )
     assert code == 0
-    assert "Correct." in output
+    assert "Front:" in output
+    assert "  1." in output
+    assert "Back:" in output
+    assert "Reviewed 1 card(s)." in output
+    assert "Correct." not in output
+    assert "Incorrect." not in output
     assert not error
     config = load_config(config_path)
     with Repository(config.state_path) as repository:
         rating = repository.connection.execute("SELECT rating FROM reviews").fetchone()[0]
-        assert rating == 3
+        assert rating == 4
 
 
-def test_multiple_choice_incorrect_answer_maps_to_again(workspace: Path) -> None:
-    config_path = str(workspace / "rdfcards.toml")
-    code, output, error = run_cli(
-        "--config",
-        config_path,
-        "study",
-        "capitals-choice",
-        "--limit",
-        "1",
-        input_fn=inputs("1"),
-        rng=IncorrectFirstRandom(),
-    )
-    assert code == 0
-    assert "Incorrect. Correct answer:" in output
-    assert not error
-    config = load_config(config_path)
-    with Repository(config.state_path) as repository:
-        rating = repository.connection.execute("SELECT rating FROM reviews").fetchone()[0]
-        assert rating == 1
-
-
-def test_quit_does_not_review_current_card(workspace: Path, count_reviews) -> None:
+@pytest.mark.parametrize("answers", [("q",), ("", "q")])
+def test_quit_does_not_review_current_card(
+    workspace: Path, count_reviews, answers: tuple[str, ...]
+) -> None:
     config_path = str(workspace / "rdfcards.toml")
     code, output, _ = run_cli(
         "--config",
         config_path,
         "study",
         "capitals-basic",
-        input_fn=inputs("q"),
+        input_fn=inputs(*answers),
     )
     assert code == 0
     assert "Reviewed 0 card(s)" in output
@@ -304,14 +379,17 @@ def test_quit_does_not_review_current_card(workspace: Path, count_reviews) -> No
         assert count_reviews(repository) == 0
 
 
-def test_multiple_choice_quit_does_not_review_current_card(workspace: Path, count_reviews) -> None:
+@pytest.mark.parametrize("answers", [("q",), ("", "q")])
+def test_multiple_choice_quit_does_not_review_current_card(
+    workspace: Path, count_reviews, answers: tuple[str, ...]
+) -> None:
     config_path = str(workspace / "rdfcards.toml")
     code, output, _ = run_cli(
         "--config",
         config_path,
         "study",
         "capitals-choice",
-        input_fn=inputs("q"),
+        input_fn=inputs(*answers),
     )
     assert code == 0
     assert "Reviewed 0 card(s)" in output
@@ -320,9 +398,19 @@ def test_multiple_choice_quit_does_not_review_current_card(workspace: Path, coun
         assert count_reviews(repository) == 0
 
 
-def test_interrupt_does_not_review_current_card(workspace: Path, count_reviews) -> None:
+@pytest.mark.parametrize("answers_before_interrupt", [(), ("",)])
+def test_interrupt_does_not_review_current_card(
+    workspace: Path,
+    count_reviews,
+    answers_before_interrupt: tuple[str, ...],
+) -> None:
+    answers = iter(answers_before_interrupt)
+
     def interrupt() -> str:
-        raise KeyboardInterrupt
+        try:
+            return next(answers)
+        except StopIteration:
+            raise KeyboardInterrupt from None
 
     config_path = str(workspace / "rdfcards.toml")
     code, _, error = run_cli(
@@ -339,9 +427,19 @@ def test_interrupt_does_not_review_current_card(workspace: Path, count_reviews) 
         assert count_reviews(repository) == 0
 
 
-def test_end_of_input_does_not_review_current_card(workspace: Path, count_reviews) -> None:
+@pytest.mark.parametrize("answers_before_eof", [(), ("",)])
+def test_end_of_input_does_not_review_current_card(
+    workspace: Path,
+    count_reviews,
+    answers_before_eof: tuple[str, ...],
+) -> None:
+    answers = iter(answers_before_eof)
+
     def end_input() -> str:
-        raise EOFError
+        try:
+            return next(answers)
+        except StopIteration:
+            raise EOFError from None
 
     config_path = str(workspace / "rdfcards.toml")
     code, _, error = run_cli(

@@ -85,8 +85,8 @@ def test_multiple_choice_contract(tmp_path: Path) -> None:
     )
     presentation = next(iter(presentations.values()))
     assert isinstance(presentation, MultipleChoice)
-    assert len(presentation.choices) == 2
-    assert sum(choice.is_correct for choice in presentation.choices) == 1
+    assert presentation.choices == (Literal("yes"), Literal("no"))
+    assert presentation.back == Literal("yes")
 
 
 def test_entity_basic_contract(tmp_path: Path) -> None:
@@ -216,6 +216,13 @@ def test_multiple_choice_rejects_invalid_typed_boolean_lexical_value(tmp_path: P
             '{(ex:s ex:p ex:o "q" "a" true) (ex:s ex:p ex:o "q" "b" true)} }',
             MultipleChoice,
             "exactly one",
+        ),
+        (
+            "SELECT ?subject ?predicate ?object ?front ?choice ?is_correct WHERE { "
+            "VALUES (?subject ?predicate ?object ?front ?choice ?is_correct) "
+            '{(ex:s ex:p ex:o "q" "a" true) (ex:s ex:p ex:o "q" "a" false)} }',
+            MultipleChoice,
+            "same choice both correct and incorrect",
         ),
         (
             "SELECT ?subject ?predicate ?object ?front ?choice ?is_correct WHERE { "

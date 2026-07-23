@@ -1,19 +1,13 @@
 from __future__ import annotations
 
-import io
 import random
 
 import pytest
-from fsrs import Rating
+from pydantic import ValidationError
 from rdflib import Literal, URIRef
 
-from rdfcards.decks import Basic, Choice, MultipleChoice
+from rdfcards.decks import Basic, MultipleChoice
 from rdfcards.models import CardKey
-
-
-def inputs(*values: str):
-    iterator = iter(values)
-    return lambda: next(iterator)
 
 
 def card_key() -> CardKey:
@@ -24,64 +18,56 @@ def card_key() -> CardKey:
     )
 
 
-@pytest.mark.parametrize(
-    ("answer", "rating"),
-    [
-        ("1", Rating.Again),
-        ("2", Rating.Hard),
-        ("3", Rating.Good),
-        ("4", Rating.Easy),
-    ],
-)
-def test_basic_answer_maps_every_rating(answer: str, rating: Rating) -> None:
-    presentation = Basic(card_key=card_key(), front=Literal("front"), back=Literal("back"))
-
-    result = presentation.answer(inputs("", answer), io.StringIO(), random.Random(0))
-
-    assert result is rating
-
-
-def test_basic_answer_retries_invalid_rating() -> None:
-    presentation = Basic(card_key=card_key(), front=Literal("front"), back=Literal("back"))
-    output = io.StringIO()
-
-    result = presentation.answer(inputs("", "invalid", "2"), output, random.Random(0))
-
-    assert result is Rating.Hard
-    assert "Please enter 1, 2, 3, 4, or q." in output.getvalue()
-
-
-@pytest.mark.parametrize("answers", [("q",), ("", "q")])
-def test_basic_answer_can_quit_without_a_rating(answers: tuple[str, ...]) -> None:
-    presentation = Basic(card_key=card_key(), front=Literal("front"), back=Literal("back"))
-
-    assert presentation.answer(inputs(*answers), io.StringIO(), random.Random(0)) is None
-
-
-class NoShuffle(random.Random):
+class ReverseRandom(random.Random):
     def shuffle(self, values: list[object]) -> None:
-        del values
+        values.reverse()
 
 
-def multiple_choice() -> MultipleChoice:
-    return MultipleChoice(
+def test_basic_front_text_is_the_front_value() -> None:
+    presentation = Basic(card_key=card_key(), front=Literal("front"), back=Literal("back"))
+
+    assert presentation.front_text(random.Random(0)) == "front"
+
+
+def test_multiple_choice_front_text_shuffles_a_copy_of_choices() -> None:
+    presentation = MultipleChoice(
         card_key=card_key(),
         front=Literal("question"),
-        choices=(
-            Choice(value=Literal("correct"), is_correct=True),
-            Choice(value=Literal("incorrect"), is_correct=False),
-        ),
+        back=Literal("correct"),
+        choices=(Literal("correct"), Literal("incorrect")),
     )
 
+    text = presentation.front_text(ReverseRandom())
 
-def test_multiple_choice_answer_retries_invalid_choices() -> None:
-    output = io.StringIO()
-
-    result = multiple_choice().answer(inputs("invalid", "3", "1"), output, NoShuffle())
-
-    assert result is Rating.Good
-    assert output.getvalue().count("Please enter a number from 1 to 2, or q.") == 2
+    assert text == "question\n  1. incorrect\n  2. correct"
+    assert presentation.choices == (Literal("correct"), Literal("incorrect"))
 
 
-def test_multiple_choice_answer_can_quit_without_a_rating() -> None:
-    assert multiple_choice().answer(inputs("q"), io.StringIO(), NoShuffle()) is None
+@pytest.mark.parametrize(
+    ("choices", "back", "message"),
+    [
+        ((Literal("only"),), Literal("only"), "at least two choices"),
+        (
+            (Literal("same"), Literal("same")),
+            Literal("same"),
+            "cannot contain duplicate choices",
+        ),
+        (
+            (Literal("first"), Literal("second")),
+            Literal("missing"),
+            "back must be one of its choices",
+        ),
+    ],
+)
+def test_multiple_choice_rejects_invalid_direct_construction(
+    choices: tuple[Literal, ...],
+    back: Literal,
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        MultipleChoice(
+            card_key=card_key(),
+            front=Literal("question"),
+            back=back,
+            choices=choices,
+        )

@@ -71,8 +71,9 @@ and `?back`. One card may occur in duplicate identical rows, but conflicting fro
 are rejected.
 
 Internally, each configured kind resolves to a `DeckKind` subclass. That class declares its
-required variables, groups SPARQL rows into presentations, and handles terminal answering.
-Query execution and study therefore delegate polymorphically instead of branching on kind names.
+required variables, groups SPARQL rows into front/back presentations, and formats its front.
+The CLI applies one reveal-and-rate interaction to every presentation without branching on kind
+names.
 
 ```sparql
 SELECT ?subject ?predicate ?object ?front ?back
@@ -201,8 +202,9 @@ rdfcards [-c PATH] study NAME [--limit N]
 `validate` does not create or modify study state. `status --full` follows each deck summary with
 a card-level table containing the identity hash, target, due status, FSRS state, review count,
 UTC due time, and RDF identity. `study` synchronizes its selected deck before selecting due cards.
-A limit of zero means no session limit. Basic cards are self-rated with the four FSRS ratings.
-Multiple-choice answers map incorrect to Again and correct to Good.
+A limit of zero means no session limit. Both basic and multiple-choice cards show the front,
+wait for Enter, reveal the back, and ask for one of the four FSRS ratings. Multiple-choice fronts
+include shuffled choices, and their back is the correct choice.
 
 All scheduling timestamps are UTC. Changing FSRS configuration affects future reviews; existing
 cards are not automatically rescheduled.

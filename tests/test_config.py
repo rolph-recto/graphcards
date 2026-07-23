@@ -104,9 +104,6 @@ def test_incomplete_deck_kind_is_rejected_by_configuration(tmp_path: Path) -> No
         def group(cls, *_args: object, **_kwargs: object):
             return {}
 
-        def answer(self, *_args: object):
-            return None
-
     with pytest.raises(ValidationError, match="config_name"):
         DeckDefinition(
             name="incomplete",
