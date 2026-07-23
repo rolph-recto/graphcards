@@ -634,6 +634,31 @@ def test_card_and_log_update_roll_back_together(config: AppConfig, count_reviews
         assert count_reviews(repository) == 0
 
 
+def test_review_rejects_stale_card_snapshot_without_mutation(
+    config: AppConfig, count_reviews
+) -> None:
+    first_review = datetime(2026, 1, 1, tzinfo=UTC)
+    stale_review = first_review + timedelta(minutes=1)
+    deck = config.deck("capitals-basic")
+    with Repository(config.state_path) as repository:
+        app = app_for(config, repository)
+        app.sync(deck, first_review)
+        first_snapshot = repository.due_cards(deck.name, first_review, 1)[0]
+        stale_snapshot = repository.get_card(first_snapshot.card_id)
+        assert stale_snapshot == first_snapshot
+
+        app.review(deck, first_snapshot, Rating.Good, first_review)
+        current = repository.get_card(first_snapshot.card_id)
+        history = repository.review_history(deck.name, stale_review)
+
+        with pytest.raises(StorageError, match="stale card snapshot"):
+            app.review(deck, stale_snapshot, Rating.Again, stale_review)
+
+        assert repository.get_card(first_snapshot.card_id) == current
+        assert repository.review_history(deck.name, stale_review) == history
+        assert count_reviews(repository, first_snapshot.card_id) == 1
+
+
 def test_status_counts_new_due_and_future(config: AppConfig) -> None:
     now = datetime(2026, 1, 1, tzinfo=UTC)
     deck = config.deck("capitals-basic")

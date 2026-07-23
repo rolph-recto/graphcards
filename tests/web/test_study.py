@@ -217,6 +217,108 @@ def test_rating_does_not_depend_on_a_fallible_post_commit_reload(
     assert review_count(hub_server.repository) == 1
 
 
+def test_stale_http_review_returns_conflict_and_refreshes_session(
+    hub_server: FlaskHub,
+) -> None:
+    session = start_session(hub_server)
+    current = session.current
+    assert current is not None
+    fields = current_form(hub_server)
+    assert exchange(hub_server, "POST", "/study/reveal", fields)[0] == 303
+
+    hub_server.app.study_service.review(
+        session.deck,
+        current.card,
+        Rating.Good,
+        utc_now(),
+    )
+    externally_reviewed = hub_server.repository.get_card(current.card.card_id)
+    assert externally_reviewed is not None
+    history = hub_server.repository.review_history(session.deck.name, utc_now())
+    assert len(history) == 1
+
+    status, _, body = exchange(
+        hub_server,
+        "POST",
+        "/study/rate",
+        fields | {"rating": Rating.Again.value},
+    )
+
+    assert status == 409
+    assert "reviewed elsewhere" in body
+    assert hub_server.repository.review_history(session.deck.name, utc_now()) == history
+    assert session.current is not None
+    assert session.current.card == externally_reviewed
+    assert session.current.revealed
+
+    assert exchange(hub_server, "GET", "/study")[0] == 200
+    assert (
+        exchange(
+            hub_server,
+            "POST",
+            "/study/rate",
+            fields | {"rating": Rating.Again.value},
+        )[0]
+        == 303
+    )
+    assert review_count(hub_server.repository) == 2
+
+
+def test_missing_current_card_returns_conflict_and_advances_to_next_card(
+    hub_server: FlaskHub,
+) -> None:
+    session = start_session(hub_server)
+    removed = session.current
+    assert removed is not None
+    next_card = session.cards[1]
+    fields = current_form(hub_server)
+    assert exchange(hub_server, "POST", "/study/reveal", fields)[0] == 303
+
+    with hub_server.repository.connection:
+        hub_server.repository.connection.execute(
+            "DELETE FROM deck_cards WHERE card_id = ?",
+            (removed.card.card_id,),
+        )
+        hub_server.repository.connection.execute(
+            "DELETE FROM cards WHERE card_id = ?",
+            (removed.card.card_id,),
+        )
+
+    status, _, body = exchange(
+        hub_server,
+        "POST",
+        "/study/rate",
+        fields | {"rating": Rating.Good.value},
+    )
+
+    assert status == 409
+    assert "no longer available" in body
+    assert removed.card.card_id not in body
+    assert hub_server.repository.review_history(session.deck.name, utc_now()) == ()
+    assert session.completed_count == 0
+    assert session.index == 1
+    assert session.current is not None
+    assert session.current.card.card_id == next_card.card_id
+    assert not session.current.revealed
+
+    status, _, body = exchange(hub_server, "GET", "/study")
+    assert status == 200
+    assert session.current.front in body
+    next_fields = current_form(hub_server)
+    assert exchange(hub_server, "POST", "/study/reveal", next_fields)[0] == 303
+    assert (
+        exchange(
+            hub_server,
+            "POST",
+            "/study/rate",
+            next_fields | {"rating": Rating.Good.value},
+        )[0]
+        == 303
+    )
+    assert review_count(hub_server.repository) == 1
+    assert session.completed_count == 1
+
+
 def test_practice_is_stable_and_never_updates_scheduling(
     hub_server: FlaskHub,
 ) -> None:

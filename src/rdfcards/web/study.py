@@ -12,7 +12,7 @@ from fsrs import Rating
 
 from rdfcards.app import StudyService
 from rdfcards.config import DeckDefinition
-from rdfcards.errors import PresentationError
+from rdfcards.errors import PresentationError, StaleReviewError
 from rdfcards.storage import StoredCard, utc_now
 
 
@@ -142,7 +142,23 @@ class StudySession:
                 HTTPStatus.CONFLICT,
                 "Reveal the answer before rating this card.",
             )
-        self.service.review(self.deck, current.card, rating, utc_now())
+        try:
+            self.service.review(self.deck, current.card, rating, utc_now())
+        except StaleReviewError as error:
+            refreshed = self.service.repository.get_card(current.card.card_id)
+            if refreshed is None:
+                self.skipped.append("A card was removed after this study session started.")
+                self.index += 1
+                self.current = None
+                self._load_current()
+                message = "This card is no longer available. Continue with the next card."
+            else:
+                current.card = refreshed
+                message = "This card was reviewed elsewhere. Reload the study page and try again."
+            raise RequestFailure(
+                HTTPStatus.CONFLICT,
+                message,
+            ) from error
         self._advance()
 
     def next_practice(self, session_token: str, card_id: str) -> None:

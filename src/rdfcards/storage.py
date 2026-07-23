@@ -12,7 +12,7 @@ from fsrs import Card, Rating, ReviewLog
 from pydantic import ConfigDict, Field, ValidationError, field_validator
 
 from rdfcards.decks import DeckKind
-from rdfcards.errors import StorageError
+from rdfcards.errors import StaleReviewError, StorageError
 from rdfcards.models import CardKey, RdfModel, TargetKind
 
 SCHEMA_VERSION = 4
@@ -670,6 +670,7 @@ class Repository:
         self,
         card_id: str,
         deck_name: str,
+        source_card_json: str,
         card: Card,
         review_log: ReviewLog,
         *,
@@ -701,7 +702,7 @@ class Repository:
             cursor = self.connection.execute(
                 """
                 UPDATE cards SET card_json = ?, due_at = ?, updated_at = ?
-                WHERE card_id = ? AND EXISTS (
+                WHERE card_id = ? AND card_json = ? AND EXISTS (
                     SELECT 1
                     FROM deck_cards AS dc
                     WHERE dc.deck_name = ? AND dc.card_id = cards.card_id
@@ -713,17 +714,25 @@ class Repository:
                     datetime_to_text(card.due),
                     reviewed_at,
                     card_id,
+                    source_card_json,
                     deck_name,
                 ),
             )
             if cursor.rowcount != 1:
-                card_exists = self.connection.execute(
-                    "SELECT 1 FROM cards WHERE card_id = ?", (card_id,)
+                exists = self.connection.execute(
+                    "SELECT 1 FROM cards WHERE card_id = ?",
+                    (card_id,),
                 ).fetchone()
-                if card_exists is None:
-                    raise StorageError(f"cannot review unknown card {card_id}")
-                raise StorageError(
-                    f"cannot review unavailable card {card_id} in deck {deck_name!r}"
+                if exists is None:
+                    raise StaleReviewError(
+                        f"cannot review missing card {card_id}; reload or sync before trying again"
+                    )
+                if not self.card_available(deck_name, card_id):
+                    raise StorageError(
+                        f"cannot review unavailable card {card_id} in deck {deck_name!r}"
+                    )
+                raise StaleReviewError(
+                    f"cannot review stale card snapshot {card_id}; reload the card and try again"
                 )
             self.connection.execute(
                 """

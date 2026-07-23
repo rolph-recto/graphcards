@@ -93,6 +93,7 @@ class StudyService:
         card_json = self.repository.save_review(
             card.card_id,
             deck.name,
+            card.card_json,
             updated_card,
             review_log,
             previous_interval_seconds=previous_interval_seconds,
