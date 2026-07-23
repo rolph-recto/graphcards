@@ -27,6 +27,12 @@ class ScheduleFilter(StrEnum):
     FUTURE = "future"
 
 
+class AvailabilityFilter(StrEnum):
+    ALL = "all"
+    AVAILABLE = "available"
+    SUSPENDED = "suspended"
+
+
 class FsrsStateFilter(StrEnum):
     ALL = "all"
     LEARNING = "learning"
@@ -59,6 +65,7 @@ class CardStatusQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     page: int = Field(default=1, ge=1)
+    availability: AvailabilityFilter = AvailabilityFilter.ALL
     schedule: ScheduleFilter = ScheduleFilter.ALL
     state: FsrsStateFilter = FsrsStateFilter.ALL
     sort: CardSort = CardSort.NEXT_REVIEW
@@ -91,6 +98,7 @@ class StatusRow:
     stability: str
     difficulty: str
     retrievability: str
+    suspension_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -141,6 +149,10 @@ class HistoryView:
 
 def schedule_matches(row: StatusCard, query: CardStatusQuery, now: datetime) -> bool:
     status = row.status
+    if query.availability is AvailabilityFilter.AVAILABLE and status.suspended:
+        return False
+    if query.availability is AvailabilityFilter.SUSPENDED and not status.suspended:
+        return False
     if query.schedule is ScheduleFilter.NEW and status.review_count != 0:
         return False
     if query.schedule is ScheduleFilter.DUE and status.due_at > now:
@@ -225,7 +237,9 @@ def status_row(
     timezone: ZoneInfo,
 ) -> StatusRow:
     status = row.status
-    badges = ["New"] if status.review_count == 0 else []
+    badges = ["Suspended"] if status.suspended else []
+    if status.review_count == 0:
+        badges.append("New")
     badges.extend(("Due" if status.due_at <= now else "Future", status.fsrs_state.title()))
     step = f" · step {status.fsrs_step}" if status.fsrs_step is not None else ""
     identity = " ".join(status.card_key.n3_terms)
@@ -242,6 +256,7 @@ def status_row(
         stability=f"{status.stability:.2f} days" if status.stability is not None else "—",
         difficulty=f"{status.difficulty:.2f}" if status.difficulty is not None else "—",
         retrievability=(f"{row.retrievability:.1%}" if row.retrievability is not None else "—"),
+        suspension_reason=status.suspension_reason,
     )
 
 
@@ -430,6 +445,11 @@ SCHEDULE_OPTIONS = (
     (ScheduleFilter.NEW, "New"),
     (ScheduleFilter.DUE, "Due"),
     (ScheduleFilter.FUTURE, "Future"),
+)
+AVAILABILITY_OPTIONS = (
+    (AvailabilityFilter.ALL, "All"),
+    (AvailabilityFilter.AVAILABLE, "Available"),
+    (AvailabilityFilter.SUSPENDED, "Suspended"),
 )
 STATE_OPTIONS = (
     (FsrsStateFilter.ALL, "All"),

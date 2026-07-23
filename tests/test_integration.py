@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from fsrs import Rating
+from fsrs import Card, Rating
 from rdflib import URIRef
 
 from rdfcards.app import StudyService
@@ -202,6 +202,148 @@ def test_removed_and_restored_triple_keeps_schedule(config: AppConfig, workspace
         restored = repository.get_card(card.card_id)
         assert restored is not None
         assert restored.card_json == reviewed_json
+
+
+def test_suspension_survives_sync_and_excludes_every_queue(config: AppConfig) -> None:
+    now = datetime(2026, 1, 3, tzinfo=UTC)
+    deck = config.deck("capitals-basic")
+    with Repository(config.state_path) as repository:
+        app = app_for(config, repository)
+        presentations = app.render_all(deck)
+        app.sync(deck, now)
+        card = repository.due_cards(deck.name, now, 1)[0]
+        reviewed = app.review(deck, card, Rating.Again, now)
+        set_card_due(repository, card.card_id, now + timedelta(hours=12))
+        before = repository.get_card(card.card_id)
+        assert before is not None
+        review_count = repository.connection.execute(
+            "SELECT COUNT(*) FROM reviews WHERE card_id = ?", (card.card_id,)
+        ).fetchone()[0]
+
+        repository.suspend_card(deck.name, card.card_id, "  needs a better prompt  ")
+
+        assert card.card_id not in {row.card_id for row in repository.active_cards(deck.name)}
+        assert card.card_id not in {
+            row.card_id for row in repository.due_cards(deck.name, now, None)
+        }
+        assert card.card_id not in {
+            row.card_id
+            for row in repository.forgotten_cards(
+                deck.name,
+                now - timedelta(days=1),
+                None,
+            )
+        }
+        assert card.card_id not in {
+            row.card_id
+            for row in repository.future_cards(
+                deck.name,
+                now,
+                now + timedelta(days=1),
+                None,
+            )
+        }
+        status = repository.status(deck.name, now)
+        assert (status.available, status.suspended) == (1, 1)
+        suspended = next(
+            row for row in repository.card_statuses(deck.name) if row.card_id == card.card_id
+        )
+        assert suspended.suspended
+        assert suspended.suspension_reason == "needs a better prompt"
+
+        repository.sync_deck(deck.name, {}, now + timedelta(seconds=1))
+        repository.sync_deck(deck.name, presentations, now + timedelta(seconds=2))
+        restored = next(
+            row for row in repository.card_statuses(deck.name) if row.card_id == card.card_id
+        )
+        assert restored.suspended
+        assert restored.suspension_reason == "needs a better prompt"
+
+        repository.resume_card(deck.name, card.card_id)
+
+        assert card.card_id in {row.card_id for row in repository.active_cards(deck.name)}
+        assert card.card_id in {
+            row.card_id
+            for row in repository.forgotten_cards(
+                deck.name,
+                now - timedelta(days=1),
+                None,
+            )
+        }
+        assert card.card_id in {
+            row.card_id
+            for row in repository.future_cards(
+                deck.name,
+                now,
+                now + timedelta(days=1),
+                None,
+            )
+        }
+        resumed = repository.get_card(card.card_id)
+        assert resumed is not None
+        assert resumed.card_json == before.card_json
+        assert reviewed.card_id == resumed.card_id
+        assert (
+            repository.connection.execute(
+                "SELECT COUNT(*) FROM reviews WHERE card_id = ?", (card.card_id,)
+            ).fetchone()[0]
+            == review_count
+        )
+
+
+def test_suspension_is_per_membership_while_schedule_remains_global(
+    config: AppConfig,
+) -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    deck = config.deck("capitals-basic")
+    shared = DeckDefinition(
+        name="capitals-shared",
+        kind=deck.kind,
+        query_path=deck.query_path,
+        target=deck.target,
+    )
+    with Repository(config.state_path) as repository:
+        app = app_for(config, repository)
+        app.sync(deck, now)
+        app.sync(shared, now)
+        card = repository.due_cards(deck.name, now, 1)[0]
+
+        repository.suspend_card(deck.name, card.card_id, None)
+
+        assert card.card_id not in {
+            row.card_id for row in repository.due_cards(deck.name, now, None)
+        }
+        shared_card = next(
+            row
+            for row in repository.due_cards(shared.name, now, None)
+            if row.card_id == card.card_id
+        )
+        updated = app.review(shared, shared_card, Rating.Good, now)
+        repository.resume_card(deck.name, card.card_id)
+
+        resumed = repository.get_card(card.card_id)
+        assert resumed is not None
+        assert resumed.card_json == updated.card_json
+        assert card.card_id not in {
+            row.card_id for row in repository.due_cards(deck.name, now, None)
+        }
+
+
+def test_suspended_snapshot_cannot_record_a_review(config: AppConfig) -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    deck = config.deck("capitals-basic")
+    with Repository(config.state_path) as repository:
+        app = app_for(config, repository)
+        app.sync(deck, now)
+        card = repository.due_cards(deck.name, now, 1)[0]
+        before = repository.get_card(card.card_id)
+        repository.suspend_card(deck.name, card.card_id, None)
+
+        with pytest.raises(StorageError, match="cannot review unavailable card"):
+            app.review(deck, card, Rating.Good, now)
+
+        assert repository.get_card(card.card_id) == before
+        assert repository.connection.execute("SELECT COUNT(*) FROM reviews").fetchone()[0] == 0
 
 
 def test_editing_a_triple_creates_a_new_card(config: AppConfig, workspace: Path) -> None:
@@ -499,10 +641,22 @@ def test_status_counts_new_due_and_future(config: AppConfig) -> None:
         app = app_for(config, repository)
         app.sync(deck, now)
         initial = repository.status(deck.name, now)
-        assert (initial.active, initial.new, initial.due, initial.future) == (2, 2, 2, 0)
+        assert (
+            initial.available,
+            initial.suspended,
+            initial.new,
+            initial.due,
+            initial.future,
+        ) == (2, 0, 2, 2, 0)
         app.review(deck, repository.due_cards(deck.name, now, 1)[0], Rating.Good, now)
         updated = repository.status(deck.name, now)
-        assert (updated.active, updated.new, updated.due, updated.future) == (2, 1, 1, 1)
+        assert (
+            updated.available,
+            updated.suspended,
+            updated.new,
+            updated.due,
+            updated.future,
+        ) == (2, 0, 1, 1, 1)
 
 
 def test_card_statuses_include_latest_global_review_and_fsrs_metrics(
@@ -579,10 +733,14 @@ def test_review_history_uses_event_deck_and_validates_immutable_metrics(
             repository.review_history(deck.name, second_review)
 
 
-def test_fresh_database_uses_schema_v3_identity_fields(tmp_path: Path) -> None:
+def test_fresh_database_uses_schema_v4_suspension_fields(tmp_path: Path) -> None:
     with Repository(tmp_path / "state.sqlite3") as repository:
         version = repository.connection.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 3
+        assert version == 4
+        columns = {
+            row["name"] for row in repository.connection.execute("PRAGMA table_info(deck_cards)")
+        }
+        assert {"suspended", "suspension_reason"} <= columns
         with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
             repository.connection.execute(
                 """
@@ -591,3 +749,256 @@ def test_fresh_database_uses_schema_v3_identity_fields(tmp_path: Path) -> None:
                 ) VALUES ('bad', 'unknown', '[]', '{}', 'x', 'x', 'x')
                 """
             )
+
+
+def test_schema_v3_migration_preserves_schedules_reviews_and_memberships(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    card_key = CardKey.triple(
+        URIRef("https://example.org/subject"),
+        URIRef("https://example.org/predicate"),
+        URIRef("https://example.org/object"),
+    )
+    card_json = Card(due=now).to_json()
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE cards (
+            card_id TEXT PRIMARY KEY,
+            target_kind TEXT NOT NULL CHECK (target_kind IN ('triple', 'entity')),
+            identity_json TEXT NOT NULL,
+            card_json TEXT NOT NULL,
+            due_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE deck_cards (
+            deck_name TEXT NOT NULL,
+            card_id TEXT NOT NULL REFERENCES cards(card_id),
+            active INTEGER NOT NULL CHECK (active IN (0, 1)),
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY (deck_name, card_id)
+        );
+        CREATE TABLE reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            card_id TEXT NOT NULL REFERENCES cards(card_id),
+            deck_name TEXT NOT NULL,
+            rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 4),
+            reviewed_at TEXT NOT NULL,
+            review_json TEXT NOT NULL
+        );
+        PRAGMA user_version = 3;
+        """
+    )
+    timestamp = datetime_to_text(now)
+    connection.execute(
+        """
+        INSERT INTO cards (
+            card_id, target_kind, identity_json, card_json, due_at, created_at, updated_at
+        ) VALUES (?, 'triple', ?, ?, ?, ?, ?)
+        """,
+        (
+            card_key.digest,
+            json.dumps(card_key.n3_terms),
+            card_json,
+            timestamp,
+            timestamp,
+            timestamp,
+        ),
+    )
+    connection.execute(
+        "INSERT INTO deck_cards VALUES ('deck', ?, 1, ?)",
+        (card_key.digest, timestamp),
+    )
+    connection.execute(
+        "INSERT INTO reviews (card_id, deck_name, rating, reviewed_at, review_json) "
+        "VALUES (?, 'deck', 3, ?, 'preserved review')",
+        (card_key.digest, timestamp),
+    )
+    connection.commit()
+    connection.close()
+
+    with Repository(path) as repository:
+        assert repository.connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        membership = repository.connection.execute(
+            """
+            SELECT active, suspended, suspension_reason
+            FROM deck_cards WHERE deck_name = 'deck' AND card_id = ?
+            """,
+            (card_key.digest,),
+        ).fetchone()
+        assert tuple(membership) == (1, 0, None)
+        assert (
+            repository.connection.execute(
+                "SELECT card_json FROM cards WHERE card_id = ?", (card_key.digest,)
+            ).fetchone()[0]
+            == card_json
+        )
+        assert (
+            repository.connection.execute(
+                "SELECT review_json FROM reviews WHERE card_id = ?", (card_key.digest,)
+            ).fetchone()[0]
+            == "preserved review"
+        )
+
+
+def test_schema_v3_migration_rolls_back_on_schema_drift(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE deck_cards (
+            deck_name TEXT NOT NULL,
+            card_id TEXT NOT NULL,
+            active INTEGER NOT NULL,
+            suspension_reason TEXT,
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY (deck_name, card_id)
+        );
+        PRAGMA user_version = 3;
+        """
+    )
+    connection.close()
+
+    with pytest.raises(StorageError, match="could not migrate state schema"):
+        Repository(path)
+
+    connection = sqlite3.connect(path)
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(deck_cards)").fetchall()}
+        assert "suspension_reason" in columns
+        assert "suspended" not in columns
+    finally:
+        connection.close()
+
+
+def test_schema_v3_migration_rolls_back_on_late_index_failure(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE deck_cards (
+            deck_name TEXT NOT NULL,
+            card_id TEXT NOT NULL,
+            active INTEGER NOT NULL CHECK (active IN (0, 1)),
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY (deck_name, card_id)
+        );
+        PRAGMA user_version = 3;
+        """
+    )
+    connection.close()
+
+    with pytest.raises(StorageError, match="could not migrate state schema"):
+        Repository(path)
+
+    connection = sqlite3.connect(path)
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(deck_cards)").fetchall()}
+        assert "suspended" not in columns
+        assert "suspension_reason" not in columns
+    finally:
+        connection.close()
+
+
+def test_queue_and_status_selectors_reject_corrupt_suspension_state(
+    config: AppConfig,
+) -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    deck = config.deck("capitals-basic")
+    with Repository(config.state_path) as repository:
+        app = app_for(config, repository)
+        app.sync(deck, now)
+        card = repository.active_cards(deck.name)[0]
+
+        selectors = (
+            lambda: repository.active_cards(deck.name),
+            lambda: repository.due_cards(deck.name, now, None),
+            lambda: repository.forgotten_cards(deck.name, now - timedelta(days=1), None),
+            lambda: repository.future_cards(deck.name, now, now + timedelta(days=1), None),
+            lambda: repository.status(deck.name, now),
+            lambda: repository.card_statuses(deck.name),
+        )
+
+        repository.connection.execute(
+            """
+            UPDATE deck_cards
+            SET suspended = 0, suspension_reason = 'orphaned reason'
+            WHERE deck_name = ? AND card_id = ?
+            """,
+            (deck.name, card.card_id),
+        )
+        repository.connection.commit()
+        for select in selectors:
+            with pytest.raises(
+                StorageError,
+                match="stored resumed deck membership still has a suspension reason",
+            ):
+                select()
+        with pytest.raises(
+            StorageError,
+            match="stored resumed deck membership still has a suspension reason",
+        ):
+            app.review(deck, card, Rating.Good, now)
+
+        repository.connection.execute("PRAGMA ignore_check_constraints = ON")
+        repository.connection.execute(
+            """
+            UPDATE deck_cards
+            SET suspended = 2, suspension_reason = NULL
+            WHERE deck_name = ? AND card_id = ?
+            """,
+            (deck.name, card.card_id),
+        )
+        repository.connection.commit()
+        repository.connection.execute("PRAGMA ignore_check_constraints = OFF")
+        for select in selectors:
+            with pytest.raises(
+                StorageError,
+                match="stored deck membership has an invalid suspension state",
+            ):
+                select()
+        with pytest.raises(
+            StorageError,
+            match="stored deck membership has an invalid suspension state",
+        ):
+            app.review(deck, card, Rating.Good, now)
+
+        repository.connection.execute(
+            """
+            UPDATE deck_cards
+            SET suspended = 1, suspension_reason = ?
+            WHERE deck_name = ? AND card_id = ?
+            """,
+            ("safe\u202etext", deck.name, card.card_id),
+        )
+        repository.connection.commit()
+        for select in selectors:
+            with pytest.raises(
+                StorageError,
+                match="stored deck membership has an invalid suspension reason",
+            ):
+                select()
+        with pytest.raises(
+            StorageError,
+            match="stored deck membership has an invalid suspension reason",
+        ):
+            app.review(deck, card, Rating.Good, now)
+        assert repository.connection.execute("SELECT COUNT(*) FROM reviews").fetchone()[0] == 0
+
+
+def test_suspension_reason_validation_is_user_facing(config: AppConfig) -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    deck = config.deck("capitals-basic")
+    with Repository(config.state_path) as repository:
+        app_for(config, repository).sync(deck, now)
+        card = repository.active_cards(deck.name)[0]
+
+        with pytest.raises(StorageError, match="at most 500 characters"):
+            repository.suspend_card(deck.name, card.card_id, "x" * 501)
+
+        assert repository.card_available(deck.name, card.card_id)

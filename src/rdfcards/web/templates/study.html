@@ -59,6 +59,18 @@
             <button class="primary wide" type="submit">Reveal answer</button>
           </form>
         {% endif %}
+        <details class="suspend-control">
+          <summary>Suspend this card</summary>
+          <form method="post" action="{{ url_for('suspend_study_card') }}">
+            <input type="hidden" name="session_token" value="{{ session.session_token }}">
+            <input type="hidden" name="card_id" value="{{ current.card.card_id }}">
+            <label>
+              Reason (optional)
+              <input name="reason" maxlength="500">
+            </label>
+            <button type="submit">Suspend and continue</button>
+          </form>
+        </details>
       {% endif %}
     </div>
   </article>

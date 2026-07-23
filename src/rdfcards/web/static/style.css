@@ -314,7 +314,7 @@ select:focus-visible {
 
 .status-filters {
   display: grid;
-  grid-template-columns: repeat(4, minmax(7rem, 1fr)) auto;
+  grid-template-columns: repeat(5, minmax(7rem, 1fr)) auto;
   align-items: end;
   gap: .65rem;
   margin-bottom: 1rem;
@@ -402,6 +402,31 @@ select:focus-visible {
 .date-value small,
 .metric-note {
   color: #737373;
+}
+
+.suspension-reason {
+  display: block;
+  max-width: 14rem;
+  margin-top: .45rem;
+  color: #525252;
+  font-size: .75rem;
+  overflow-wrap: anywhere;
+}
+
+.card-action {
+  display: grid;
+  min-width: 10rem;
+  gap: .5rem;
+}
+
+.card-action label {
+  font-size: .7rem;
+}
+
+.card-action button {
+  min-height: 2.35rem;
+  padding: .45rem .65rem;
+  font-size: .76rem;
 }
 
 .empty-status {
@@ -787,6 +812,25 @@ select:focus-visible {
   color: #525252;
   font-size: 1.05rem;
   line-height: 1.6;
+}
+
+.suspend-control {
+  margin-top: 1rem;
+  border-top: 1px solid #e5e5e5;
+  padding-top: .8rem;
+}
+
+.suspend-control summary {
+  color: #525252;
+  cursor: pointer;
+  font-size: .85rem;
+  font-weight: 650;
+}
+
+.suspend-control form {
+  display: grid;
+  gap: .65rem;
+  margin-top: .75rem;
 }
 
 .completion-actions {

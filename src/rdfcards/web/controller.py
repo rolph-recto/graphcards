@@ -75,6 +75,33 @@ class StudyController:
             self.config.display_timezone,
         )
 
+    def set_suspension(
+        self,
+        *,
+        csrf_token: str,
+        deck_name: str,
+        card_id: str,
+        suspended: bool,
+        reason: str | None = None,
+    ) -> None:
+        if not secrets.compare_digest(csrf_token, self.csrf_token):
+            raise RequestFailure(HTTPStatus.FORBIDDEN, "This card-status form is not valid.")
+        try:
+            deck = self.config.deck(deck_name)
+        except ConfigError as error:
+            raise RequestFailure(HTTPStatus.NOT_FOUND, "That deck does not exist.") from error
+        if not self.repository.has_membership(deck.name, card_id):
+            raise RequestFailure(
+                HTTPStatus.NOT_FOUND,
+                "That card is not known in this deck.",
+            )
+        if suspended:
+            self.study_service.suspend(deck, card_id, reason)
+        else:
+            self.study_service.resume(deck, card_id)
+        if self.session is not None and self.session.deck.name == deck.name:
+            self.session.refresh_availability()
+
     def start_session(
         self,
         *,

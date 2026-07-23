@@ -10,20 +10,27 @@ from urllib.parse import parse_qs, urlencode
 
 from flask import Flask, Response, current_app, redirect, render_template, request, url_for
 from fsrs import Rating
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from werkzeug.exceptions import HTTPException, InternalServerError
 
 from rdfcards.errors import ConfigError, RdfCardsError
-from rdfcards.storage import utc_now
+from rdfcards.storage import normalize_suspension_reason, utc_now
 from rdfcards.web.controller import StudyController
 from rdfcards.web.status import (
+    AVAILABILITY_OPTIONS,
     CARD_PAGE_SIZE,
     DIRECTION_OPTIONS,
     HISTORY_RANGE_OPTIONS,
     SCHEDULE_OPTIONS,
     SORT_OPTIONS,
     STATE_OPTIONS,
+    AvailabilityFilter,
+    CardSort,
     CardStatusQuery,
+    FsrsStateFilter,
+    HistoryRange,
+    ScheduleFilter,
+    SortDirection,
     pagination,
     schedule_matches,
     sort_status_cards,
@@ -31,7 +38,8 @@ from rdfcards.web.status import (
 )
 from rdfcards.web.study import RequestFailure, StudyMode, StudySession, completion_summary
 
-MAX_FORM_BYTES = 4096
+# A valid 500-character reason can occupy 6,000 bytes once UTF-8 is percent-encoded.
+MAX_FORM_BYTES = 8192
 CONTROLLER_EXTENSION = "rdfcards_controller"
 EXPECTED_HOST_CONFIG = "RDFCARDS_EXPECTED_HOST"
 _MAX_FIELDS = 32
@@ -57,6 +65,47 @@ class _RevealSubmission(BaseModel):
 
 class _RatingSubmission(_RevealSubmission):
     rating: int = Field(ge=1, le=4)
+
+
+class _StudySuspensionSubmission(_RevealSubmission):
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def normalize_reason(cls, value: object) -> object:
+        return normalize_suspension_reason(value)
+
+
+class _StatusActionSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    csrf_token: str = Field(min_length=1, max_length=256)
+    card_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    availability: AvailabilityFilter = AvailabilityFilter.ALL
+    schedule: ScheduleFilter = ScheduleFilter.ALL
+    state: FsrsStateFilter = FsrsStateFilter.ALL
+    sort: CardSort = CardSort.NEXT_REVIEW
+    direction: SortDirection = SortDirection.ASCENDING
+    range: HistoryRange = HistoryRange.NINETY_DAYS
+
+    def status_query(self) -> CardStatusQuery:
+        return CardStatusQuery(
+            availability=self.availability,
+            schedule=self.schedule,
+            state=self.state,
+            sort=self.sort,
+            direction=self.direction,
+            range=self.range,
+        )
+
+
+class _StatusSuspensionSubmission(_StatusActionSubmission):
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def normalize_reason(cls, value: object) -> object:
+        return normalize_suspension_reason(value)
 
 
 def _controller() -> StudyController:
@@ -212,7 +261,7 @@ def create_flask_app(controller: StudyController) -> Flask:
             ),
             (
                 StudyMode.PRACTICE,
-                "Shuffle through active cards without changing their schedules.",
+                "Shuffle through available cards without changing their schedules.",
             ),
             (
                 StudyMode.AHEAD,
@@ -244,6 +293,7 @@ def create_flask_app(controller: StudyController) -> Flask:
     @app.get("/study")
     def study() -> str:
         current = _session()
+        current.refresh_availability()
         completion_title = completion_text = None
         if current.complete:
             completion_title, completion_text = completion_summary(current)
@@ -288,6 +338,54 @@ def create_flask_app(controller: StudyController) -> Flask:
         )
         _session().next_practice(submission.session_token, submission.card_id)
         return redirect(url_for("study"), code=HTTPStatus.SEE_OTHER)
+
+    @app.post("/study/suspend")
+    def suspend_study_card() -> Response:
+        submission = _validated_form(
+            _StudySuspensionSubmission,
+            "The suspension form is invalid.",
+        )
+        _session().suspend(
+            submission.session_token,
+            submission.card_id,
+            submission.reason,
+        )
+        return redirect(url_for("study"), code=HTTPStatus.SEE_OTHER)
+
+    @app.post("/decks/<path:deck_name>/cards/suspend")
+    def suspend_card(deck_name: str) -> Response:
+        submission = _validated_form(
+            _StatusSuspensionSubmission,
+            "The suspension form is invalid.",
+        )
+        _controller().set_suspension(
+            csrf_token=submission.csrf_token,
+            deck_name=deck_name,
+            card_id=submission.card_id,
+            suspended=True,
+            reason=submission.reason,
+        )
+        return redirect(
+            _status_url(deck_name, submission.status_query(), 1) + "#card-status",
+            code=HTTPStatus.SEE_OTHER,
+        )
+
+    @app.post("/decks/<path:deck_name>/cards/resume")
+    def resume_card(deck_name: str) -> Response:
+        submission = _validated_form(
+            _StatusActionSubmission,
+            "The resume form is invalid.",
+        )
+        _controller().set_suspension(
+            csrf_token=submission.csrf_token,
+            deck_name=deck_name,
+            card_id=submission.card_id,
+            suspended=False,
+        )
+        return redirect(
+            _status_url(deck_name, submission.status_query(), 1) + "#card-status",
+            code=HTTPStatus.SEE_OTHER,
+        )
 
     @app.get("/decks/<path:deck_name>/cards")
     def card_status(deck_name: str) -> str:
@@ -337,7 +435,9 @@ def create_flask_app(controller: StudyController) -> Flask:
             deck=deck,
             query=query,
             rows=rows,
-            active_count=len(all_cards),
+            available_count=sum(not row.status.suspended for row in all_cards),
+            suspended_count=sum(row.status.suspended for row in all_cards),
+            csrf_token=current.csrf_token,
             empty_message=empty_message,
             pagination=(
                 pagination(
@@ -350,6 +450,7 @@ def create_flask_app(controller: StudyController) -> Flask:
                 else None
             ),
             schedule_options=SCHEDULE_OPTIONS,
+            availability_options=AVAILABILITY_OPTIONS,
             state_options=STATE_OPTIONS,
             sort_options=SORT_OPTIONS,
             direction_options=DIRECTION_OPTIONS,

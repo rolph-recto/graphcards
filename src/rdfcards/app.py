@@ -43,6 +43,21 @@ class StudyService:
             raise PresentationError(f"deck {deck.name!r} no longer renders card {card.card_id}")
         return presentation
 
+    def suspend(
+        self,
+        deck: DeckDefinition,
+        card_id: str,
+        reason: str | None = None,
+    ) -> None:
+        """Suspend one membership without changing its global FSRS card."""
+
+        self.repository.suspend_card(deck.name, card_id, reason)
+
+    def resume(self, deck: DeckDefinition, card_id: str) -> None:
+        """Resume one membership at its existing global FSRS schedule."""
+
+        self.repository.resume_card(deck.name, card_id)
+
     def review(
         self,
         deck: DeckDefinition,

@@ -92,6 +92,27 @@ def current_form(server: FlaskHub | LocalStudyServer) -> dict[str, object]:
     }
 
 
+def status_action_form(
+    server: FlaskHub | LocalStudyServer,
+    card_id: str,
+    *,
+    reason: str | None = None,
+) -> dict[str, object]:
+    fields: dict[str, object] = {
+        "csrf_token": server.app.csrf_token,
+        "card_id": card_id,
+        "availability": "all",
+        "schedule": "all",
+        "state": "all",
+        "sort": "next_review",
+        "direction": "asc",
+        "range": "90d",
+    }
+    if reason is not None:
+        fields["reason"] = reason
+    return fields
+
+
 def review_count(repository: Repository) -> int:
     return repository.connection.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]
 

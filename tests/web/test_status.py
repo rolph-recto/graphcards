@@ -23,6 +23,7 @@ from tests.web.support import (
     make_test_hub,
     review_count,
     start_form,
+    status_action_form,
 )
 
 
@@ -71,8 +72,15 @@ def test_card_status_page_shows_active_cards_without_mutating_state(
     assert "<time datetime=" in body
     assert "&lt;https://example.org/" in body
     assert '<div class="table-wrap">' in body
+    first_row = re.search(r'<tr class="status-card">(.*?)</tr>', body, re.DOTALL)
+    assert first_row is not None
+    cells = re.findall(r"<td>(.*?)</td>", first_row.group(1), re.DOTALL)
+    assert len(cells) == 6
+    assert 'class="date-value"' in cells[3]
+    assert 'class="fsrs-metrics"' in cells[4]
+    assert 'class="card-action' in cells[5]
     assert "triple card" not in body
-    assert all(card_id not in body for card_id in before_cards)
+    assert all(f">{card_id}<" not in body for card_id in before_cards)
     assert "Review history" in body
     assert body.index('id="history"') < body.index('id="card-status"')
     assert "0</strong>\n        <span>reviews in range" in body
@@ -168,6 +176,7 @@ def test_card_status_filters_sorting_and_invalid_queries(
     assert ascending.index(second_identity) < ascending.index(first_identity)
 
     invalid_paths = (
+        "/decks/capitals-basic/cards?availability=unknown",
         "/decks/capitals-basic/cards?schedule=unknown",
         "/decks/capitals-basic/cards?unknown=value",
         "/decks/capitals-basic/cards?range=unknown",
@@ -317,10 +326,115 @@ def test_card_status_paginates_one_hundred_cards(
 
     assert first.count('class="status-card"') == 100
     assert "1–100 of 101 card(s) · Page 1 of 2" in first
-    assert "page=2&amp;schedule=all&amp;state=all" in first
+    assert "page=2&amp;availability=all&amp;schedule=all&amp;state=all" in first
     assert second.count('class="status-card"') == 1
     assert "101–101 of 101 card(s) · Page 2 of 2" in second
     assert exchange(hub_server, "GET", "/decks/capitals-basic/cards?page=3")[0] == 404
+
+
+def test_card_status_suspends_filters_and_resumes_membership(
+    hub_server: FlaskHub,
+) -> None:
+    deck_name = "capitals-basic"
+    card = hub_server.repository.active_cards(deck_name)[0]
+    fields = status_action_form(
+        hub_server,
+        card.card_id,
+        reason="  <needs clearer wording>  ",
+    )
+
+    status, headers, _ = exchange(
+        hub_server,
+        "POST",
+        f"/decks/{deck_name}/cards/suspend",
+        fields,
+    )
+
+    assert status == 303
+    assert headers["location"].endswith("#card-status")
+    assert hub_server.repository.card_suspended(deck_name, card.card_id)
+    assert card.card_id not in {
+        row.card_id for row in hub_server.repository.active_cards(deck_name)
+    }
+
+    body = exchange(
+        hub_server,
+        "GET",
+        f"/decks/{deck_name}/cards?availability=suspended",
+    )[2]
+    assert body.count('class="status-card"') == 1
+    assert "Suspended" in body
+    assert "&lt;needs clearer wording&gt;" in body
+    assert "Resume" in body
+
+    invalid = status_action_form(hub_server, card.card_id) | {"csrf_token": "wrong"}
+    assert (
+        exchange(
+            hub_server,
+            "POST",
+            f"/decks/{deck_name}/cards/resume",
+            invalid,
+        )[0]
+        == 403
+    )
+    assert hub_server.repository.card_suspended(deck_name, card.card_id)
+
+    status, _, _ = exchange(
+        hub_server,
+        "POST",
+        f"/decks/{deck_name}/cards/resume",
+        status_action_form(hub_server, card.card_id),
+    )
+    assert status == 303
+    assert hub_server.repository.card_available(deck_name, card.card_id)
+    stored = next(
+        row for row in hub_server.repository.card_statuses(deck_name) if row.card_id == card.card_id
+    )
+    assert stored.suspension_reason is None
+
+
+def test_card_status_accepts_maximum_length_multibyte_suspension_reason(
+    hub_server: FlaskHub,
+) -> None:
+    deck_name = "capitals-basic"
+    card = hub_server.repository.active_cards(deck_name)[0]
+    reason = "🙂" * 500
+
+    status, _, _ = exchange(
+        hub_server,
+        "POST",
+        f"/decks/{deck_name}/cards/suspend",
+        status_action_form(hub_server, card.card_id, reason=reason),
+    )
+
+    assert status == 303
+    stored = next(
+        row for row in hub_server.repository.card_statuses(deck_name) if row.card_id == card.card_id
+    )
+    assert stored.suspension_reason == reason
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ("fake line\ninjection", "\x1b[31mred", "safe\u202etext", "zero\u200bwidth"),
+)
+def test_card_status_rejects_suspension_reason_control_characters(
+    hub_server: FlaskHub,
+    reason: str,
+) -> None:
+    deck_name = "capitals-basic"
+    card = hub_server.repository.active_cards(deck_name)[0]
+
+    status, _, body = exchange(
+        hub_server,
+        "POST",
+        f"/decks/{deck_name}/cards/suspend",
+        status_action_form(hub_server, card.card_id, reason=reason),
+    )
+
+    assert status == 400
+    assert "The suspension form is invalid." in body
+    assert hub_server.repository.card_available(deck_name, card.card_id)
 
 
 def test_empty_and_corrupt_card_status_pages_are_safe(

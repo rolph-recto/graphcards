@@ -262,7 +262,7 @@ def test_validate_sync_and_status(workspace: Path) -> None:
 
     code, output, _ = run_cli("--config", config_path, "sync")
     assert code == 0
-    assert "2 active" in output
+    assert "2 current" in output
 
     code, output, _ = run_cli("--config", config_path, "status")
     assert code == 0
@@ -279,13 +279,14 @@ def test_full_status_shows_card_details_for_selected_deck(workspace: Path) -> No
 
     assert code == 0
     assert error == ""
-    assert "capitals-choice: 2 active, 2 new, 2 due, 0 future" in output
+    assert "capitals-choice: 2 available, 0 suspended, 2 new, 2 due, 0 future" in output
     assert "CARD ID" in output
     assert "TARGET" in output
     assert "STATUS" in output
     assert "FSRS STATE" in output
     assert "REVIEWS" in output
     assert "DUE (UTC)" in output
+    assert "REASON" in output
     assert "IDENTITY" in output
     assert output.count("new/due") == 2
     assert output.count("  entity  ") == 2
@@ -299,9 +300,9 @@ def test_full_status_shows_each_deck_and_handles_empty_state(workspace: Path) ->
 
     assert code == 0
     assert error == ""
-    assert "capitals-basic: 0 active" in output
-    assert "capitals-choice: 0 active" in output
-    assert output.count("(no active cards)") == 2
+    assert "capitals-basic: 0 available, 0 suspended" in output
+    assert "capitals-choice: 0 available, 0 suspended" in output
+    assert output.count("(no current cards)") == 2
 
 
 def test_full_status_reflects_a_persisted_review(workspace: Path) -> None:
@@ -588,8 +589,113 @@ def test_status_uses_persisted_state_when_source_is_unavailable(workspace: Path)
     (workspace / "data" / "knowledge.ttl").unlink()
     code, output, error = run_cli("--config", config_path, "status")
     assert code == 0
-    assert "2 active" in output
+    assert "2 available" in output
     assert not error
+
+
+def test_cli_suspends_and_resumes_membership_without_loading_sources(
+    workspace: Path,
+) -> None:
+    config_path = str(workspace / "rdfcards.toml")
+    assert run_cli("--config", config_path, "sync")[0] == 0
+    config = load_config(config_path)
+    with Repository(config.state_path) as repository:
+        card_id = repository.active_cards("capitals-basic")[0].card_id
+
+    (workspace / "data" / "knowledge.ttl").unlink()
+    code, output, error = run_cli(
+        "--config",
+        config_path,
+        "suspend",
+        "capitals-basic",
+        card_id,
+        "--reason",
+        "  confusing wording  ",
+    )
+    assert code == 0
+    assert output == f"capitals-basic: suspended {card_id}\n"
+    assert error == ""
+
+    code, output, error = run_cli(
+        "--config",
+        config_path,
+        "status",
+        "--deck",
+        "capitals-basic",
+        "--full",
+    )
+    assert code == 0
+    assert "1 available, 1 suspended" in output
+    assert "suspended/new/due" in output
+    assert "confusing wording" in output
+    assert error == ""
+
+    code, output, error = run_cli(
+        "--config",
+        config_path,
+        "resume",
+        "capitals-basic",
+        card_id,
+    )
+    assert code == 0
+    assert output == f"capitals-basic: resumed {card_id}\n"
+    assert error == ""
+    with Repository(config.state_path) as repository:
+        assert repository.card_available("capitals-basic", card_id)
+
+
+def test_cli_suspension_rejects_invalid_or_unknown_card_ids(workspace: Path) -> None:
+    config_path = str(workspace / "rdfcards.toml")
+    with pytest.raises(SystemExit, match="2"):
+        build_parser().parse_args(["suspend", "capitals-basic", "not-a-card"])
+
+    unknown = "0" * 64
+    code, _, error = run_cli(
+        "--config",
+        config_path,
+        "resume",
+        "capitals-basic",
+        unknown,
+    )
+    assert code == 2
+    assert "is not a known member" in error
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "fake line\ninjection",
+        "\x1b[31mred",
+        "safe\u202etext",
+        "zero\u200bwidth",
+        "line\u2028separator",
+        "surrogate\ud800",
+    ),
+)
+def test_cli_suspension_rejects_terminal_control_characters(
+    workspace: Path,
+    reason: str,
+) -> None:
+    config_path = str(workspace / "rdfcards.toml")
+    assert run_cli("--config", config_path, "sync")[0] == 0
+    config = load_config(config_path)
+    with Repository(config.state_path) as repository:
+        card_id = repository.active_cards("capitals-basic")[0].card_id
+
+    code, _, error = run_cli(
+        "--config",
+        config_path,
+        "suspend",
+        "capitals-basic",
+        card_id,
+        "--reason",
+        reason,
+    )
+
+    assert code == 2
+    assert "cannot contain control characters" in error
+    with Repository(config.state_path) as repository:
+        assert repository.card_available("capitals-basic", card_id)
 
 
 def test_missing_config_has_actionable_error(tmp_path: Path) -> None:

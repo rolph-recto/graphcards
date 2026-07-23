@@ -72,6 +72,7 @@ class StudySession:
         self.session_token = secrets.token_urlsafe(32)
         self.index = 0
         self.completed_count = 0
+        self.suspended_count = 0
         self.skipped: list[str] = []
         self.current: CurrentCard | None = None
         self._load_current()
@@ -87,6 +88,11 @@ class StudySession:
     def _load_current(self) -> None:
         while self.index < len(self.cards):
             card = self.cards[self.index]
+            if not self.service.repository.card_available(self.deck.name, card.card_id):
+                if self.service.repository.card_suspended(self.deck.name, card.card_id):
+                    self.suspended_count += 1
+                self.index += 1
+                continue
             try:
                 presentation = self.service.render(self.deck, card)
                 front = presentation.front_text(self.rng)
@@ -105,6 +111,7 @@ class StudySession:
     def _require_current(self, session_token: str, card_id: str) -> CurrentCard:
         if not secrets.compare_digest(session_token, self.session_token):
             raise RequestFailure(HTTPStatus.FORBIDDEN, "This study form is not valid.")
+        self.refresh_availability()
         if self.current is None:
             raise RequestFailure(HTTPStatus.CONFLICT, "This study session is already complete.")
         if card_id != self.current.card.card_id:
@@ -152,8 +159,27 @@ class StudySession:
             )
         self._advance()
 
-    def _advance(self) -> None:
-        self.completed_count += 1
+    def suspend(self, session_token: str, card_id: str, reason: str | None) -> None:
+        current = self._require_current(session_token, card_id)
+        self.service.suspend(self.deck, current.card.card_id, reason)
+        self._advance(completed=False, suspended=True)
+
+    def refresh_availability(self) -> None:
+        """Drop a current card suspended or removed after session creation."""
+
+        if self.current is None or self.service.repository.card_available(
+            self.deck.name,
+            self.current.card.card_id,
+        ):
+            return
+        self.current = None
+        self._load_current()
+
+    def _advance(self, *, completed: bool = True, suspended: bool = False) -> None:
+        if completed:
+            self.completed_count += 1
+        if suspended:
+            self.suspended_count += 1
         self.index += 1
         self.current = None
         self._load_current()
@@ -170,10 +196,12 @@ def completion_summary(session: StudySession) -> tuple[str, str]:
         title = "No forgotten cards"
         summary = f"No cards were rated Again in the last {session.days} day(s)."
     elif session.mode is StudyMode.PRACTICE:
-        title, summary = "Nothing to practice", "This deck has no active cards."
+        title, summary = "Nothing to practice", "This deck has no available cards."
     else:
         title = "Nothing due soon"
         summary = f"No cards are due in the next {session.days} day(s)."
     if session.skipped:
         summary += f" Skipped {len(session.skipped)} card(s) that could not be presented."
+    if session.suspended_count:
+        summary += f" Suspended {session.suspended_count} card(s)."
     return title, summary

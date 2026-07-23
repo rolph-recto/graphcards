@@ -9,7 +9,9 @@
       <h1>{{ deck.name }}</h1>
       <p class="muted">Review activity and FSRS memory metrics.</p>
     </div>
-    <p class="muted">{{ active_count }} active card(s)</p>
+    <p class="muted">
+      {{ available_count }} available · {{ suspended_count }} suspended
+    </p>
   </header>
 
   <section class="history" id="history" aria-labelledby="history-title">
@@ -23,6 +25,7 @@
       <form class="history-range" method="get"
             action="{{ url_for('card_status', deck_name=deck.name) }}#history">
         <input type="hidden" name="schedule" value="{{ query.schedule.value }}">
+        <input type="hidden" name="availability" value="{{ query.availability.value }}">
         <input type="hidden" name="state" value="{{ query.state.value }}">
         <input type="hidden" name="sort" value="{{ query.sort.value }}">
         <input type="hidden" name="direction" value="{{ query.direction.value }}">
@@ -137,6 +140,17 @@
         action="{{ url_for('card_status', deck_name=deck.name) }}">
     <input type="hidden" name="range" value="{{ query.range.value }}">
     <label>
+      Availability
+      <select name="availability">
+        {% for value, label in availability_options %}
+          <option value="{{ value.value }}"
+                  {% if value == query.availability %} selected{% endif %}>
+            {{ label }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
       Schedule
       <select name="schedule">
         {% for value, label in schedule_options %}
@@ -189,6 +203,7 @@
             <th>Review history</th>
             <th>Next review</th>
             <th>FSRS metrics</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -202,6 +217,9 @@
                   {% for badge in row.badges %}<span class="badge">{{ badge }}</span>{% endfor %}
                 </div>
                 <span class="metric-note">{{ row.fsrs_label }}</span>
+                {% if row.suspension_reason %}
+                  <span class="suspension-reason">{{ row.suspension_reason }}</span>
+                {% endif %}
               </td>
               <td>
                 <span class="review-summary">
@@ -229,6 +247,41 @@
                   <span>Difficulty: {{ row.difficulty }}</span>
                   <span>Retrievability: {{ row.retrievability }}</span>
                 </span>
+              </td>
+              <td>
+                {% if row.status.suspended %}
+                  <form class="card-action" method="post"
+                        action="{{ url_for('resume_card', deck_name=deck.name) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="card_id" value="{{ row.status.card_id }}">
+                    <input type="hidden" name="availability"
+                           value="{{ query.availability.value }}">
+                    <input type="hidden" name="schedule" value="{{ query.schedule.value }}">
+                    <input type="hidden" name="state" value="{{ query.state.value }}">
+                    <input type="hidden" name="sort" value="{{ query.sort.value }}">
+                    <input type="hidden" name="direction" value="{{ query.direction.value }}">
+                    <input type="hidden" name="range" value="{{ query.range.value }}">
+                    <button type="submit">Resume</button>
+                  </form>
+                {% else %}
+                  <form class="card-action suspend-action" method="post"
+                        action="{{ url_for('suspend_card', deck_name=deck.name) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="card_id" value="{{ row.status.card_id }}">
+                    <input type="hidden" name="availability"
+                           value="{{ query.availability.value }}">
+                    <input type="hidden" name="schedule" value="{{ query.schedule.value }}">
+                    <input type="hidden" name="state" value="{{ query.state.value }}">
+                    <input type="hidden" name="sort" value="{{ query.sort.value }}">
+                    <input type="hidden" name="direction" value="{{ query.direction.value }}">
+                    <input type="hidden" name="range" value="{{ query.range.value }}">
+                    <label>
+                      <span>Reason (optional)</span>
+                      <input name="reason" maxlength="500">
+                    </label>
+                    <button type="submit">Suspend</button>
+                  </form>
+                {% endif %}
               </td>
             </tr>
           {% endfor %}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import re
 import sqlite3
 import sys
 from collections.abc import Callable, Sequence
@@ -28,6 +29,12 @@ def _nonnegative_int(value: str) -> int:
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be zero or greater")
     return parsed
+
+
+def _card_id(value: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise argparse.ArgumentTypeError("must be a 64-character lowercase hexadecimal card ID")
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -65,6 +72,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=20,
         help="maximum cards to review; 0 means unlimited (default: %(default)s)",
     )
+    suspend_parser = subparsers.add_parser(
+        "suspend", help="exclude a card from one deck's study queues"
+    )
+    suspend_parser.add_argument("deck", help="configured deck name")
+    suspend_parser.add_argument("card_id", type=_card_id, help="full card ID from status --full")
+    suspend_parser.add_argument("--reason", help="optional current suspension reason")
+
+    resume_parser = subparsers.add_parser(
+        "resume", help="return a suspended card to one deck's study queues"
+    )
+    resume_parser.add_argument("deck", help="configured deck name")
+    resume_parser.add_argument("card_id", type=_card_id, help="full card ID from status --full")
+
     subparsers.add_parser("serve", help="open the local web study interface")
     return parser
 
@@ -86,19 +106,29 @@ def _run_sync(config: AppConfig, deck_name: str | None, output: TextIO) -> None:
         app = StudyService(graph, repository, config.fsrs.create_scheduler())
         for deck in _selected_decks(config, deck_name):
             active, created = app.sync(deck)
-            print(f"{deck.name}: {active} active, {created} new", file=output)
+            print(f"{deck.name}: {active} current, {created} new", file=output)
 
 
 def _status_label(card: CardStatus, now: datetime) -> str:
     timing = "due" if card.due_at <= now else "future"
-    return f"new/{timing}" if card.review_count == 0 else timing
+    schedule = f"new/{timing}" if card.review_count == 0 else timing
+    return f"suspended/{schedule}" if card.suspended else schedule
 
 
 def _print_status_table(cards: tuple[CardStatus, ...], now: datetime, output: TextIO) -> None:
     if not cards:
-        print("(no active cards)", file=output)
+        print("(no current cards)", file=output)
         return
-    headers = ("CARD ID", "TARGET", "STATUS", "FSRS STATE", "REVIEWS", "DUE (UTC)", "IDENTITY")
+    headers = (
+        "CARD ID",
+        "TARGET",
+        "STATUS",
+        "FSRS STATE",
+        "REVIEWS",
+        "DUE (UTC)",
+        "REASON",
+        "IDENTITY",
+    )
     rows = [
         (
             card.card_id,
@@ -107,6 +137,7 @@ def _print_status_table(cards: tuple[CardStatus, ...], now: datetime, output: Te
             card.fsrs_state,
             str(card.review_count),
             datetime_to_text(card.due_at),
+            card.suspension_reason or "",
             " ".join(card.card_key.n3_terms),
         )
         for card in cards
@@ -135,7 +166,8 @@ def _run_status(config: AppConfig, deck_name: str | None, full: bool, output: Te
                 print(file=output)
             status = repository.status(deck.name, now)
             print(
-                f"{deck.name}: {status.active} active, {status.new} new, "
+                f"{deck.name}: {status.available} available, "
+                f"{status.suspended} suspended, {status.new} new, "
                 f"{status.due} due, {status.future} future",
                 file=output,
             )
@@ -213,6 +245,31 @@ def _run_study(
         print(f"Reviewed {reviewed} card(s).", file=output)
 
 
+def _run_suspend(
+    config: AppConfig,
+    deck_name: str,
+    card_id: str,
+    reason: str | None,
+    output: TextIO,
+) -> None:
+    deck = config.deck(deck_name)
+    with Repository(config.state_path) as repository:
+        repository.suspend_card(deck.name, card_id, reason)
+    print(f"{deck.name}: suspended {card_id}", file=output)
+
+
+def _run_resume(
+    config: AppConfig,
+    deck_name: str,
+    card_id: str,
+    output: TextIO,
+) -> None:
+    deck = config.deck(deck_name)
+    with Repository(config.state_path) as repository:
+        repository.resume_card(deck.name, card_id)
+    print(f"{deck.name}: resumed {card_id}", file=output)
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -258,6 +315,10 @@ def main(
                 error,
                 rng or random.Random(),
             )
+        elif args.command == "suspend":
+            _run_suspend(config, args.deck, args.card_id, args.reason, output)
+        elif args.command == "resume":
+            _run_resume(config, args.deck, args.card_id, output)
         elif args.command == "serve":
             run_server(
                 config,

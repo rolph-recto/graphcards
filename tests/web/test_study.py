@@ -24,6 +24,7 @@ from tests.web.support import (
     set_card_due,
     start_form,
     start_session,
+    status_action_form,
 )
 
 
@@ -245,6 +246,104 @@ def test_practice_is_stable_and_never_updates_scheduling(
         for card in hub_server.repository.active_cards("capitals-basic")
     }
     assert after == before
+    assert review_count(hub_server.repository) == 0
+
+
+def test_study_can_suspend_current_card_without_recording_review(
+    hub_server: FlaskHub,
+) -> None:
+    session = start_session(hub_server)
+    first = current_form(hub_server)
+
+    status, headers, _ = exchange(
+        hub_server,
+        "POST",
+        "/study/suspend",
+        first | {"reason": "  ambiguous answer  "},
+    )
+
+    assert status == 303
+    assert headers["location"] == "/study"
+    assert hub_server.repository.card_suspended(
+        session.deck.name,
+        str(first["card_id"]),
+    )
+    assert session.completed_count == 0
+    assert session.suspended_count == 1
+    assert session.current is not None
+    assert session.current.card.card_id != first["card_id"]
+    assert review_count(hub_server.repository) == 0
+
+    second = current_form(hub_server)
+    assert exchange(hub_server, "POST", "/study/suspend", second)[0] == 303
+    assert session.complete
+    body = exchange(hub_server, "GET", "/study")[2]
+    assert "Reviewed 0 card(s)." in body
+    assert "Suspended 2 card(s)." in body
+    assert review_count(hub_server.repository) == 0
+
+
+def test_study_accepts_maximum_length_multibyte_suspension_reason(
+    hub_server: FlaskHub,
+) -> None:
+    session = start_session(hub_server)
+    fields = current_form(hub_server)
+    reason = "界" * 500
+
+    status, _, _ = exchange(
+        hub_server,
+        "POST",
+        "/study/suspend",
+        fields | {"reason": reason},
+    )
+
+    assert status == 303
+    stored = next(
+        row
+        for row in hub_server.repository.card_statuses(session.deck.name)
+        if row.card_id == fields["card_id"]
+    )
+    assert stored.suspension_reason == reason
+
+
+def test_study_rejects_suspension_reason_control_characters(
+    hub_server: FlaskHub,
+) -> None:
+    session = start_session(hub_server)
+    fields = current_form(hub_server)
+
+    status, _, body = exchange(
+        hub_server,
+        "POST",
+        "/study/suspend",
+        fields | {"reason": "\x1b[31mred"},
+    )
+
+    assert status == 400
+    assert "The suspension form is invalid." in body
+    assert session.current is not None
+    assert session.current.card.card_id == fields["card_id"]
+    assert review_count(hub_server.repository) == 0
+
+
+def test_status_suspension_removes_card_from_existing_session(
+    hub_server: FlaskHub,
+) -> None:
+    session = start_session(hub_server)
+    stale = current_form(hub_server)
+
+    status, _, _ = exchange(
+        hub_server,
+        "POST",
+        f"/decks/{session.deck.name}/cards/suspend",
+        status_action_form(hub_server, str(stale["card_id"])),
+    )
+
+    assert status == 303
+    assert session.suspended_count == 1
+    assert session.current is not None
+    assert session.current.card.card_id != stale["card_id"]
+    assert exchange(hub_server, "POST", "/study/reveal", stale)[0] == 409
     assert review_count(hub_server.repository) == 0
 
 

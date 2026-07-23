@@ -169,13 +169,15 @@ distinct cards. Length prefixes prevent concatenation ambiguity, and N3 retains 
 and language tags.
 
 Synchronization never resets a known card. If an identity disappears from a deck query, its deck
-association becomes inactive but its schedule and reviews remain. If it reappears, that schedule
-is restored. Changing a triple term or entity IRI creates a new card. Matching triples share a
-schedule across triple decks, and matching entities share one across entity decks; triple and
-entity schedules never merge.
+association becomes inactive but its schedule, suspension, and reviews remain. If it reappears,
+that state is restored. Changing a triple term or entity IRI creates a new card. Matching triples
+share a schedule across triple decks, and matching entities share one across entity decks; triple
+and entity schedules never merge.
 
-RDFCards uses schema v3 state and does not migrate other schema versions. If it reports an
-unsupported version, move or delete the database and run `sync` to create fresh state.
+RDFCards uses schema v4 state and migrates schema v3 databases in place. The additive migration
+does not rewrite cards or reviews; existing memberships start unsuspended. Other schema versions
+remain unsupported. A schema v4 database cannot be opened by an older RDFCards version, so make a
+copy of important state before upgrading.
 
 ## How synchronization works
 
@@ -191,20 +193,25 @@ identity before SQLite is changed.
 Each deck is reconciled in one transaction:
 
 1. Existing memberships for that deck are marked inactive.
-2. Cards returned by the current query are inserted or reactivated.
+2. Cards returned by the current query are inserted or reactivated without overwriting suspension.
 3. New identities receive a new FSRS card due immediately.
 4. Existing identities retain their schedule and review history.
-5. Identities no longer returned remain inactive without losing their history.
+5. Identities no longer returned remain inactive without losing their history or suspension.
 
 Cards are global while deck memberships are local. The same triple shared by two triple decks,
 or the same entity shared by two entity decks, therefore has one FSRS schedule. Triple and entity
 cards remain separate even when they refer to the same IRI. Any query, identity, or database
 failure rolls back the selected deck's reconciliation.
 
+Suspension is local to a deck membership. Suspending a shared card in one deck does not suspend it
+in another. Reviews through another deck can still advance the shared global schedule, and the
+resumed membership uses that current schedule. Renaming a deck creates different memberships and
+does not transfer suspension from the old deck name.
+
 ## SQLite schema
 
-The state file uses SQLite schema version 3. `cards` owns the global FSRS schedule, `deck_cards`
-tracks per-deck membership, and `reviews` stores the immutable review history.
+The state file uses SQLite schema version 4. `cards` owns the global FSRS schedule, `deck_cards`
+tracks per-deck membership and current suspension, and `reviews` stores immutable rating history.
 
 ```sql
 CREATE TABLE cards (
@@ -222,10 +229,19 @@ CREATE TABLE deck_cards (
     deck_name TEXT NOT NULL,
     card_id TEXT NOT NULL REFERENCES cards(card_id),
     active INTEGER NOT NULL CHECK (active IN (0, 1)),
+    suspended INTEGER NOT NULL DEFAULT 0 CHECK (suspended IN (0, 1)),
+    suspension_reason TEXT CHECK (
+        suspension_reason IS NULL OR (
+            length(suspension_reason) BETWEEN 1 AND 500
+            AND suspension_reason = trim(suspension_reason)
+        )
+    ),
     last_seen_at TEXT NOT NULL,
     PRIMARY KEY (deck_name, card_id)
 );
 CREATE INDEX deck_cards_active_idx ON deck_cards(deck_name, active);
+CREATE INDEX deck_cards_queue_idx
+    ON deck_cards(deck_name, active, suspended, card_id);
 
 CREATE TABLE reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,7 +254,7 @@ CREATE TABLE reviews (
 CREATE INDEX reviews_card_idx ON reviews(card_id, reviewed_at);
 CREATE INDEX reviews_deck_time_idx ON reviews(deck_name, reviewed_at, id);
 
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 ```
 
 `identity_json` is a JSON array of canonical RDF N3 terms. It contains one IRI for entity cards
@@ -246,7 +262,8 @@ or the subject, predicate, and object for triple cards. `card_json` is the seria
 card. `review_json` contains the py-fsrs review log plus optional immutable interval and
 pre-review retrievability values used by browser analytics. Records created before those values
 were available still contribute to volume, ratings, and streaks. All timestamp columns contain
-UTC ISO 8601 text.
+UTC ISO 8601 text. Suspension and its optional reason are current membership state, not review
+events; resuming clears the reason and does not add or alter review history.
 
 ## Commands
 
@@ -257,31 +274,44 @@ rdfcards [-c PATH] validate [--deck NAME]
 rdfcards [-c PATH] sync [--deck NAME]
 rdfcards [-c PATH] status [--deck NAME] [--full]
 rdfcards [-c PATH] study NAME [--limit N]
+rdfcards [-c PATH] suspend DECK CARD_ID [--reason TEXT]
+rdfcards [-c PATH] resume DECK CARD_ID
 rdfcards [-c PATH] serve
 ```
 
 `validate` does not create or modify study state. `status --full` follows each deck summary with
 a card-level table containing the identity hash, target, due status, FSRS state, review count,
-UTC due time, and RDF identity. `study` synchronizes its selected deck before selecting due cards.
-A limit of zero means no session limit. Both basic and multiple-choice cards show the front,
-wait for Enter, reveal the back, and ask for one of the four FSRS ratings. Multiple-choice fronts
+UTC due time, suspension reason, and RDF identity. Use the full card ID with `suspend` or `resume`;
+these commands use persisted membership state without loading RDF sources. Reasons are optional,
+trimmed, single-line text limited to 500 characters; control characters, Unicode format controls,
+and line separators are rejected. Reasons are cleared on resume. An inactive membership can be
+resumed from the CLI before its card reappears in a later sync.
+
+`study` synchronizes its selected deck before selecting due cards. Suspended cards are excluded
+from due study, practice, forgotten review, and review-ahead queues without changing their FSRS
+schedule. A resumed card returns at its existing schedule and may therefore be immediately due.
+A limit of zero means no session limit. Both basic and multiple-choice cards show the front, wait
+for Enter, reveal the back, and ask for one of the four FSRS ratings. Multiple-choice fronts
 include their priority-selected shuffled choices, and their back is the correct choice.
 
 Run `serve` to open the Flask-based browser study interface. RDFCards synchronizes every
 configured deck, binds its single-threaded local server to an automatically selected port on
 `127.0.0.1`, prints and opens the local URL, and keeps serving until Ctrl-C. The deck list shows
-current card counts and supports regular due-card study, reviewing recently forgotten cards,
-schedule-free deck practice, and reviewing future cards ahead of time. Each deck also links to a
-read-only page that shows review history first, followed by current card status using N3 RDF
+current available and suspended counts and supports regular due-card study, reviewing recently
+forgotten cards, schedule-free deck practice, and reviewing future cards ahead of time. Each deck
+also links to a page that shows review history first, followed by current card status using N3 RDF
 identities, next review, FSRS state, stability, difficulty, and current retrievability. Status can
-be filtered by schedule or FSRS state, sorted by scheduling metrics, and show 100 cards per page.
-The same page
+be filtered by availability, schedule, or FSRS state, sorted by scheduling metrics, and show 100
+cards per page. Suspended rows show the optional reason and a Resume action. Available rows can be
+suspended with an optional reason, and the current study card can be suspended without recording a
+review. The same page
 includes immutable review analytics for selectable 30-day, 90-day, one-year, and all-time ranges:
 review volume, rating distribution and Again rate, active-day streaks, interval growth, and
 pre-review FSRS retrievability where recorded. History follows the deck used for each review and
 continues to include cards that are no longer active in that deck. Browser sessions use stable
 card snapshots, preserve the current card across refreshes, and save a scheduled review only after
-a valid rating is submitted.
+a valid rating is submitted. Suspension takes effect immediately: pending suspended cards are
+skipped, and a stale form cannot review a card after it is suspended.
 
 All scheduling timestamps are stored in UTC. The browser formats them in `display_timezone`.
 Changing FSRS configuration affects future reviews; existing cards are not automatically

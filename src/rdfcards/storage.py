@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,7 +15,27 @@ from rdfcards.decks import DeckKind
 from rdfcards.errors import StorageError
 from rdfcards.models import CardKey, RdfModel, TargetKind
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+MAX_SUSPENSION_REASON_LENGTH = 500
+_UNSAFE_REASON_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+
+
+def normalize_suspension_reason(value: object) -> object:
+    """Canonicalize user reason text and reject terminal control characters."""
+
+    if not isinstance(value, str):
+        return value
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if any(
+        unicodedata.category(character) in _UNSAFE_REASON_CATEGORIES for character in normalized
+    ):
+        raise ValueError(
+            "suspension reason cannot contain control characters, format controls, "
+            "or line separators"
+        )
+    return normalized
 
 
 def utc_now() -> datetime:
@@ -61,7 +82,8 @@ class StoredCard(RdfModel):
 
 
 class DeckStatus(RdfModel):
-    active: int
+    available: int
+    suspended: int
     new: int
     due: int
     future: int
@@ -81,6 +103,8 @@ class CardStatus(RdfModel):
     due_at: datetime
     last_review_at: datetime | None
     last_rating: Rating | None
+    suspended: bool
+    suspension_reason: str | None
 
     def stored_card(self) -> StoredCard:
         """Rebuild the complete stored card used for read-only FSRS calculations."""
@@ -90,6 +114,17 @@ class CardStatus(RdfModel):
             card_key=self.card_key,
             card_json=self.card_json,
         )
+
+
+class SuspensionUpdate(RdfModel):
+    """Validated current suspension metadata for one deck membership."""
+
+    reason: str | None = Field(default=None, max_length=MAX_SUSPENSION_REASON_LENGTH)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def normalize_reason(cls, value: object) -> object:
+        return normalize_suspension_reason(value)
 
 
 class ReviewPayload(RdfModel):
@@ -173,7 +208,7 @@ class Repository:
 
     def _initialize_schema(self) -> None:
         current = self.connection.execute("PRAGMA user_version").fetchone()[0]
-        if current not in (0, SCHEMA_VERSION):
+        if current not in (0, 3, SCHEMA_VERSION):
             raise StorageError(
                 f"unsupported state schema version {current}; move or delete the database "
                 "and recreate state"
@@ -196,10 +231,19 @@ class Repository:
                     deck_name TEXT NOT NULL,
                     card_id TEXT NOT NULL REFERENCES cards(card_id),
                     active INTEGER NOT NULL CHECK (active IN (0, 1)),
+                    suspended INTEGER NOT NULL DEFAULT 0 CHECK (suspended IN (0, 1)),
+                    suspension_reason TEXT CHECK (
+                        suspension_reason IS NULL OR (
+                            length(suspension_reason) BETWEEN 1 AND 500
+                            AND suspension_reason = trim(suspension_reason)
+                        )
+                    ),
                     last_seen_at TEXT NOT NULL,
                     PRIMARY KEY (deck_name, card_id)
                 );
                 CREATE INDEX deck_cards_active_idx ON deck_cards(deck_name, active);
+                CREATE INDEX deck_cards_queue_idx
+                    ON deck_cards(deck_name, active, suspended, card_id);
 
                 CREATE TABLE reviews (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -210,16 +254,69 @@ class Repository:
                     review_json TEXT NOT NULL
                 );
                 CREATE INDEX reviews_card_idx ON reviews(card_id, reviewed_at);
-                PRAGMA user_version = 3;
+                PRAGMA user_version = 4;
                 """
             )
-        with self.connection:
+        elif current == 3:
+            self._migrate_v3()
+            return
+        try:
+            with self.connection:
+                self.connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS reviews_deck_time_idx
+                    ON reviews(deck_name, reviewed_at, id)
+                    """
+                )
+                self.connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS deck_cards_queue_idx
+                    ON deck_cards(deck_name, active, suspended, card_id)
+                    """
+                )
+        except sqlite3.Error as error:
+            raise StorageError("state schema is incomplete or corrupt") from error
+
+    def _migrate_v3(self) -> None:
+        """Add per-membership suspension without rewriting schedules or reviews."""
+
+        try:
+            self.connection.execute("BEGIN IMMEDIATE")
+            self.connection.execute(
+                """
+                ALTER TABLE deck_cards ADD COLUMN
+                suspended INTEGER NOT NULL DEFAULT 0
+                CHECK (suspended IN (0, 1))
+                """
+            )
+            self.connection.execute(
+                """
+                ALTER TABLE deck_cards ADD COLUMN
+                suspension_reason TEXT CHECK (
+                    suspension_reason IS NULL OR (
+                        length(suspension_reason) BETWEEN 1 AND 500
+                        AND suspension_reason = trim(suspension_reason)
+                    )
+                )
+                """
+            )
+            self.connection.execute(
+                """
+                CREATE INDEX deck_cards_queue_idx
+                ON deck_cards(deck_name, active, suspended, card_id)
+                """
+            )
             self.connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS reviews_deck_time_idx
                 ON reviews(deck_name, reviewed_at, id)
                 """
             )
+            self.connection.execute("PRAGMA user_version = 4")
+            self.connection.commit()
+        except sqlite3.Error as error:
+            self.connection.rollback()
+            raise StorageError("could not migrate state schema from version 3 to 4") from error
 
     def sync_deck(
         self, deck_name: str, presentations: dict[str, DeckKind], now: datetime
@@ -293,6 +390,107 @@ class Repository:
                 )
         return len(presentations), created
 
+    def suspend_card(self, deck_name: str, card_id: str, reason: str | None = None) -> None:
+        """Suspend one known deck membership without changing its global schedule."""
+
+        try:
+            update = SuspensionUpdate(reason=reason)
+        except ValidationError as error:
+            message = str(error.errors(include_url=False)[0]["msg"])
+            raise StorageError(message.removeprefix("Value error, ")) from error
+        with self.connection:
+            cursor = self.connection.execute(
+                """
+                UPDATE deck_cards
+                SET suspended = 1, suspension_reason = ?
+                WHERE deck_name = ? AND card_id = ?
+                """,
+                (update.reason, deck_name, card_id),
+            )
+            if cursor.rowcount != 1:
+                raise StorageError(f"card {card_id} is not a known member of deck {deck_name!r}")
+
+    def resume_card(self, deck_name: str, card_id: str) -> None:
+        """Resume one known deck membership and clear its current reason."""
+
+        with self.connection:
+            cursor = self.connection.execute(
+                """
+                UPDATE deck_cards
+                SET suspended = 0, suspension_reason = NULL
+                WHERE deck_name = ? AND card_id = ?
+                """,
+                (deck_name, card_id),
+            )
+            if cursor.rowcount != 1:
+                raise StorageError(f"card {card_id} is not a known member of deck {deck_name!r}")
+
+    @staticmethod
+    def _membership_state(
+        active: object,
+        suspended: object,
+        reason: object,
+    ) -> tuple[bool, bool, str | None]:
+        if type(active) is not int or active not in (0, 1):
+            raise StorageError("stored deck membership has an invalid active state")
+        if type(suspended) is not int or suspended not in (0, 1):
+            raise StorageError("stored deck membership has an invalid suspension state")
+        if reason is not None and (
+            not isinstance(reason, str)
+            or not reason
+            or len(reason) > MAX_SUSPENSION_REASON_LENGTH
+            or reason != reason.strip()
+            or any(
+                unicodedata.category(character) in _UNSAFE_REASON_CATEGORIES for character in reason
+            )
+        ):
+            raise StorageError("stored deck membership has an invalid suspension reason")
+        if not suspended and reason is not None:
+            raise StorageError("stored resumed deck membership still has a suspension reason")
+        return bool(active), bool(suspended), reason
+
+    def card_available(self, deck_name: str, card_id: str) -> bool:
+        """Return whether a known membership may currently enter a study queue."""
+
+        state = self._card_membership_state(deck_name, card_id)
+        if state is None:
+            return False
+        active, suspended, _reason = state
+        return active and not suspended
+
+    def card_suspended(self, deck_name: str, card_id: str) -> bool:
+        """Return whether a current membership is suspended."""
+
+        state = self._card_membership_state(deck_name, card_id)
+        if state is None:
+            return False
+        active, suspended, _reason = state
+        return active and suspended
+
+    def has_membership(self, deck_name: str, card_id: str) -> bool:
+        return self._card_membership_state(deck_name, card_id) is not None
+
+    def _card_membership_state(
+        self,
+        deck_name: str,
+        card_id: str,
+    ) -> tuple[bool, bool, str | None] | None:
+        row = self.connection.execute(
+            """
+            SELECT active, suspended, suspension_reason
+            FROM deck_cards
+            WHERE deck_name = ? AND card_id = ?
+            """,
+            (deck_name, card_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._membership_state(
+            row["active"],
+            row["suspended"],
+            row["suspension_reason"],
+        )
+
     @staticmethod
     def _decode_identity(target_kind: object, identity_json: object) -> CardKey:
         """Rebuild and validate the discriminated identity stored beside card_id."""
@@ -323,7 +521,8 @@ class Repository:
             SELECT c.card_id, c.target_kind, c.identity_json, c.card_json, c.due_at
             FROM cards AS c
             JOIN deck_cards AS dc ON dc.card_id = c.card_id
-            WHERE dc.deck_name = ? AND dc.active = 1 AND c.due_at <= ?
+            WHERE dc.deck_name = ? AND dc.active = 1 AND dc.suspended = 0
+              AND c.due_at <= ?
             ORDER BY c.due_at, c.card_id
             """
             + limit_sql,
@@ -332,14 +531,15 @@ class Repository:
         return [self._stored_card(row) for row in rows]
 
     def active_cards(self, deck_name: str) -> list[StoredCard]:
-        """Return every active deck member in schedule order."""
+        """Return every available deck member in schedule order."""
 
+        self._validate_active_memberships(deck_name)
         rows = self.connection.execute(
             """
             SELECT c.card_id, c.target_kind, c.identity_json, c.card_json, c.due_at
             FROM cards AS c
             JOIN deck_cards AS dc ON dc.card_id = c.card_id
-            WHERE dc.deck_name = ? AND dc.active = 1
+            WHERE dc.deck_name = ? AND dc.active = 1 AND dc.suspended = 0
             ORDER BY c.due_at, c.card_id
             """,
             (deck_name,),
@@ -352,8 +552,9 @@ class Repository:
         since: datetime,
         limit: int | None,
     ) -> list[StoredCard]:
-        """Return active cards failed since a timestamp, newest failure first."""
+        """Return available cards failed since a timestamp, newest failure first."""
 
+        self._validate_active_memberships(deck_name)
         parameters: list[object] = [deck_name, datetime_to_text(since)]
         limit_sql = ""
         if limit is not None:
@@ -364,7 +565,7 @@ class Repository:
             SELECT c.card_id, c.target_kind, c.identity_json, c.card_json, c.due_at
             FROM cards AS c
             JOIN deck_cards AS dc ON dc.card_id = c.card_id
-            WHERE dc.deck_name = ? AND dc.active = 1 AND EXISTS (
+            WHERE dc.deck_name = ? AND dc.active = 1 AND dc.suspended = 0 AND EXISTS (
                 SELECT 1
                 FROM reviews AS r
                 WHERE r.card_id = c.card_id AND r.rating = 1 AND r.reviewed_at >= ?
@@ -387,7 +588,7 @@ class Repository:
         through: datetime,
         limit: int | None,
     ) -> list[StoredCard]:
-        """Return active cards due after now through an inclusive horizon."""
+        """Return available cards due after now through an inclusive horizon."""
 
         self._validate_active_due_mirrors(deck_name)
         parameters: list[object] = [
@@ -404,7 +605,7 @@ class Repository:
             SELECT c.card_id, c.target_kind, c.identity_json, c.card_json, c.due_at
             FROM cards AS c
             JOIN deck_cards AS dc ON dc.card_id = c.card_id
-            WHERE dc.deck_name = ? AND dc.active = 1
+            WHERE dc.deck_name = ? AND dc.active = 1 AND dc.suspended = 0
               AND c.due_at > ? AND c.due_at <= ?
             ORDER BY c.due_at, c.card_id
             """
@@ -447,6 +648,24 @@ class Repository:
 
         self.active_cards(deck_name)
 
+    def _validate_active_memberships(self, deck_name: str) -> None:
+        """Validate availability state before indexed predicates can omit corruption."""
+
+        rows = self.connection.execute(
+            """
+            SELECT active, suspended, suspension_reason
+            FROM deck_cards
+            WHERE deck_name = ? AND active = 1
+            """,
+            (deck_name,),
+        ).fetchall()
+        for row in rows:
+            self._membership_state(
+                row["active"],
+                row["suspended"],
+                row["suspension_reason"],
+            )
+
     def save_review(
         self,
         card_id: str,
@@ -459,6 +678,9 @@ class Repository:
     ) -> str:
         """Persist updated FSRS state and its review log in one transaction."""
 
+        # Validate the persisted fields before the indexed write predicate can
+        # misclassify a corrupt membership as reviewable.
+        self._card_membership_state(deck_name, card_id)
         reviewed_at = datetime_to_text(review_log.review_datetime)
         card_json = card.to_json()
         try:
@@ -479,17 +701,30 @@ class Repository:
             cursor = self.connection.execute(
                 """
                 UPDATE cards SET card_json = ?, due_at = ?, updated_at = ?
-                WHERE card_id = ?
+                WHERE card_id = ? AND EXISTS (
+                    SELECT 1
+                    FROM deck_cards AS dc
+                    WHERE dc.deck_name = ? AND dc.card_id = cards.card_id
+                      AND dc.active = 1 AND dc.suspended = 0
+                )
                 """,
                 (
                     card_json,
                     datetime_to_text(card.due),
                     reviewed_at,
                     card_id,
+                    deck_name,
                 ),
             )
             if cursor.rowcount != 1:
-                raise StorageError(f"cannot review unknown card {card_id}")
+                card_exists = self.connection.execute(
+                    "SELECT 1 FROM cards WHERE card_id = ?", (card_id,)
+                ).fetchone()
+                if card_exists is None:
+                    raise StorageError(f"cannot review unknown card {card_id}")
+                raise StorageError(
+                    f"cannot review unavailable card {card_id} in deck {deck_name!r}"
+                )
             self.connection.execute(
                 """
                 INSERT INTO reviews (card_id, deck_name, rating, reviewed_at, review_json)
@@ -555,12 +790,17 @@ class Repository:
         row = self.connection.execute(
             """
             SELECT
-                COUNT(*) AS active,
-                COALESCE(SUM(CASE WHEN NOT EXISTS (
+                COALESCE(SUM(CASE WHEN dc.suspended = 0 THEN 1 ELSE 0 END), 0)
+                    AS available,
+                COALESCE(SUM(CASE WHEN dc.suspended = 1 THEN 1 ELSE 0 END), 0)
+                    AS suspended,
+                COALESCE(SUM(CASE WHEN dc.suspended = 0 AND NOT EXISTS (
                     SELECT 1 FROM reviews AS r WHERE r.card_id = c.card_id
                 ) THEN 1 ELSE 0 END), 0) AS new,
-                COALESCE(SUM(CASE WHEN c.due_at <= ? THEN 1 ELSE 0 END), 0) AS due,
-                COALESCE(SUM(CASE WHEN c.due_at > ? THEN 1 ELSE 0 END), 0) AS future
+                COALESCE(SUM(CASE WHEN dc.suspended = 0 AND c.due_at <= ?
+                    THEN 1 ELSE 0 END), 0) AS due,
+                COALESCE(SUM(CASE WHEN dc.suspended = 0 AND c.due_at > ?
+                    THEN 1 ELSE 0 END), 0) AS future
             FROM cards AS c
             JOIN deck_cards AS dc ON dc.card_id = c.card_id
             WHERE dc.deck_name = ? AND dc.active = 1
@@ -568,12 +808,17 @@ class Repository:
             (timestamp, timestamp, deck_name),
         ).fetchone()
         return DeckStatus(
-            active=row["active"], new=row["new"], due=row["due"], future=row["future"]
+            available=row["available"],
+            suspended=row["suspended"],
+            new=row["new"],
+            due=row["due"],
+            future=row["future"],
         )
 
     def card_statuses(self, deck_name: str) -> tuple[CardStatus, ...]:
         """Return active deck members in the same due-time order used for study."""
 
+        self._validate_active_memberships(deck_name)
         rows = self.connection.execute(
             """
             SELECT
@@ -582,6 +827,9 @@ class Repository:
                 c.identity_json,
                 c.card_json,
                 c.due_at,
+                dc.active,
+                dc.suspended,
+                dc.suspension_reason,
                 (
                     SELECT COUNT(*)
                     FROM reviews AS r
@@ -611,6 +859,11 @@ class Repository:
         statuses: list[CardStatus] = []
         for row in rows:
             stored = self._stored_card(row)
+            _active, suspended, suspension_reason = self._membership_state(
+                row["active"],
+                row["suspended"],
+                row["suspension_reason"],
+            )
             card = stored.card()
             history_last_review = (
                 _datetime_from_text(row["last_review_at"])
@@ -642,6 +895,8 @@ class Repository:
                     due_at=datetime_as_utc(card.due),
                     last_review_at=history_last_review,
                     last_rating=last_rating,
+                    suspended=suspended,
+                    suspension_reason=suspension_reason,
                 )
             )
         return tuple(statuses)

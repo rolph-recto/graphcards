@@ -17,7 +17,8 @@ def test_index_lists_decks_counts_and_advanced_options(
     assert status == 200
     assert "capitals-basic" in body
     assert "capitals-choice" in body
-    assert body.count("<strong>2</strong> active") == 2
+    assert body.count("<strong>2</strong> available") == 2
+    assert body.count("<strong>0</strong> suspended") == 2
     assert body.count("<strong>2</strong> due") == 2
     assert "Review forgotten" in body
     assert "Practice deck" in body
