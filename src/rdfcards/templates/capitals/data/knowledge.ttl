@@ -1,0 +1,7 @@
+@prefix ex: <https://example.org/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+ex:France ex:capital ex:Paris ; rdfs:label "France" .
+ex:Germany ex:capital ex:Berlin ; rdfs:label "Germany" .
+ex:Paris a ex:City ; rdfs:label "Paris" .
+ex:Berlin a ex:City ; rdfs:label "Berlin" .

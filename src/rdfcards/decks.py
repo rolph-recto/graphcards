@@ -1,0 +1,328 @@
+"""Polymorphic deck kinds that own presentation grouping and terminal interaction."""
+
+from __future__ import annotations
+
+import random
+from abc import ABC, abstractmethod
+from collections import defaultdict
+from collections.abc import Callable
+from inspect import isabstract
+from typing import ClassVar, Self, TextIO
+
+from fsrs import Rating
+from rdflib import Literal
+from rdflib.namespace import XSD
+from rdflib.term import Identifier
+
+from rdfcards.errors import PresentationError
+from rdfcards.models import CardKey, RdfModel, TargetKind
+
+
+class DeckKind(RdfModel, ABC):
+    """A generated presentation and the behavior associated with its deck kind."""
+
+    config_name: ClassVar[str]
+    required_variables: ClassVar[frozenset[str]]
+    _registry: ClassVar[dict[str, type[DeckKind]]] = {}
+
+    card_key: CardKey
+    front: Identifier
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
+        """Register concrete kinds that explicitly declare a configuration name."""
+
+        super().__pydantic_init_subclass__(**kwargs)
+        if "config_name" not in cls.__dict__ or isabstract(cls):
+            return
+        cls.validate_kind_class(cls)
+        existing = cls._registry.get(cls.config_name)
+        if existing is not None and existing is not cls:
+            raise TypeError(
+                f"deck kind name {cls.config_name!r} is already registered by {existing.__name__}"
+            )
+        cls._registry[cls.config_name] = cls
+
+    @classmethod
+    def validate_kind_class(cls, kind: object) -> type[DeckKind]:
+        """Validate a programmatically supplied kind before a deck can use it."""
+
+        if not isinstance(kind, type) or not issubclass(kind, cls):
+            raise ValueError("kind must be a DeckKind subclass")
+        if isabstract(kind):
+            raise ValueError("kind must be a concrete DeckKind subclass")
+        config_name = getattr(kind, "config_name", None)
+        if not isinstance(config_name, str) or not config_name:
+            raise ValueError("kind must define a non-empty config_name")
+        required = getattr(kind, "required_variables", None)
+        if (
+            not isinstance(required, frozenset)
+            or not required
+            or not all(isinstance(variable, str) and variable for variable in required)
+        ):
+            raise ValueError("kind must define required_variables as non-empty strings")
+        return kind
+
+    @classmethod
+    def from_name(cls, name: str) -> type[DeckKind]:
+        """Resolve the stable TOML name for a concrete deck kind."""
+
+        try:
+            kind = cls._registry[name]
+            if not issubclass(kind, cls):
+                raise KeyError(name)
+            return kind
+        except KeyError as error:
+            available = ", ".join(
+                repr(value)
+                for value, kind in sorted(cls._registry.items())
+                if issubclass(kind, cls)
+            )
+            raise ValueError(f"kind must be {available}") from error
+
+    @classmethod
+    @abstractmethod
+    def group(
+        cls,
+        result: object,
+        *,
+        target: TargetKind,
+        deck_name: str,
+        expected: set[str],
+    ) -> dict[str, Self]:
+        """Convert validated SPARQL rows into presentations keyed by card ID."""
+
+    @abstractmethod
+    def answer(
+        self,
+        input_fn: Callable[[], str],
+        output: TextIO,
+        rng: random.Random,
+    ) -> Rating | None:
+        """Present one card and return its rating, or None when the user quits."""
+
+    @staticmethod
+    def _row_values(row: object) -> dict[str, Identifier]:
+        return {str(key): value for key, value in row.asdict().items()}  # type: ignore[attr-defined]
+
+    @staticmethod
+    def _require_bound(
+        values: dict[str, Identifier],
+        expected: set[str],
+        deck_name: str,
+        row_number: int,
+    ) -> None:
+        missing = sorted(name for name in expected if values.get(name) is None)
+        if missing:
+            joined = ", ".join(f"?{name}" for name in missing)
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} has unbound required variables: {joined}"
+            )
+
+    @staticmethod
+    def _card_key(
+        values: dict[str, Identifier],
+        target: TargetKind,
+        deck_name: str,
+        row_number: int,
+    ) -> CardKey:
+        try:
+            return CardKey.from_bindings(target, values)
+        except PresentationError as error:
+            raise PresentationError(f"deck {deck_name!r} row {row_number}: {error}") from error
+
+    @classmethod
+    def _by_digest(cls, presentations: list[Self]) -> dict[str, Self]:
+        # Comparing identities as well as hashes prevents a collision from
+        # silently merging two distinct RDF cards.
+        by_digest: dict[str, Self] = {}
+        for presentation in presentations:
+            card_id = presentation.card_key.digest
+            existing = by_digest.get(card_id)
+            if existing is not None and existing.card_key != presentation.card_key:
+                raise PresentationError("SHA-256 collision between two different card identities")
+            by_digest[card_id] = presentation
+        return by_digest
+
+    @staticmethod
+    def _prompt(input_fn: Callable[[], str], output: TextIO, message: str) -> str:
+        print(message, end="", flush=True, file=output)
+        return input_fn().strip()
+
+
+class Basic(DeckKind):
+    """A front/back presentation that the student rates manually."""
+
+    config_name = "basic"
+    required_variables = frozenset({"front", "back"})
+
+    back: Identifier
+
+    @classmethod
+    def group(
+        cls,
+        result: object,
+        *,
+        target: TargetKind,
+        deck_name: str,
+        expected: set[str],
+    ) -> dict[str, Self]:
+        # Identical duplicate rows are harmless, but differing presentations
+        # for one identity are ambiguous.
+        grouped: dict[CardKey, set[tuple[Identifier, Identifier]]] = defaultdict(set)
+        for row_number, row in enumerate(result, start=1):  # type: ignore[arg-type]
+            values = cls._row_values(row)
+            cls._require_bound(values, expected, deck_name, row_number)
+            card_key = cls._card_key(values, target, deck_name, row_number)
+            grouped[card_key].add((values["front"], values["back"]))
+
+        presentations: list[Self] = []
+        for card_key, pairs in grouped.items():
+            if len(pairs) != 1:
+                raise PresentationError(
+                    f"deck {deck_name!r} returns conflicting front/back values for card "
+                    f"{card_key.digest}"
+                )
+            front, back = next(iter(pairs))
+            presentations.append(cls(card_key=card_key, front=front, back=back))
+        return cls._by_digest(presentations)
+
+    def answer(
+        self,
+        input_fn: Callable[[], str],
+        output: TextIO,
+        rng: random.Random,
+    ) -> Rating | None:
+        del rng  # Basic cards do not need randomness, but all deck kinds share one answer API.
+        print(f"\nFront: {self.front}", file=output)
+        answer = self._prompt(input_fn, output, "Press Enter to reveal, or q to quit: ")
+        if answer.casefold() == "q":
+            return None
+        print(f"Back:  {self.back}", file=output)
+        ratings = {"1": Rating.Again, "2": Rating.Hard, "3": Rating.Good, "4": Rating.Easy}
+        while True:
+            answer = self._prompt(
+                input_fn,
+                output,
+                "Rate 1=Again 2=Hard 3=Good 4=Easy, or q to quit: ",
+            )
+            if answer.casefold() == "q":
+                return None
+            if answer in ratings:
+                return ratings[answer]
+            print("Please enter 1, 2, 3, 4, or q.", file=output)
+
+
+class Choice(RdfModel):
+    value: Identifier
+    is_correct: bool
+
+
+class MultipleChoice(DeckKind):
+    """A choice presentation graded automatically as Again or Good."""
+
+    config_name = "multiple_choice"
+    required_variables = frozenset({"front", "choice", "is_correct"})
+
+    choices: tuple[Choice, ...]
+
+    @staticmethod
+    def _boolean(value: Identifier, deck_name: str, row_number: int) -> bool:
+        # RDFLib may coerce malformed lexical forms, so inspect the RDF literal
+        # before accepting its converted Python value.
+        if not isinstance(value, Literal) or value.datatype != XSD.boolean:
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} ?is_correct must be an xsd:boolean literal"
+            )
+        if str(value) not in {"true", "false", "1", "0"}:
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} has an invalid xsd:boolean lexical value"
+            )
+        converted = value.toPython()
+        if not isinstance(converted, bool):
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} has an invalid xsd:boolean value"
+            )
+        return converted
+
+    @classmethod
+    def group(
+        cls,
+        result: object,
+        *,
+        target: TargetKind,
+        deck_name: str,
+        expected: set[str],
+    ) -> dict[str, Self]:
+        fronts: dict[CardKey, set[Identifier]] = defaultdict(set)
+        choices: dict[CardKey, dict[Identifier, bool]] = defaultdict(dict)
+        for row_number, row in enumerate(result, start=1):  # type: ignore[arg-type]
+            values = cls._row_values(row)
+            cls._require_bound(values, expected, deck_name, row_number)
+            card_key = cls._card_key(values, target, deck_name, row_number)
+            fronts[card_key].add(values["front"])
+            choice = values["choice"]
+            is_correct = cls._boolean(values["is_correct"], deck_name, row_number)
+            if choice in choices[card_key] and choices[card_key][choice] != is_correct:
+                raise PresentationError(
+                    f"deck {deck_name!r} marks the same choice both correct and incorrect "
+                    f"for card {card_key.digest}"
+                )
+            choices[card_key][choice] = is_correct
+
+        presentations: list[Self] = []
+        for card_key, front_values in fronts.items():
+            if len(front_values) != 1:
+                raise PresentationError(
+                    f"deck {deck_name!r} returns conflicting fronts for card {card_key.digest}"
+                )
+            card_choices = choices[card_key]
+            if len(card_choices) < 2:
+                raise PresentationError(
+                    f"deck {deck_name!r} needs at least two choices for card {card_key.digest}"
+                )
+            if sum(card_choices.values()) != 1:
+                raise PresentationError(
+                    f"deck {deck_name!r} needs exactly one correct choice for card "
+                    f"{card_key.digest}"
+                )
+            presentations.append(
+                cls(
+                    card_key=card_key,
+                    front=next(iter(front_values)),
+                    choices=tuple(
+                        Choice(value=value, is_correct=is_correct)
+                        for value, is_correct in card_choices.items()
+                    ),
+                )
+            )
+        return cls._by_digest(presentations)
+
+    def answer(
+        self,
+        input_fn: Callable[[], str],
+        output: TextIO,
+        rng: random.Random,
+    ) -> Rating | None:
+        choices = list(self.choices)
+        rng.shuffle(choices)
+        print(f"\nQuestion: {self.front}", file=output)
+        for index, choice in enumerate(choices, start=1):
+            print(f"  {index}. {choice.value}", file=output)
+        while True:
+            answer = self._prompt(input_fn, output, f"Choose 1-{len(choices)}, or q to quit: ")
+            if answer.casefold() == "q":
+                return None
+            try:
+                choice_index = int(answer) - 1
+            except ValueError:
+                choice_index = -1
+            if 0 <= choice_index < len(choices):
+                selected = choices[choice_index]
+                correct = next(choice for choice in choices if choice.is_correct)
+                if selected.is_correct:
+                    print("Correct.", file=output)
+                    return Rating.Good
+                print(f"Incorrect. Correct answer: {correct.value}", file=output)
+                return Rating.Again
+            print(f"Please enter a number from 1 to {len(choices)}, or q.", file=output)

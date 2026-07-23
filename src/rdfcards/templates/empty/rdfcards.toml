@@ -1,0 +1,3 @@
+state_path = ".rdfcards/state.sqlite3"
+sources = []
+decks = []

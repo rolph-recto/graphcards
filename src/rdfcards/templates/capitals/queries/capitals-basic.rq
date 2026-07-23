@@ -1,0 +1,10 @@
+PREFIX ex: <https://example.org/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+SELECT ?subject ?predicate ?object ?front ?back
+WHERE {
+  ?subject ex:capital ?object ; rdfs:label ?country_name .
+  ?object rdfs:label ?back .
+  BIND(ex:capital AS ?predicate)
+  BIND(CONCAT("Capital of ", STR(?country_name), "?") AS ?front)
+}
