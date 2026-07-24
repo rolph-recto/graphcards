@@ -10,7 +10,8 @@ from http import HTTPStatus
 from rdflib import Graph
 
 from rdfcards.app import StudyService
-from rdfcards.config import AppConfig, DeckDefinition
+from rdfcards.config import AppConfig
+from rdfcards.decks import DeckDefinition
 from rdfcards.errors import ConfigError
 from rdfcards.storage import DeckStatus, Repository, utc_now
 from rdfcards.web.status import HistoryRange, HistoryView, StatusCard, history_view

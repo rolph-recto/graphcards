@@ -13,7 +13,7 @@ from rdflib import Literal, URIRef
 
 import rdfcards.web.app as web_app_module
 from rdfcards.config import AppConfig
-from rdfcards.decks import Basic
+from rdfcards.decks import BasicPresentation
 from rdfcards.models import CardKey
 from rdfcards.storage import datetime_to_text, utc_now
 from rdfcards.web.study import StudyMode
@@ -311,7 +311,7 @@ def test_card_status_paginates_one_hundred_cards(
             URIRef("https://example.org/predicate"),
             Literal(f"object-{index}"),
         )
-        presentations[card_key.digest] = Basic(
+        presentations[card_key.digest] = BasicPresentation(
             card_key=card_key,
             front=Literal(f"Front {index}"),
             back=Literal(f"Back {index}"),

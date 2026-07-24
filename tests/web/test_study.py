@@ -10,8 +10,13 @@ from fsrs import Rating
 from rdflib import Literal
 
 from rdfcards.app import StudyService
-from rdfcards.config import AppConfig, DeckDefinition
-from rdfcards.decks import Basic, ChoiceOption, MultipleChoice, OrderedListCompletion
+from rdfcards.config import AppConfig
+from rdfcards.decks import (
+    BasicPresentation,
+    ChoiceOption,
+    MultipleChoicePresentation,
+    OrderedListDeck,
+)
 from rdfcards.errors import PresentationError
 from rdfcards.models import TargetKind
 from rdfcards.presentation import load_graph
@@ -78,10 +83,9 @@ def test_ordered_list_front_and_back_render_in_browser(config: AppConfig, tmp_pa
         """,
         encoding="utf-8",
     )
-    deck = DeckDefinition(
+    deck = OrderedListDeck(
         name="ordered",
         target=TargetKind.ENTITY,
-        kind=OrderedListCompletion,
         query_path=query_path,
     )
     ordered_config = config.model_copy(
@@ -624,10 +628,8 @@ def test_session_skips_presentation_errors(config: AppConfig) -> None:
         assert "cannot render test card" in session.skipped[0]
 
 
-def test_session_uses_custom_deck_kind_front_text(config: AppConfig) -> None:
-    class CustomKind(Basic):
-        config_name = "custom_web_hub_test"
-
+def test_session_uses_custom_presentation_front_text(config: AppConfig) -> None:
+    class CustomPresentation(BasicPresentation):
         def front_text(self, rng: random.Random) -> str:
             return f"Web custom: {super().front_text(rng)}"
 
@@ -640,7 +642,7 @@ def test_session_uses_custom_deck_kind_front_text(config: AppConfig) -> None:
         cards = repository.due_cards(deck.name, now, 1)
 
         def render_custom(_deck, card):
-            return CustomKind(
+            return CustomPresentation(
                 card_key=card.card_key,
                 front=Literal("custom front"),
                 back=Literal("custom back"),
@@ -666,7 +668,7 @@ def test_browser_session_reuses_rng_across_priority_choice_renders(
 ) -> None:
     seen_rngs: list[random.Random] = []
 
-    class RecordingMultipleChoice(MultipleChoice):
+    class RecordingMultipleChoice(MultipleChoicePresentation):
         def front_text(self, rng: random.Random) -> str:
             seen_rngs.append(rng)
             return super().front_text(rng)

@@ -15,8 +15,8 @@ from typing import TextIO
 from fsrs import Rating
 
 from rdfcards.app import StudyService
-from rdfcards.config import AppConfig, DeckDefinition, load_config
-from rdfcards.decks import DeckKind
+from rdfcards.config import AppConfig, load_config
+from rdfcards.decks import DeckDefinition, Presentation
 from rdfcards.errors import PresentationError, RdfCardsError
 from rdfcards.presentation import execute_presentations, load_graph
 from rdfcards.scaffold import available_templates, initialize_workspace
@@ -176,7 +176,7 @@ def _run_status(config: AppConfig, deck_name: str | None, full: bool, output: Te
 
 
 def _rate_presentation(
-    presentation: DeckKind,
+    presentation: Presentation,
     input_fn: Callable[[], str],
     output: TextIO,
     rng: random.Random,

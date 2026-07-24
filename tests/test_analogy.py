@@ -10,8 +10,13 @@ from rdflib import Graph, Literal, URIRef
 
 from rdfcards.app import StudyService
 from rdfcards.cli import _rate_presentation
-from rdfcards.config import DeckDefinition, FsrsSettings, load_config
-from rdfcards.decks import Analogy, DeckKind
+from rdfcards.config import FsrsSettings, load_config
+from rdfcards.decks import (
+    AnalogyDeck,
+    AnalogyPresentation,
+    DeckDefinition,
+    Presentation,
+)
 from rdfcards.errors import ConfigError, PresentationError
 from rdfcards.models import CardKey, TargetKind
 from rdfcards.presentation import execute_presentations
@@ -23,13 +28,12 @@ PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 """
 
 
-def run_query(tmp_path: Path, query: str) -> dict[str, DeckKind]:
+def run_query(tmp_path: Path, query: str) -> dict[str, Presentation]:
     query_path = tmp_path / "analogy.rq"
     query_path.write_text(PREFIX + query, encoding="utf-8")
-    deck = DeckDefinition(
+    deck = AnalogyDeck(
         name="analogy",
         target=TargetKind.TRIPLE,
-        kind=Analogy,
         query_path=query_path,
     )
     return execute_presentations(Graph(), deck)
@@ -51,7 +55,7 @@ def test_analogy_hides_target_object_and_keeps_target_identity(tmp_path: Path) -
     )
 
     presentation = next(iter(presentations.values()))
-    assert isinstance(presentation, Analogy)
+    assert isinstance(presentation, AnalogyPresentation)
     assert presentation.card_key == CardKey.triple(
         URIRef("https://example.org/France"),
         URIRef("https://example.org/capital"),
@@ -87,7 +91,7 @@ def test_analogy_hides_target_subject_and_uses_display_labels(tmp_path: Path) ->
     )
 
     presentation = next(iter(presentations.values()))
-    assert isinstance(presentation, Analogy)
+    assert isinstance(presentation, AnalogyPresentation)
     assert presentation.front == Literal("Germany capital of Berlin :: ? capital of Paris")
     assert presentation.back == Literal("France")
 
@@ -111,7 +115,7 @@ def test_analogy_uses_effective_predicate_label_when_source_label_differs(tmp_pa
     )
 
     presentation = next(iter(presentations.values()))
-    assert isinstance(presentation, Analogy)
+    assert isinstance(presentation, AnalogyPresentation)
     assert presentation.front == Literal(
         "https://example.org/Germany capital of https://example.org/Berlin :: "
         "https://example.org/France capital of ?"
@@ -164,10 +168,9 @@ def test_analogy_sync_schedules_only_target_triples(tmp_path: Path) -> None:
         """,
         encoding="utf-8",
     )
-    deck = DeckDefinition(
+    deck = AnalogyDeck(
         name="analogy",
         target=TargetKind.TRIPLE,
-        kind=Analogy,
         query_path=query_path,
     )
     target = CardKey.triple(
@@ -279,7 +282,7 @@ def test_analogy_deduplicates_equivalent_literal_spellings(tmp_path: Path) -> No
     )
 
     presentation = next(iter(presentations.values()))
-    assert isinstance(presentation, Analogy)
+    assert isinstance(presentation, AnalogyPresentation)
     assert presentation.hide == Literal("object")
     assert str(presentation.back) == "https://example.org/Paris"
 
@@ -373,7 +376,7 @@ def test_analogy_uses_generic_cli_reveal_and_rate_flow() -> None:
         URIRef("https://example.org/capital"),
         URIRef("https://example.org/Paris"),
     )
-    presentation = Analogy(
+    presentation = AnalogyPresentation(
         card_key=target,
         front=Literal("Germany capital of Berlin :: France capital of ?"),
         back=Literal("Paris"),
@@ -407,13 +410,13 @@ def test_analogy_configuration_requires_triple_target(tmp_path: Path) -> None:
         load_config(path)
 
 
-def test_analogy_is_registered_as_a_deck_kind() -> None:
-    assert DeckKind.from_name("analogy") is Analogy
+def test_analogy_is_registered_as_a_deck_definition() -> None:
+    assert DeckDefinition.from_name("analogy") is AnalogyDeck
 
 
 def test_analogy_direct_validation_rejects_non_literal_hide() -> None:
     with pytest.raises(ValidationError, match="literal with value subject or object"):
-        Analogy(
+        AnalogyPresentation(
             card_key=CardKey.triple(
                 URIRef("https://example.org/France"),
                 URIRef("https://example.org/capital"),

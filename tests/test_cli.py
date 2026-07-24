@@ -11,8 +11,15 @@ from rdflib import Literal, URIRef
 
 from rdfcards.app import StudyService
 from rdfcards.cli import _rate_presentation, _run_study, build_parser, main
-from rdfcards.config import AppConfig, DeckDefinition, load_config
-from rdfcards.decks import Basic, ChoiceOption, DeckKind, MultipleChoice, OrderedListCompletion
+from rdfcards.config import AppConfig, load_config
+from rdfcards.decks import (
+    BasicDeck,
+    BasicPresentation,
+    ChoiceOption,
+    MultipleChoicePresentation,
+    OrderedListDeck,
+    Presentation,
+)
 from rdfcards.models import CardKey, TargetKind
 from rdfcards.storage import Repository
 
@@ -34,14 +41,14 @@ def run_cli(*args: str, input_fn=None, rng=None) -> tuple[int, str, str]:
     return code, output.getvalue(), error.getvalue()
 
 
-def presentation(kind: type[DeckKind]) -> DeckKind:
+def presentation(kind: type[Presentation]) -> Presentation:
     key = CardKey.triple(
         URIRef("https://example.org/subject"),
         URIRef("https://example.org/predicate"),
         URIRef("https://example.org/object"),
     )
-    if kind is MultipleChoice:
-        return MultipleChoice(
+    if kind is MultipleChoicePresentation:
+        return MultipleChoicePresentation(
             card_key=key,
             front=Literal("question"),
             back=Literal("correct"),
@@ -49,11 +56,12 @@ def presentation(kind: type[DeckKind]) -> DeckKind:
                 ChoiceOption(choice=Literal("correct")),
                 ChoiceOption(choice=Literal("incorrect")),
             ),
+            max_choices=4,
         )
-    return Basic(card_key=key, front=Literal("front"), back=Literal("back"))
+    return BasicPresentation(card_key=key, front=Literal("front"), back=Literal("back"))
 
 
-@pytest.mark.parametrize("kind", [Basic, MultipleChoice])
+@pytest.mark.parametrize("kind", [BasicPresentation, MultipleChoicePresentation])
 @pytest.mark.parametrize(
     ("answer", "rating"),
     [
@@ -64,7 +72,7 @@ def presentation(kind: type[DeckKind]) -> DeckKind:
     ],
 )
 def test_shared_interaction_maps_every_rating(
-    kind: type[DeckKind], answer: str, rating: Rating
+    kind: type[Presentation], answer: str, rating: Rating
 ) -> None:
     result = _rate_presentation(
         presentation(kind), inputs("", answer), io.StringIO(), NoShuffleRandom()
@@ -73,8 +81,8 @@ def test_shared_interaction_maps_every_rating(
     assert result is rating
 
 
-@pytest.mark.parametrize("kind", [Basic, MultipleChoice])
-def test_shared_interaction_hides_back_until_reveal(kind: type[DeckKind]) -> None:
+@pytest.mark.parametrize("kind", [BasicPresentation, MultipleChoicePresentation])
+def test_shared_interaction_hides_back_until_reveal(kind: type[Presentation]) -> None:
     output = io.StringIO()
     snapshots: list[str] = []
     answers = iter(("", "3"))
@@ -89,7 +97,7 @@ def test_shared_interaction_hides_back_until_reveal(kind: type[DeckKind]) -> Non
     assert "Front:" in snapshots[0]
     assert "Back:" not in snapshots[0]
     assert "Back:" in snapshots[1]
-    if kind is MultipleChoice:
+    if kind is MultipleChoicePresentation:
         assert "1. correct" in snapshots[0]
         assert "2. incorrect" in snapshots[0]
 
@@ -100,7 +108,7 @@ def test_terminal_study_reuses_rng_across_priority_choice_renders(
 ) -> None:
     seen_rngs: list[random.Random] = []
 
-    class RecordingMultipleChoice(MultipleChoice):
+    class RecordingMultipleChoice(MultipleChoicePresentation):
         def front_text(self, rng: random.Random) -> str:
             seen_rngs.append(rng)
             return super().front_text(rng)
@@ -162,8 +170,10 @@ def test_terminal_study_reuses_rng_across_priority_choice_renders(
     assert len({rendered.index("correct") for rendered in renders}) > 1
 
 
-@pytest.mark.parametrize("kind", [Basic, MultipleChoice])
-def test_shared_interaction_retries_invalid_reveal_and_rating(kind: type[DeckKind]) -> None:
+@pytest.mark.parametrize("kind", [BasicPresentation, MultipleChoicePresentation])
+def test_shared_interaction_retries_invalid_reveal_and_rating(
+    kind: type[Presentation],
+) -> None:
     output = io.StringIO()
 
     result = _rate_presentation(
@@ -178,10 +188,10 @@ def test_shared_interaction_retries_invalid_reveal_and_rating(kind: type[DeckKin
     assert "Please enter 1, 2, 3, 4, or q." in output.getvalue()
 
 
-@pytest.mark.parametrize("kind", [Basic, MultipleChoice])
+@pytest.mark.parametrize("kind", [BasicPresentation, MultipleChoicePresentation])
 @pytest.mark.parametrize("answers", [("q",), ("", "q")])
 def test_shared_interaction_can_quit_without_a_rating(
-    kind: type[DeckKind], answers: tuple[str, ...]
+    kind: type[Presentation], answers: tuple[str, ...]
 ) -> None:
     assert (
         _rate_presentation(presentation(kind), inputs(*answers), io.StringIO(), NoShuffleRandom())
@@ -366,17 +376,21 @@ def test_full_status_reflects_a_persisted_review(workspace: Path) -> None:
     assert "  1        " in output
 
 
-def test_study_uses_custom_deck_kind_front_text(config: AppConfig) -> None:
-    class CustomKind(DeckKind):
-        config_name = "custom_cli"
-        required_variables = Basic.required_variables
+def test_study_uses_custom_presentation_front_text(config: AppConfig) -> None:
+    class CustomPresentation(BasicPresentation):
         rendered: ClassVar[bool] = False
 
-        @classmethod
-        def group(cls, *args, **kwargs):
-            presentations = Basic.group(*args, **kwargs)
+        def front_text(self, rng: random.Random) -> str:
+            type(self).rendered = True
+            return super().front_text(rng)
+
+    class CustomDeck(BasicDeck):
+        config_name = "custom_cli"
+
+        def group(self, *args, **kwargs):
+            presentations = super().group(*args, **kwargs)
             return {
-                card_id: cls(
+                card_id: CustomPresentation(
                     card_key=presentation.card_key,
                     front=presentation.front,
                     back=presentation.back,
@@ -384,15 +398,10 @@ def test_study_uses_custom_deck_kind_front_text(config: AppConfig) -> None:
                 for card_id, presentation in presentations.items()
             }
 
-        def front_text(self, rng: random.Random) -> str:
-            type(self).rendered = True
-            return super().front_text(rng)
-
     source_deck = config.deck("capitals-basic")
-    deck = DeckDefinition(
+    deck = CustomDeck(
         name="custom",
         target=source_deck.target,
-        kind=CustomKind,
         query_path=source_deck.query_path,
     )
     custom_config = config.model_copy(update={"decks": (deck,)})
@@ -408,7 +417,7 @@ def test_study_uses_custom_deck_kind_front_text(config: AppConfig) -> None:
         rng=random.Random(0),
     )
 
-    assert CustomKind.rendered
+    assert CustomPresentation.rendered
     assert "Stopped. Reviewed 0 card(s)." in output.getvalue()
 
 
@@ -430,10 +439,9 @@ def test_ordered_list_study_uses_shared_cli_reveal_and_rating_flow(
         encoding="utf-8",
     )
     source_config = load_config(workspace / "rdfcards.toml")
-    deck = DeckDefinition(
+    deck = OrderedListDeck(
         name="ordered",
         target=TargetKind.ENTITY,
-        kind=OrderedListCompletion,
         query_path=query_path,
     )
     config = source_config.model_copy(update={"decks": (deck,)})

@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 from rdflib import Literal, URIRef
 
-from rdfcards.decks import Basic, ChoiceOption, MultipleChoice
+from rdfcards.decks import BasicPresentation, ChoiceOption, MultipleChoicePresentation
 from rdfcards.models import CardKey
 
 
@@ -28,13 +28,17 @@ def option(value: str, priority: int = 0) -> ChoiceOption:
 
 
 def test_basic_front_text_is_the_front_value() -> None:
-    presentation = Basic(card_key=card_key(), front=Literal("front"), back=Literal("back"))
+    presentation = BasicPresentation(
+        card_key=card_key(),
+        front=Literal("front"),
+        back=Literal("back"),
+    )
 
     assert presentation.front_text(random.Random(0)) == "front"
 
 
 def test_multiple_choice_front_text_shuffles_a_copy_of_choices() -> None:
-    presentation = MultipleChoice(
+    presentation = MultipleChoicePresentation(
         card_key=card_key(),
         front=Literal("question"),
         back=Literal("correct"),
@@ -48,7 +52,7 @@ def test_multiple_choice_front_text_shuffles_a_copy_of_choices() -> None:
 
 
 def test_multiple_choice_exhausts_priority_tiers_and_includes_correct_answer() -> None:
-    presentation = MultipleChoice(
+    presentation = MultipleChoicePresentation(
         card_key=card_key(),
         front=Literal("question"),
         back=Literal("correct"),
@@ -80,7 +84,7 @@ def test_multiple_choice_randomizes_a_cutoff_tie_deterministically() -> None:
         option("tied-b", 2),
         option("lower", 1),
     )
-    presentation = MultipleChoice(
+    presentation = MultipleChoicePresentation(
         card_key=card_key(),
         front=Literal("question"),
         back=Literal("correct"),
@@ -100,7 +104,7 @@ def test_multiple_choice_randomizes_a_cutoff_tie_deterministically() -> None:
 
 
 def test_multiple_choice_repeated_renders_vary_tied_selection_and_display_order() -> None:
-    presentation = MultipleChoice(
+    presentation = MultipleChoicePresentation(
         card_key=card_key(),
         front=Literal("question"),
         back=Literal("correct"),
@@ -148,7 +152,7 @@ def test_multiple_choice_rejects_invalid_direct_construction(
     message: str,
 ) -> None:
     with pytest.raises(ValidationError, match=message):
-        MultipleChoice(
+        MultipleChoicePresentation(
             card_key=card_key(),
             front=Literal("question"),
             back=back,
@@ -159,7 +163,7 @@ def test_multiple_choice_rejects_invalid_direct_construction(
 @pytest.mark.parametrize("max_choices", [0, 1, True, 2.5, "2"])
 def test_multiple_choice_rejects_invalid_max_choices(max_choices: object) -> None:
     with pytest.raises(ValidationError, match="max_choices"):
-        MultipleChoice(
+        MultipleChoicePresentation(
             card_key=card_key(),
             front=Literal("question"),
             back=Literal("correct"),

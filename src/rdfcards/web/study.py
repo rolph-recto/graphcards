@@ -11,7 +11,7 @@ from http import HTTPStatus
 from fsrs import Rating
 
 from rdfcards.app import StudyService
-from rdfcards.config import DeckDefinition
+from rdfcards.decks import DeckDefinition
 from rdfcards.errors import PresentationError, StaleReviewError
 from rdfcards.storage import StoredCard, utc_now
 

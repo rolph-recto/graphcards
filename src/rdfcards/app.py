@@ -7,8 +7,7 @@ from datetime import datetime
 from fsrs import Rating, Scheduler
 from rdflib import Graph
 
-from rdfcards.config import DeckDefinition
-from rdfcards.decks import DeckKind
+from rdfcards.decks import DeckDefinition, Presentation
 from rdfcards.errors import PresentationError
 from rdfcards.presentation import execute_presentations
 from rdfcards.storage import Repository, StoredCard, datetime_as_utc, utc_now
@@ -31,12 +30,12 @@ class StudyService:
         presentations = self.render_all(deck)
         return self.repository.sync_deck(deck.name, presentations, now or utc_now())
 
-    def render_all(self, deck: DeckDefinition) -> dict[str, DeckKind]:
+    def render_all(self, deck: DeckDefinition) -> dict[str, Presentation]:
         """Render every current presentation for a deck in one query."""
 
         return execute_presentations(self.graph, deck)
 
-    def render(self, deck: DeckDefinition, card: StoredCard) -> DeckKind:
+    def render(self, deck: DeckDefinition, card: StoredCard) -> Presentation:
         presentations = execute_presentations(self.graph, deck, card.card_key)
         presentation = presentations.get(card.card_id)
         if presentation is None:

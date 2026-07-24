@@ -83,10 +83,11 @@ Presentation variables are independent of the target. A `kind = "basic"` deck bi
 and `?back`. One card may occur in duplicate identical rows, but conflicting front/back pairs
 are rejected.
 
-Internally, each configured kind resolves to a `DeckKind` subclass. That class declares its
-required variables, groups SPARQL rows into front/back presentations, and formats its front.
-The CLI applies one reveal-and-rate interaction to every presentation without branching on kind
-names.
+Internally, each configured kind resolves to a registered `DeckDefinition` subclass. The
+definition owns its kind-specific settings, required variables, query execution, validation, and
+row grouping. It produces immutable `Presentation` objects that contain only per-card data and
+display behavior. The CLI applies one reveal-and-rate interaction to every presentation without
+branching on kind names.
 
 ```sparql
 SELECT ?subject ?predicate ?object ?front ?back
@@ -156,6 +157,26 @@ back to the RDF term's string form. Without a predicate label, the compact `:` r
 shown; a bound predicate label is shown in its place. Duplicate rows for a target must agree on the
 source triple, hide mode, and effective display labels. Analogy presentations use the same reveal,
 rating, and scheduling flows in both terminal and browser study.
+
+### Extending deck definitions
+
+Import a custom `DeckDefinition` subclass before loading configuration. Giving the subclass a
+unique `config_name` registers that TOML kind. Subclassing an existing definition inherits its
+typed configuration and query contract; override execution metadata or `group()` only when the
+new kind needs different behavior.
+
+```python
+from rdfcards.decks import BasicDeck
+
+
+class FullQueryBasicDeck(BasicDeck):
+    config_name = "full_query_basic"
+    uses_card_bindings = False
+```
+
+After this class is imported, `kind = "full_query_basic"` selects it. A completely new kind
+subclasses `DeckDefinition`, declares a non-empty `required_variables` frozenset, and implements
+`group()` to return presentations keyed by card digest.
 
 This entity-backed query is representative:
 

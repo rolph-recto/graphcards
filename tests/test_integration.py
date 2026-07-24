@@ -11,8 +11,8 @@ from fsrs import Card, Rating
 from rdflib import URIRef
 
 from rdfcards.app import StudyService
-from rdfcards.config import AppConfig, DeckDefinition, load_config
-from rdfcards.decks import Basic, MultipleChoice
+from rdfcards.config import AppConfig, load_config
+from rdfcards.decks import BasicPresentation, MultipleChoicePresentation
 from rdfcards.errors import PresentationError, StorageError
 from rdfcards.models import CardKey, TargetKind
 from rdfcards.presentation import execute_presentations, load_graph
@@ -45,7 +45,7 @@ def test_priority_capitals_template_exhausts_tiers_and_keeps_correct_answer(
     by_front = {str(presentation.front): presentation for presentation in presentations.values()}
 
     france = by_front["Capital of France?"]
-    assert isinstance(france, MultipleChoice)
+    assert isinstance(france, MultipleChoicePresentation)
     assert {str(option.choice): option.priority for option in france.choices} == {
         "Paris": 0,
         "Berlin": 3,
@@ -65,7 +65,7 @@ def test_priority_capitals_template_exhausts_tiers_and_keeps_correct_answer(
     }
 
     germany = by_front["Capital of Germany?"]
-    assert isinstance(germany, MultipleChoice)
+    assert isinstance(germany, MultipleChoicePresentation)
     selected = {str(choice) for choice in germany.selected_choices(random.Random(0))}
     assert {"Berlin", "Paris", "Rome"} <= selected
     assert len(selected & {"Madrid", "Lisbon"}) == 1
@@ -76,22 +76,12 @@ def test_sync_is_idempotent_and_entities_are_shared_across_decks(config: AppConf
     with Repository(config.state_path) as repository:
         app = app_for(config, repository)
         basic = config.deck("capitals-basic")
-        basic_copy = DeckDefinition(
-            name="capitals-basic-copy",
-            kind=basic.kind,
-            query_path=basic.query_path,
-            target=basic.target,
-        )
+        basic_copy = basic.model_copy(update={"name": "capitals-basic-copy"})
         assert app.sync(basic, now) == (2, 2)
         assert app.sync(basic, now) == (2, 0)
         assert app.sync(basic_copy, now) == (2, 0)
         choice = config.deck("capitals-choice")
-        choice_copy = DeckDefinition(
-            name="capitals-choice-copy",
-            kind=choice.kind,
-            query_path=choice.query_path,
-            target=choice.target,
-        )
+        choice_copy = choice.model_copy(update={"name": "capitals-choice-copy"})
         assert app.sync(choice, now) == (2, 2)
         assert app.sync(choice_copy, now) == (2, 0)
         card_count = repository.connection.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
@@ -119,12 +109,7 @@ def test_advanced_card_selectors_use_global_history_and_schedule_windows(
 ) -> None:
     now = datetime(2026, 1, 3, tzinfo=UTC)
     deck = config.deck("capitals-basic")
-    deck_copy = DeckDefinition(
-        name="capitals-basic-copy",
-        kind=deck.kind,
-        query_path=deck.query_path,
-        target=deck.target,
-    )
+    deck_copy = deck.model_copy(update={"name": "capitals-basic-copy"})
     with Repository(config.state_path) as repository:
         app = app_for(config, repository)
         app.sync(deck, now)
@@ -303,12 +288,7 @@ def test_suspension_is_per_membership_while_schedule_remains_global(
 ) -> None:
     now = datetime(2026, 1, 1, tzinfo=UTC)
     deck = config.deck("capitals-basic")
-    shared = DeckDefinition(
-        name="capitals-shared",
-        kind=deck.kind,
-        query_path=deck.query_path,
-        target=deck.target,
-    )
+    shared = deck.model_copy(update={"name": "capitals-shared"})
     with Repository(config.state_path) as repository:
         app = app_for(config, repository)
         app.sync(deck, now)
@@ -412,7 +392,7 @@ def test_render_reruns_query_for_current_metadata(config: AppConfig, workspace: 
         )
         updated_app = app_for(config, repository)
         rendered = updated_app.render(deck, stored)
-        assert isinstance(rendered, Basic)
+        assert isinstance(rendered, BasicPresentation)
         assert str(rendered.front) == "Capital of France updated?"
 
 
@@ -697,12 +677,7 @@ def test_card_statuses_include_latest_global_review_and_fsrs_metrics(
     first_review = datetime(2026, 1, 1, tzinfo=UTC)
     latest_review = first_review + timedelta(minutes=2)
     deck = config.deck("capitals-basic")
-    shared_deck = DeckDefinition(
-        name="capitals-status-copy",
-        kind=deck.kind,
-        query_path=deck.query_path,
-        target=deck.target,
-    )
+    shared_deck = deck.model_copy(update={"name": "capitals-status-copy"})
     with Repository(config.state_path) as repository:
         app = app_for(config, repository)
         app.sync(deck, first_review)
@@ -732,12 +707,7 @@ def test_review_history_uses_event_deck_and_validates_immutable_metrics(
     first_review = datetime(2026, 1, 1, tzinfo=UTC)
     second_review = first_review + timedelta(days=1)
     deck = config.deck("capitals-basic")
-    shared_deck = DeckDefinition(
-        name="capitals-history-copy",
-        kind=deck.kind,
-        query_path=deck.query_path,
-        target=deck.target,
-    )
+    shared_deck = deck.model_copy(update={"name": "capitals-history-copy"})
     with Repository(config.state_path) as repository:
         app = app_for(config, repository)
         app.sync(deck, first_review)

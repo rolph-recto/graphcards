@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from enum import StrEnum
 from hashlib import sha256
+from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, ValidationInfo, model_validator
 from rdflib import BNode, Literal, URIRef
 from rdflib.term import Identifier
 from rdflib.util import from_n3
@@ -30,6 +31,30 @@ class RdfModel(BaseModel):
     """Frozen Pydantic base that permits RDFLib term objects."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid", frozen=True)
+
+
+class FrozenModel(BaseModel):
+    """Immutable, strict base for user configuration models."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+        validate_default=True,
+    )
+
+
+def resolve_config_path(value: object, info: ValidationInfo) -> Path:
+    """Resolve a configured path relative to its TOML file."""
+
+    if not isinstance(value, (str, Path)) or not str(value).strip():
+        raise ValueError("must be a non-empty file path")
+    path = Path(value).expanduser()
+    context = info.context if isinstance(info.context, dict) else {}
+    base = context.get("base")
+    if not path.is_absolute() and isinstance(base, Path):
+        path = base / path
+    return path.resolve()
 
 
 class CardKey(RdfModel):

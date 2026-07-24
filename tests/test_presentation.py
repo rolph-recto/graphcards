@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 import pytest
 from rdflib import Graph, Literal, URIRef
 
-from rdfcards.config import DeckDefinition
-from rdfcards.decks import Basic, DeckKind, MultipleChoice, OrderedListCompletion
+from rdfcards.decks import (
+    BasicDeck,
+    BasicPresentation,
+    DeckDefinition,
+    MultipleChoiceDeck,
+    MultipleChoicePresentation,
+    OrderedListDeck,
+    OrderedListPresentation,
+)
 from rdfcards.errors import PresentationError
 from rdfcards.models import CardKey, TargetKind
 from rdfcards.presentation import execute_presentations
@@ -20,20 +28,23 @@ PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 def run_query(
     tmp_path: Path,
     query: str,
-    kind: type[DeckKind] = Basic,
+    deck_type: type[DeckDefinition] = BasicDeck,
     target: TargetKind = TargetKind.TRIPLE,
     max_choices: int | None = None,
     window_size: int | None = None,
 ) -> dict[str, object]:
     query_path = tmp_path / "query.rq"
     query_path.write_text(PREFIX + query, encoding="utf-8")
-    deck = DeckDefinition(
+    options: dict[str, object] = {}
+    if max_choices is not None:
+        options["max_choices"] = max_choices
+    if window_size is not None:
+        options["window_size"] = window_size
+    deck = deck_type(
         name="test",
         target=target,
-        kind=kind,
         query_path=query_path,
-        max_choices=max_choices,
-        window_size=window_size,
+        **options,
     )
     return execute_presentations(Graph(), deck)
 
@@ -53,7 +64,7 @@ def run_ordered_query(
           }}
         }}
         """,
-        OrderedListCompletion,
+        OrderedListDeck,
         target=TargetKind.ENTITY,
         window_size=window_size,
     )
@@ -72,12 +83,12 @@ def test_basic_contract_groups_duplicate_rows(tmp_path: Path) -> None:
         """,
     )
     presentation = next(iter(presentations.values()))
-    assert isinstance(presentation, Basic)
+    assert isinstance(presentation, BasicPresentation)
     assert str(presentation.front) == "front"
 
 
-def test_query_execution_delegates_to_custom_deck_kind(tmp_path: Path) -> None:
-    class CustomBasic(Basic):
+def test_query_execution_delegates_to_custom_deck_definition(tmp_path: Path) -> None:
+    class CustomBasic(BasicDeck):
         config_name = "custom_basic"
 
     presentations = run_query(
@@ -92,7 +103,7 @@ def test_query_execution_delegates_to_custom_deck_kind(tmp_path: Path) -> None:
         CustomBasic,
     )
 
-    assert isinstance(next(iter(presentations.values())), CustomBasic)
+    assert isinstance(next(iter(presentations.values())), BasicPresentation)
 
 
 def test_multiple_choice_contract(tmp_path: Path) -> None:
@@ -106,10 +117,10 @@ def test_multiple_choice_contract(tmp_path: Path) -> None:
           }
         }
         """,
-        MultipleChoice,
+        MultipleChoiceDeck,
     )
     presentation = next(iter(presentations.values()))
-    assert isinstance(presentation, MultipleChoice)
+    assert isinstance(presentation, MultipleChoicePresentation)
     assert tuple(option.choice for option in presentation.choices) == (
         Literal("yes"),
         Literal("no"),
@@ -131,12 +142,12 @@ def test_multiple_choice_normalizes_optional_priorities(tmp_path: Path) -> None:
           }
         }
         """,
-        MultipleChoice,
+        MultipleChoiceDeck,
         max_choices=2,
     )
 
     presentation = next(iter(presentations.values()))
-    assert isinstance(presentation, MultipleChoice)
+    assert isinstance(presentation, MultipleChoicePresentation)
     assert tuple((option.choice, option.priority) for option in presentation.choices) == (
         (Literal("correct"), 0),
         (Literal("high"), 3),
@@ -157,11 +168,11 @@ def test_multiple_choice_accepts_duplicate_missing_and_zero_priority(tmp_path: P
           }
         }
         """,
-        MultipleChoice,
+        MultipleChoiceDeck,
     )
 
     presentation = next(iter(presentations.values()))
-    assert isinstance(presentation, MultipleChoice)
+    assert isinstance(presentation, MultipleChoicePresentation)
     assert len(presentation.choices) == 2
 
 
@@ -191,7 +202,7 @@ def test_multiple_choice_rejects_invalid_priority(
               }}
             }}
             """,
-            MultipleChoice,
+            MultipleChoiceDeck,
         )
 
 
@@ -208,7 +219,7 @@ def test_multiple_choice_rejects_conflicting_duplicate_priorities(tmp_path: Path
               }
             }
             """,
-            MultipleChoice,
+            MultipleChoiceDeck,
         )
 
 
@@ -227,7 +238,7 @@ def test_multiple_choice_validates_lower_tiers_that_will_not_be_displayed(
               }
             }
             """,
-            MultipleChoice,
+            MultipleChoiceDeck,
             max_choices=2,
         )
 
@@ -243,7 +254,7 @@ def test_entity_basic_contract(tmp_path: Path) -> None:
         target=TargetKind.ENTITY,
     )
     presentation = next(iter(presentations.values()))
-    assert isinstance(presentation, Basic)
+    assert isinstance(presentation, BasicPresentation)
     assert presentation.card_key == CardKey.entity(URIRef("https://example.org/country"))
 
 
@@ -254,10 +265,15 @@ def test_ordered_list_hides_target_and_keeps_entity_identity(tmp_path: Path) -> 
     )
 
     target = presentations[CardKey.entity(URIRef("https://example.org/b")).digest]
-    assert isinstance(target, OrderedListCompletion)
+    assert isinstance(target, OrderedListPresentation)
     assert target.card_key == CardKey.entity(URIRef("https://example.org/b"))
     assert str(target.front) == "1. Alpha\n2. ?\n3. Gamma"
     assert target.back == Literal("Beta")
+    assert target.front_text(random.Random(0)) == str(target.front)
+    assert [row.position for row in target.ordered_rows] == [1, 2, 3]
+    assert target.hidden_position == 2
+    assert target.window_size == 5
+    assert set(target.model_dump()) == {"card_key", "front", "back"}
 
 
 def test_ordered_list_centers_window_and_shows_omitted_boundaries(tmp_path: Path) -> None:
@@ -322,10 +338,9 @@ def test_ordered_list_study_render_executes_full_query_before_selecting_card(
         """,
         encoding="utf-8",
     )
-    deck = DeckDefinition(
+    deck = OrderedListDeck(
         name="ordered",
         target=TargetKind.ENTITY,
-        kind=OrderedListCompletion,
         query_path=query_path,
     )
     graph = Graph()
@@ -379,7 +394,7 @@ def test_ordered_list_requires_exact_query_projection(tmp_path: Path) -> None:
               }
             }
             """,
-            OrderedListCompletion,
+            OrderedListDeck,
             target=TargetKind.ENTITY,
         )
 
@@ -425,7 +440,7 @@ def test_entity_runtime_binding_selects_one_card(tmp_path: Path) -> None:
         """,
         encoding="utf-8",
     )
-    deck = DeckDefinition(name="test", target=TargetKind.ENTITY, kind=Basic, query_path=query_path)
+    deck = BasicDeck(name="test", target=TargetKind.ENTITY, query_path=query_path)
     graph = Graph().parse(
         data='@prefix ex: <https://example.org/> . ex:a ex:p "A" . ex:b ex:p "B" .',
         format="turtle",
@@ -441,7 +456,7 @@ def test_runtime_binding_must_match_deck_target(tmp_path: Path) -> None:
         PREFIX + "SELECT ?entity ?front ?back WHERE { VALUES (?entity ?front ?back) {} }",
         encoding="utf-8",
     )
-    deck = DeckDefinition(name="test", target=TargetKind.ENTITY, kind=Basic, query_path=query_path)
+    deck = BasicDeck(name="test", target=TargetKind.ENTITY, query_path=query_path)
     triple = CardKey.triple(
         URIRef("https://example.org/s"),
         URIRef("https://example.org/p"),
@@ -463,61 +478,64 @@ def test_multiple_choice_rejects_invalid_typed_boolean_lexical_value(tmp_path: P
               }
             }
             """,
-            MultipleChoice,
+            MultipleChoiceDeck,
         )
 
 
 @pytest.mark.parametrize(
-    "query, kind, message",
+    "query, deck_type, message",
     [
         (
             "SELECT ?subject ?predicate ?object ?front WHERE { "
             'VALUES (?subject ?predicate ?object ?front) {(ex:s ex:p ex:o "f")} }',
-            Basic,
+            BasicDeck,
             "required variables",
         ),
         (
             "SELECT ?subject ?predicate ?object ?front ?back WHERE { "
             "VALUES (?subject ?predicate ?object ?front ?back) "
             '{(ex:s ex:p ex:o "f" "a") (ex:s ex:p ex:o "f" "b")} }',
-            Basic,
+            BasicDeck,
             "conflicting",
         ),
         (
             "SELECT ?subject ?predicate ?object ?front ?choice ?is_correct WHERE { "
             "VALUES (?subject ?predicate ?object ?front ?choice ?is_correct) "
             '{(ex:s ex:p ex:o "q" "a" true)} }',
-            MultipleChoice,
+            MultipleChoiceDeck,
             "at least two",
         ),
         (
             "SELECT ?subject ?predicate ?object ?front ?choice ?is_correct WHERE { "
             "VALUES (?subject ?predicate ?object ?front ?choice ?is_correct) "
             '{(ex:s ex:p ex:o "q" "a" true) (ex:s ex:p ex:o "q" "b" true)} }',
-            MultipleChoice,
+            MultipleChoiceDeck,
             "exactly one",
         ),
         (
             "SELECT ?subject ?predicate ?object ?front ?choice ?is_correct WHERE { "
             "VALUES (?subject ?predicate ?object ?front ?choice ?is_correct) "
             '{(ex:s ex:p ex:o "q" "a" true) (ex:s ex:p ex:o "q" "a" false)} }',
-            MultipleChoice,
+            MultipleChoiceDeck,
             "same choice both correct and incorrect",
         ),
         (
             "SELECT ?subject ?predicate ?object ?front ?choice ?is_correct WHERE { "
             "VALUES (?subject ?predicate ?object ?front ?choice ?is_correct) "
             '{(ex:s ex:p ex:o "q" "a" "yes") (ex:s ex:p ex:o "q" "b" "no")} }',
-            MultipleChoice,
+            MultipleChoiceDeck,
             "xsd:boolean",
         ),
     ],
 )
 def test_invalid_result_contracts(
-    tmp_path: Path, query: str, kind: type[DeckKind], message: str
+    tmp_path: Path,
+    query: str,
+    deck_type: type[DeckDefinition],
+    message: str,
 ) -> None:
     with pytest.raises(PresentationError, match=message):
-        run_query(tmp_path, query, kind)
+        run_query(tmp_path, query, deck_type)
 
 
 def test_non_select_query_is_rejected(tmp_path: Path) -> None:

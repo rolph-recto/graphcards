@@ -11,7 +11,7 @@ from pathlib import Path
 from fsrs import Card, Rating, ReviewLog
 from pydantic import ConfigDict, Field, ValidationError, field_validator
 
-from rdfcards.decks import DeckKind
+from rdfcards.decks import Presentation
 from rdfcards.errors import StaleReviewError, StorageError
 from rdfcards.models import CardKey, RdfModel, TargetKind, validation_message
 
@@ -319,7 +319,7 @@ class Repository:
             raise StorageError("could not migrate state schema from version 3 to 4") from error
 
     def sync_deck(
-        self, deck_name: str, presentations: dict[str, DeckKind], now: datetime
+        self, deck_name: str, presentations: dict[str, Presentation], now: datetime
     ) -> tuple[int, int]:
         """Atomically reconcile one deck while preserving global card schedules."""
 

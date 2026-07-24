@@ -10,9 +10,7 @@ from zoneinfo import ZoneInfo
 
 from fsrs import Scheduler
 from pydantic import (
-    BaseModel,
     BeforeValidator,
-    ConfigDict,
     Field,
     StrictBool,
     ValidationError,
@@ -21,24 +19,15 @@ from pydantic import (
     model_validator,
 )
 
-from rdfcards.decks import DeckKind
+from rdfcards.decks import DeckDefinition
 from rdfcards.errors import ConfigError
-from rdfcards.models import TargetKind
+from rdfcards.models import FrozenModel, resolve_config_path
 
 
 def _number(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("must be a number")
     return float(value)
-
-
-class FrozenModel(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-        frozen=True,
-        str_strip_whitespace=True,
-        validate_default=True,
-    )
 
 
 class FsrsSettings(FrozenModel):
@@ -70,66 +59,7 @@ class FsrsSettings(FrozenModel):
 
 
 def _resolve_path(value: object, info: ValidationInfo) -> Path:
-    if not isinstance(value, (str, Path)) or not str(value).strip():
-        raise ValueError("must be a non-empty file path")
-    path = Path(value).expanduser()
-    context = info.context if isinstance(info.context, dict) else {}
-    base = context.get("base")
-    # Validation context makes every configured path relative to the TOML file,
-    # independent of the caller's current working directory.
-    if not path.is_absolute() and isinstance(base, Path):
-        path = base / path
-    return path.resolve()
-
-
-class DeckDefinition(FrozenModel):
-    model_config = FrozenModel.model_config | ConfigDict(
-        validate_by_alias=True, validate_by_name=True
-    )
-
-    name: Annotated[str, Field(min_length=1)]
-    target: TargetKind
-    kind: type[DeckKind]
-    query_path: Path = Field(validation_alias="query")
-    max_choices: Annotated[int, Field(strict=True, ge=2)] | None = None
-    window_size: Annotated[int, Field(strict=True, ge=0)] | None = None
-
-    @field_validator("kind", mode="before")
-    @classmethod
-    def resolve_kind(cls, value: object) -> object:
-        kind = DeckKind.from_name(value.strip()) if isinstance(value, str) else value
-        return DeckKind.validate_kind_class(kind)
-
-    @field_validator("query_path", mode="before")
-    @classmethod
-    def resolve_query_path(cls, value: object, info: ValidationInfo) -> Path:
-        return _resolve_path(value, info)
-
-    @model_validator(mode="after")
-    def validate_presentation_options(self) -> DeckDefinition:
-        if self.max_choices is not None and self.kind.default_max_choices is None:
-            raise ValueError("max_choices is only valid for multiple_choice decks")
-        if self.window_size is not None and self.kind.default_window_size is None:
-            raise ValueError("window_size is only valid for ordered_list decks")
-        if self.kind.target_requirement is not None:
-            required_target, requirement_name = self.kind.target_requirement
-            if self.target is not required_target:
-                raise ValueError(
-                    f"{requirement_name} decks must target {required_target.value} cards"
-                )
-        return self
-
-    @property
-    def effective_max_choices(self) -> int | None:
-        """Return the presentation limit understood by the configured deck kind."""
-
-        return self.max_choices if self.max_choices is not None else self.kind.default_max_choices
-
-    @property
-    def effective_window_size(self) -> int | None:
-        """Return the list window understood by ordered-list presentations."""
-
-        return self.window_size if self.window_size is not None else self.kind.default_window_size
+    return resolve_config_path(value, info)
 
 
 class AppConfig(FrozenModel):
@@ -150,6 +80,14 @@ class AppConfig(FrozenModel):
         if not isinstance(value, (list, tuple)):
             return value
         return tuple(_resolve_path(source, info) for source in value)
+
+    @field_validator("decks", mode="before")
+    @classmethod
+    def resolve_decks(cls, value: object, info: ValidationInfo) -> object:
+        if not isinstance(value, (list, tuple)):
+            return value
+        context = info.context if isinstance(info.context, dict) else None
+        return tuple(DeckDefinition.from_config(deck, context=context) for deck in value)
 
     @model_validator(mode="after")
     def unique_deck_names(self) -> AppConfig:
