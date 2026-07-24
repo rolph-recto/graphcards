@@ -24,6 +24,7 @@ from pydantic import (
 from rdfcards.decks import (
     DEFAULT_MAX_CHOICES,
     DEFAULT_WINDOW_SIZE,
+    Analogy,
     DeckKind,
     MultipleChoice,
     OrderedListCompletion,
@@ -120,6 +121,8 @@ class DeckDefinition(FrozenModel):
             raise ValueError("window_size is only valid for ordered_list decks")
         if is_ordered_list and self.target is not TargetKind.ENTITY:
             raise ValueError("ordered_list decks must target entity cards")
+        if issubclass(self.kind, Analogy) and self.target is not TargetKind.TRIPLE:
+            raise ValueError("analogy decks must target triple cards")
         return self
 
     @property

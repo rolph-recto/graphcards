@@ -127,6 +127,36 @@ optional `window_size` deck setting defaults to five; `window_size = 0` shows th
 Longer lists use a contiguous window around the tested position and show `…` for omitted items at
 the beginning or end.
 
+A `kind = "analogy"` deck must use `target = "triple"` and binds the complete target and source
+triples plus `?hide`:
+
+```sparql
+PREFIX ex: <https://example.org/>
+
+SELECT ?subject ?predicate ?object
+       ?source_subject ?source_predicate ?source_object ?hide
+       ?subject_label ?predicate_label ?object_label
+       ?source_subject_label ?source_predicate_label ?source_object_label
+WHERE {
+  VALUES (?subject ?predicate ?object ?source_subject ?source_predicate ?source_object ?hide
+          ?subject_label ?predicate_label ?object_label
+          ?source_subject_label ?source_predicate_label ?source_object_label) {
+    (ex:France ex:capital ex:Paris ex:Germany ex:capital ex:Berlin "object"
+     "France" "capital of" "Paris" "Germany" "capital of" "Berlin")
+  }
+}
+```
+
+The target triple is the only card identity and is the only triple synchronized into the FSRS
+schedule. The source triple must be complete, distinct from the target, and use the same predicate;
+it is presentation-only. `?hide` is a plain or `xsd:string` literal whose value is `subject` or
+`object`. The corresponding target term is replaced by `?` on the front and is derived as the answer
+on the back; no `?answer` binding is used. Optional label bindings use the names shown above and fall
+back to the RDF term's string form. Without a predicate label, the compact `:` relation marker is
+shown; a bound predicate label is shown in its place. Duplicate rows for a target must agree on the
+source triple, hide mode, and effective display labels. Analogy presentations use the same reveal,
+rating, and scheduling flows in both terminal and browser study.
+
 This entity-backed query is representative:
 
 ```sparql
