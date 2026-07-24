@@ -21,14 +21,7 @@ from pydantic import (
     model_validator,
 )
 
-from rdfcards.decks import (
-    DEFAULT_MAX_CHOICES,
-    DEFAULT_WINDOW_SIZE,
-    Analogy,
-    DeckKind,
-    MultipleChoice,
-    OrderedListCompletion,
-)
+from rdfcards.decks import DeckKind
 from rdfcards.errors import ConfigError
 from rdfcards.models import TargetKind
 
@@ -114,32 +107,29 @@ class DeckDefinition(FrozenModel):
 
     @model_validator(mode="after")
     def validate_presentation_options(self) -> DeckDefinition:
-        if self.max_choices is not None and not issubclass(self.kind, MultipleChoice):
+        if self.max_choices is not None and self.kind.default_max_choices is None:
             raise ValueError("max_choices is only valid for multiple_choice decks")
-        is_ordered_list = issubclass(self.kind, OrderedListCompletion)
-        if self.window_size is not None and not is_ordered_list:
+        if self.window_size is not None and self.kind.default_window_size is None:
             raise ValueError("window_size is only valid for ordered_list decks")
-        if is_ordered_list and self.target is not TargetKind.ENTITY:
-            raise ValueError("ordered_list decks must target entity cards")
-        if issubclass(self.kind, Analogy) and self.target is not TargetKind.TRIPLE:
-            raise ValueError("analogy decks must target triple cards")
+        if self.kind.target_requirement is not None:
+            required_target, requirement_name = self.kind.target_requirement
+            if self.target is not required_target:
+                raise ValueError(
+                    f"{requirement_name} decks must target {required_target.value} cards"
+                )
         return self
 
     @property
     def effective_max_choices(self) -> int | None:
         """Return the presentation limit understood by the configured deck kind."""
 
-        if issubclass(self.kind, MultipleChoice):
-            return self.max_choices if self.max_choices is not None else DEFAULT_MAX_CHOICES
-        return None
+        return self.max_choices if self.max_choices is not None else self.kind.default_max_choices
 
     @property
     def effective_window_size(self) -> int | None:
         """Return the list window understood by ordered-list presentations."""
 
-        if issubclass(self.kind, OrderedListCompletion):
-            return self.window_size if self.window_size is not None else DEFAULT_WINDOW_SIZE
-        return None
+        return self.window_size if self.window_size is not None else self.kind.default_window_size
 
 
 class AppConfig(FrozenModel):

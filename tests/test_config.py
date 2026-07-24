@@ -214,6 +214,27 @@ def test_ordered_list_window_size_defaults_to_five(tmp_path: Path) -> None:
     assert deck.effective_window_size == 5
 
 
+def test_deck_kind_constraints_are_inherited_by_custom_kinds(tmp_path: Path) -> None:
+    class CustomOrderedList(OrderedListCompletion):
+        config_name = "custom_ordered_constraints_test"
+
+    deck = DeckDefinition(
+        name="ordered",
+        target=TargetKind.ENTITY,
+        kind=CustomOrderedList,
+        query_path=tmp_path / "query.rq",
+    )
+
+    assert deck.effective_window_size == 5
+    with pytest.raises(ValidationError, match="ordered_list decks must target entity cards"):
+        DeckDefinition(
+            name="ordered",
+            target=TargetKind.TRIPLE,
+            kind=CustomOrderedList,
+            query_path=tmp_path / "query.rq",
+        )
+
+
 def test_ordered_list_accepts_zero_window_size(tmp_path: Path) -> None:
     deck = DeckDefinition(
         name="ordered",

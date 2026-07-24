@@ -19,7 +19,9 @@ class TargetKind(StrEnum):
     ENTITY = "entity"
 
 
-def _validation_message(error: ValidationError) -> str:
+def validation_message(error: ValidationError) -> str:
+    """Return the first Pydantic failure without implementation-specific decoration."""
+
     message = str(error.errors(include_url=False)[0]["msg"])
     return message.removeprefix("Value error, ")
 
@@ -64,7 +66,7 @@ class CardKey(RdfModel):
         except ValidationError as error:
             # Query results are a presentation concern; callers should not need to
             # understand Pydantic's error representation.
-            raise PresentationError(_validation_message(error)) from error
+            raise PresentationError(validation_message(error)) from error
 
     @classmethod
     def triple(cls, subject: Identifier, predicate: Identifier, object_: Identifier) -> CardKey:
@@ -114,5 +116,5 @@ class CardKey(RdfModel):
         try:
             return cls(target_kind=target, terms=terms)  # type: ignore[arg-type]
         except ValidationError as error:
-            message = _validation_message(error)
+            message = validation_message(error)
             raise StorageError(f"stored card identity is invalid: {message}") from error

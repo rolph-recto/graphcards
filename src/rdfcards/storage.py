@@ -13,7 +13,7 @@ from pydantic import ConfigDict, Field, ValidationError, field_validator
 
 from rdfcards.decks import DeckKind
 from rdfcards.errors import StaleReviewError, StorageError
-from rdfcards.models import CardKey, RdfModel, TargetKind
+from rdfcards.models import CardKey, RdfModel, TargetKind, validation_message
 
 SCHEMA_VERSION = 4
 MAX_SUSPENSION_REASON_LENGTH = 500
@@ -396,8 +396,7 @@ class Repository:
         try:
             update = SuspensionUpdate(reason=reason)
         except ValidationError as error:
-            message = str(error.errors(include_url=False)[0]["msg"])
-            raise StorageError(message.removeprefix("Value error, ")) from error
+            raise StorageError(validation_message(error)) from error
         with self.connection:
             cursor = self.connection.execute(
                 """

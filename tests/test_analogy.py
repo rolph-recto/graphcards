@@ -306,6 +306,49 @@ def test_analogy_deduplicates_explicit_label_equal_to_term_fallback(tmp_path: Pa
     assert len(presentations) == 1
 
 
+def test_analogy_deduplicates_display_equivalent_language_labels(tmp_path: Path) -> None:
+    presentations = run_query(
+        tmp_path,
+        """
+        SELECT ?subject ?predicate ?object ?source_subject ?source_predicate ?source_object ?hide
+               ?object_label
+        WHERE {
+          VALUES (
+            ?subject ?predicate ?object ?source_subject ?source_predicate ?source_object
+            ?hide ?object_label
+          ) {
+            (ex:France ex:capital ex:Paris ex:Germany ex:capital ex:Berlin "object" "Paris"@en)
+            (ex:France ex:capital ex:Paris ex:Germany ex:capital ex:Berlin "object" "Paris"@fr)
+          }
+        }
+        """,
+    )
+
+    assert len(presentations) == 1
+
+
+def test_analogy_distinguishes_sources_with_the_same_display_text(tmp_path: Path) -> None:
+    with pytest.raises(PresentationError, match="conflicting analogy source"):
+        run_query(
+            tmp_path,
+            """
+            SELECT ?subject ?predicate ?object ?source_subject ?source_predicate
+                   ?source_object ?hide ?source_subject_label ?source_object_label
+            WHERE {
+              VALUES (
+                ?subject ?predicate ?object ?source_subject ?source_predicate ?source_object
+                ?hide ?source_subject_label ?source_object_label
+              ) {
+                (ex:France ex:capital ex:Paris ex:Germany ex:capital ex:Berlin "object"
+                 "Country" "Capital")
+                (ex:France ex:capital ex:Paris ex:Italy ex:capital ex:Rome "object"
+                 "Country" "Capital")
+              }
+            }
+            """,
+        )
+
+
 def test_analogy_accepts_xsd_string_hide_literal(tmp_path: Path) -> None:
     presentations = run_query(
         tmp_path,

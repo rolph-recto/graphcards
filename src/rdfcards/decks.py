@@ -15,15 +15,10 @@ from rdflib.namespace import XSD
 from rdflib.term import Identifier
 
 from rdfcards.errors import PresentationError
-from rdfcards.models import CardKey, RdfModel, TargetKind
+from rdfcards.models import CardKey, RdfModel, TargetKind, validation_message
 
 DEFAULT_MAX_CHOICES = 4
 DEFAULT_WINDOW_SIZE = 5
-
-
-def _validation_message(error: ValidationError) -> str:
-    message = str(error.errors(include_url=False)[0]["msg"])
-    return message.removeprefix("Value error, ")
 
 
 class DeckKind(RdfModel, ABC):
@@ -31,6 +26,9 @@ class DeckKind(RdfModel, ABC):
 
     config_name: ClassVar[str]
     required_variables: ClassVar[frozenset[str]]
+    target_requirement: ClassVar[tuple[TargetKind, str] | None] = None
+    default_max_choices: ClassVar[int | None] = None
+    default_window_size: ClassVar[int | None] = None
     _registry: ClassVar[dict[str, type[DeckKind]]] = {}
 
     card_key: CardKey
@@ -138,6 +136,39 @@ class DeckKind(RdfModel, ABC):
         except PresentationError as error:
             raise PresentationError(f"deck {deck_name!r} row {row_number}: {error}") from error
 
+    @staticmethod
+    def _rdf_integer(
+        value: Identifier,
+        *,
+        variable: str,
+        minimum: int,
+        minimum_description: str,
+        deck_name: str,
+        row_number: int,
+    ) -> int:
+        """Validate an RDF integer without accepting RDFLib coercions."""
+
+        if not isinstance(value, Literal) or value.datatype != XSD.integer:
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} ?{variable} must be an xsd:integer literal"
+            )
+        if re.fullmatch(r"[+-]?[0-9]+", str(value)) is None:
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} has an invalid xsd:integer "
+                f"lexical value for ?{variable}"
+            )
+        converted = value.toPython()
+        if isinstance(converted, bool) or not isinstance(converted, int):
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} has an invalid xsd:integer "
+                f"value for ?{variable}"
+            )
+        if converted < minimum:
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} ?{variable} must be {minimum_description}"
+            )
+        return converted
+
     @classmethod
     def _by_digest(cls, presentations: list[Self]) -> dict[str, Self]:
         # Comparing identities as well as hashes prevents a collision from
@@ -195,6 +226,7 @@ class Analogy(DeckKind):
 
     config_name = "analogy"
     required_variables = frozenset({"source_subject", "source_predicate", "source_object", "hide"})
+    target_requirement = (TargetKind.TRIPLE, "analogy")
 
     source_subject: Identifier
     source_predicate: Identifier
@@ -234,13 +266,6 @@ class Analogy(DeckKind):
             object_,
         ):
             raise ValueError("the source triple must be distinct from the target triple")
-        if (
-            not isinstance(self.hide, Literal)
-            or self.hide.language is not None
-            or self.hide.datatype not in (None, XSD.string)
-            or str(self.hide) not in {"subject", "object"}
-        ):
-            raise ValueError("?hide must be a literal with value subject or object")
         expected_front, expected_back = self._front_and_back(
             target_subject=subject,
             target_predicate=predicate,
@@ -332,22 +357,13 @@ class Analogy(DeckKind):
     def _duplicate_key(self) -> tuple[object, ...]:
         """Return source terms plus the effective learner-facing metadata."""
 
-        target_subject, _target_predicate, target_object = self.card_key.terms
-        relation_label = (
-            self.predicate_label
-            if self.predicate_label is not None
-            else self.source_predicate_label
-        )
         return (
             self.source_subject,
             self.source_predicate,
             self.source_object,
             str(self.hide),
-            self._text(target_subject, self.subject_label),
-            str(relation_label) if relation_label is not None else ":",
-            self._text(target_object, self.object_label),
-            self._text(self.source_subject, self.source_subject_label),
-            self._text(self.source_object, self.source_object_label),
+            str(self.front),
+            str(self.back),
         )
 
     @classmethod
@@ -404,7 +420,7 @@ class Analogy(DeckKind):
                 )
             except (ValidationError, ValueError) as error:
                 if isinstance(error, ValidationError):
-                    message = _validation_message(error)
+                    message = validation_message(error)
                 else:
                     message = str(error)
                 raise PresentationError(
@@ -435,6 +451,7 @@ class MultipleChoice(DeckKind):
 
     config_name = "multiple_choice"
     required_variables = frozenset({"front", "choice", "is_correct"})
+    default_max_choices = DEFAULT_MAX_CHOICES
 
     choices: tuple[ChoiceOption, ...]
     max_choices: Annotated[int, Field(strict=True, ge=2)] = DEFAULT_MAX_CHOICES
@@ -475,26 +492,14 @@ class MultipleChoice(DeckKind):
     def _priority(value: Identifier | None, deck_name: str, row_number: int) -> int:
         if value is None:
             return 0
-        if not isinstance(value, Literal) or value.datatype != XSD.integer:
-            raise PresentationError(
-                f"deck {deck_name!r} row {row_number} ?priority must be an xsd:integer literal"
-            )
-        if re.fullmatch(r"[+-]?[0-9]+", str(value)) is None:
-            raise PresentationError(
-                f"deck {deck_name!r} row {row_number} has an invalid xsd:integer "
-                "lexical value for ?priority"
-            )
-        converted = value.toPython()
-        if isinstance(converted, bool) or not isinstance(converted, int):
-            raise PresentationError(
-                f"deck {deck_name!r} row {row_number} has an invalid xsd:integer "
-                "value for ?priority"
-            )
-        if converted < 0:
-            raise PresentationError(
-                f"deck {deck_name!r} row {row_number} ?priority must be zero or greater"
-            )
-        return converted
+        return MultipleChoice._rdf_integer(
+            value,
+            variable="priority",
+            minimum=0,
+            minimum_description="zero or greater",
+            deck_name=deck_name,
+            row_number=row_number,
+        )
 
     @classmethod
     def group(
@@ -567,10 +572,9 @@ class MultipleChoice(DeckKind):
                     )
                 )
             except ValidationError as error:
-                message = str(error.errors(include_url=False)[0]["msg"])
                 raise PresentationError(
                     f"deck {deck_name!r} has an invalid multiple-choice presentation "
-                    f"for card {card_key.digest}: {message.removeprefix('Value error, ')}"
+                    f"for card {card_key.digest}: {validation_message(error)}"
                 ) from error
         return cls._by_digest(presentations)
 
@@ -624,31 +628,19 @@ class OrderedListCompletion(DeckKind):
 
     config_name = "ordered_list"
     required_variables = frozenset({"group", "position", "label"})
+    target_requirement = (TargetKind.ENTITY, "ordered_list")
+    default_window_size = DEFAULT_WINDOW_SIZE
 
     @staticmethod
     def _position(value: Identifier, deck_name: str, row_number: int) -> int:
-        """Validate an RDF integer without accepting RDFLib coercions."""
-
-        if not isinstance(value, Literal) or value.datatype != XSD.integer:
-            raise PresentationError(
-                f"deck {deck_name!r} row {row_number} ?position must be an xsd:integer literal"
-            )
-        if re.fullmatch(r"[+-]?[0-9]+", str(value)) is None:
-            raise PresentationError(
-                f"deck {deck_name!r} row {row_number} has an invalid xsd:integer lexical value "
-                "for ?position"
-            )
-        converted = value.toPython()
-        if isinstance(converted, bool) or not isinstance(converted, int):
-            raise PresentationError(
-                f"deck {deck_name!r} row {row_number} has an invalid xsd:integer value "
-                "for ?position"
-            )
-        if converted < 1:
-            raise PresentationError(
-                f"deck {deck_name!r} row {row_number} ?position must be at least 1"
-            )
-        return converted
+        return OrderedListCompletion._rdf_integer(
+            value,
+            variable="position",
+            minimum=1,
+            minimum_description="at least 1",
+            deck_name=deck_name,
+            row_number=row_number,
+        )
 
     @classmethod
     def _row(
@@ -668,10 +660,9 @@ class OrderedListCompletion(DeckKind):
         except PresentationError:
             raise
         except ValidationError as error:
-            message = str(error.errors(include_url=False)[0]["msg"])
             raise PresentationError(
                 f"deck {deck_name!r} row {row_number} has an invalid ordered-list row: "
-                f"{message.removeprefix('Value error, ')}"
+                f"{validation_message(error)}"
             ) from error
 
     @staticmethod
@@ -769,10 +760,9 @@ class OrderedListCompletion(DeckKind):
                         )
                     )
                 except ValidationError as error:
-                    message = str(error.errors(include_url=False)[0]["msg"])
                     raise PresentationError(
                         f"deck {deck_name!r} has an invalid ordered-list presentation for "
-                        f"card {key.digest}: {message.removeprefix('Value error, ')}"
+                        f"card {key.digest}: {validation_message(error)}"
                     ) from error
 
         if card_key is not None and not presentations:
