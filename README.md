@@ -1,3 +1,5 @@
+[![Python application](https://github.com/rolph-recto/graphcards/actions/workflows/python-app.yml/badge.svg)](https://github.com/rolph-recto/graphcards/actions/workflows/python-app.yml)
+
 # GraphCards
 
 GraphCards is a local flashcard program in which the thing being learned is either an RDF triple
