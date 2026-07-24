@@ -1,14 +1,15 @@
-"""RDF loading plus SPARQL query execution and validation."""
+"""RDF loading plus semantic card generation."""
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 from rdflib import Graph
 
-from graphcards.decks import DeckDefinition, Presentation
+from graphcards.decks import DeckDefinition
 from graphcards.errors import PresentationError
-from graphcards.models import CardKey
+from graphcards.models import Card, CardKey
 
 
 def load_graph(sources: tuple[Path, ...]) -> Graph:
@@ -23,11 +24,13 @@ def load_graph(sources: tuple[Path, ...]) -> Graph:
     return graph
 
 
-def execute_presentations(
+def execute_cards(
     graph: Graph,
     deck: DeckDefinition,
     card_key: CardKey | None = None,
-) -> dict[str, Presentation]:
-    """Delegate query execution to the configured concrete deck definition."""
+    *,
+    rng: random.Random | None = None,
+) -> dict[str, Card]:
+    """Generate semantic cards, including random choices, from one query."""
 
-    return deck.execute_presentations(graph, card_key)
+    return deck.execute_cards(graph, card_key, rng=rng or random.Random())

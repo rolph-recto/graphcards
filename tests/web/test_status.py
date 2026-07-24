@@ -13,7 +13,7 @@ from rdflib import Literal, URIRef
 
 import graphcards.web.app as web_app_module
 from graphcards.config import AppConfig
-from graphcards.decks import BasicPresentation
+from graphcards.decks import BasicCard
 from graphcards.models import CardKey
 from graphcards.storage import datetime_to_text, utc_now
 from graphcards.web.study import StudyMode
@@ -304,19 +304,19 @@ def test_card_status_paginates_one_hundred_cards(
 ) -> None:
     deck = hub_server.app.config.deck("capitals-basic")
     now = utc_now()
-    presentations = {}
+    cards = {}
     for index in range(101):
         card_key = CardKey.triple(
             URIRef(f"https://example.org/subject-{index}"),
             URIRef("https://example.org/predicate"),
             Literal(f"object-{index}"),
         )
-        presentations[card_key.digest] = BasicPresentation(
+        cards[card_key.digest] = BasicCard(
             card_key=card_key,
             front=Literal(f"Front {index}"),
             back=Literal(f"Back {index}"),
         )
-    hub_server.repository.sync_deck(deck.name, presentations, now)
+    hub_server.repository.sync_deck(deck.name, cards, now)
     first = exchange(hub_server, "GET", "/decks/capitals-basic/cards")[2]
     second = exchange(
         hub_server,

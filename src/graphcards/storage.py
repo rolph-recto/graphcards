@@ -11,8 +11,8 @@ from pathlib import Path
 from fsrs import Card, Rating, ReviewLog
 from pydantic import ConfigDict, Field, ValidationError, field_validator
 
-from graphcards.decks import Presentation
 from graphcards.errors import StaleReviewError, StorageError
+from graphcards.models import Card as SemanticCard
 from graphcards.models import CardKey, RdfModel, TargetKind, validation_message
 
 SCHEMA_VERSION = 4
@@ -319,7 +319,7 @@ class Repository:
             raise StorageError("could not migrate state schema from version 3 to 4") from error
 
     def sync_deck(
-        self, deck_name: str, presentations: dict[str, Presentation], now: datetime
+        self, deck_name: str, cards: dict[str, SemanticCard], now: datetime
     ) -> tuple[int, int]:
         """Atomically reconcile one deck while preserving global card schedules."""
 
@@ -332,12 +332,10 @@ class Repository:
             self.connection.execute(
                 "UPDATE deck_cards SET active = 0 WHERE deck_name = ?", (deck_name,)
             )
-            for card_id, presentation in presentations.items():
-                card_key = presentation.card_key
+            for card_id, semantic_card in cards.items():
+                card_key = semantic_card.card_key
                 if card_id != card_key.digest:
-                    raise StorageError(
-                        f"presentation key {card_id} does not match its card identity hash"
-                    )
+                    raise StorageError(f"card key {card_id} does not match its card identity hash")
                 identity_json = json.dumps(
                     card_key.n3_terms, ensure_ascii=False, separators=(",", ":")
                 )
@@ -388,7 +386,7 @@ class Repository:
                     """,
                     (deck_name, card_id, timestamp),
                 )
-        return len(presentations), created
+        return len(cards), created
 
     def suspend_card(self, deck_name: str, card_id: str, reason: str | None = None) -> None:
         """Suspend one known deck membership without changing its global schedule."""

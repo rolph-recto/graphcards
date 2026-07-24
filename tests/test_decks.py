@@ -1,13 +1,22 @@
 from __future__ import annotations
 
-import random
+from collections.abc import Mapping
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 from rdflib import Literal, URIRef
 
-from graphcards.decks import BasicPresentation, ChoiceOption, MultipleChoicePresentation
-from graphcards.models import CardKey
+from graphcards.decks import (
+    BasicCard,
+    BasicDeck,
+    MultipleChoiceCard,
+    MultipleChoiceDeck,
+    OrderedListCard,
+    OrderedListRow,
+)
+from graphcards.errors import PresentationError
+from graphcards.models import Card, CardKey, TargetKind
 
 
 def card_key() -> CardKey:
@@ -18,116 +27,163 @@ def card_key() -> CardKey:
     )
 
 
-class ReverseRandom(random.Random):
-    def shuffle(self, values: list[object]) -> None:
-        values.reverse()
+def basic_deck(**overrides: object) -> BasicDeck:
+    return BasicDeck(
+        name="basic",
+        target=TargetKind.TRIPLE,
+        query_path=Path("unused.rq"),
+        **overrides,
+    )
 
 
-def option(value: str, priority: int = 0) -> ChoiceOption:
-    return ChoiceOption(choice=Literal(value), priority=priority)
+def multiple_choice_deck(**overrides: object) -> MultipleChoiceDeck:
+    return MultipleChoiceDeck(
+        name="multiple-choice",
+        target=TargetKind.TRIPLE,
+        query_path=Path("unused.rq"),
+        **overrides,
+    )
 
 
-def test_basic_front_text_is_the_front_value() -> None:
-    presentation = BasicPresentation(
+def test_basic_card_renders_to_a_card_view() -> None:
+    card = BasicCard(
         card_key=card_key(),
         front=Literal("front"),
         back=Literal("back"),
     )
 
-    assert presentation.front_text(random.Random(0)) == "front"
+    view = basic_deck().render(card)
+
+    assert view.card_key == card.card_key
+    assert view.front == "front"
+    assert view.back == "back"
 
 
-def test_multiple_choice_front_text_shuffles_a_copy_of_choices() -> None:
-    presentation = MultipleChoicePresentation(
+def test_configured_templates_support_conditions_loops_and_whitespace() -> None:
+    card = MultipleChoiceCard(
         card_key=card_key(),
         front=Literal("question"),
         back=Literal("correct"),
-        choices=(option("correct"), option("incorrect")),
+        choices=(Literal("incorrect"), Literal("correct")),
+    )
+    deck = multiple_choice_deck(
+        front_template="  {% if front %}{{ front }}\nsecond line{% endif %}  \n",
+        back_template="{% for choice in choices %}[{{ choice }}]{% endfor %}",
     )
 
-    text = presentation.front_text(ReverseRandom())
+    view = deck.render(card)
 
-    assert text == "question\n  1. incorrect\n  2. correct"
-    assert presentation.choices == (option("correct"), option("incorrect"))
+    assert view.front == "  question\nsecond line  \n"
+    assert view.back == "[incorrect][correct]"
 
 
-def test_multiple_choice_exhausts_priority_tiers_and_includes_correct_answer() -> None:
-    presentation = MultipleChoicePresentation(
+def test_deck_rejects_an_incompatible_card_type() -> None:
+    card = BasicCard(
+        card_key=card_key(),
+        front=Literal("front"),
+        back=Literal("back"),
+    )
+
+    with pytest.raises(PresentationError, match="renders MultipleChoiceCard"):
+        multiple_choice_deck().render(card)
+
+
+def test_deck_translates_jinja_runtime_failure() -> None:
+    card = BasicCard(
+        card_key=card_key(),
+        front=Literal("front"),
+        back=Literal("back"),
+    )
+
+    with pytest.raises(PresentationError, match="division by zero") as caught:
+        basic_deck(front_template="{{ 1 / 0 }}").render(card)
+
+    assert isinstance(caught.value.__cause__, ZeroDivisionError)
+
+
+def test_deck_translates_undefined_template_values() -> None:
+    card = BasicCard(
+        card_key=card_key(),
+        front=Literal("front"),
+        back=Literal("back"),
+    )
+
+    with pytest.raises(PresentationError, match="'missing' is undefined"):
+        basic_deck(front_template="{{ missing }}").render(card)
+
+
+def test_deck_preserves_render_context_presentation_errors() -> None:
+    class RejectingDeck(BasicDeck):
+        def render_context(
+            self,
+            card: Card,
+        ) -> Mapping[str, object]:
+            del self, card
+            raise PresentationError("custom presentation rejection")
+
+    card = BasicCard(
+        card_key=card_key(),
+        front=Literal("front"),
+        back=Literal("back"),
+    )
+
+    deck = RejectingDeck(
+        name="rejecting",
+        target=TargetKind.TRIPLE,
+        query_path=Path("unused.rq"),
+    )
+
+    with pytest.raises(PresentationError, match="custom presentation rejection") as caught:
+        deck.render(card)
+
+    assert caught.value.__cause__ is None
+
+
+def test_deck_passes_validated_configuration_to_render_context() -> None:
+    class PrefixDeck(BasicDeck):
+        prefix: str
+
+        def render_context(
+            self,
+            card: Card,
+        ) -> Mapping[str, object]:
+            context = dict(super().render_context(card))
+            context["front"] = f"{self.prefix} {context['front']}"
+            return context
+
+    card = BasicCard(
+        card_key=card_key(),
+        front=Literal("front"),
+        back=Literal("back"),
+    )
+
+    deck = PrefixDeck(
+        name="prefixed",
+        target=TargetKind.TRIPLE,
+        query_path=Path("unused.rq"),
+        prefix="Typed:",
+    )
+    view = deck.render(card)
+
+    assert view.front == "Typed: front"
+
+
+def test_multiple_choice_rendering_preserves_generated_choice_order() -> None:
+    card = MultipleChoiceCard(
         card_key=card_key(),
         front=Literal("question"),
         back=Literal("correct"),
-        choices=(
-            option("low", 1),
-            option("high-b", 2),
-            option("correct"),
-            option("default"),
-            option("high-a", 2),
-        ),
-        max_choices=4,
+        choices=(Literal("incorrect"), Literal("correct")),
     )
 
-    selected = set(presentation.selected_choices(random.Random(0)))
+    deck = multiple_choice_deck()
+    first = deck.render(card)
+    second = deck.render(card)
 
-    assert selected == {
-        Literal("correct"),
-        Literal("high-a"),
-        Literal("high-b"),
-        Literal("low"),
-    }
-    assert Literal("default") not in selected
-
-
-def test_multiple_choice_randomizes_a_cutoff_tie_deterministically() -> None:
-    choices = (
-        option("correct"),
-        option("tied-a", 2),
-        option("tied-b", 2),
-        option("lower", 1),
-    )
-    presentation = MultipleChoicePresentation(
-        card_key=card_key(),
-        front=Literal("question"),
-        back=Literal("correct"),
-        choices=choices,
-        max_choices=2,
-    )
-    reordered = presentation.model_copy(update={"choices": tuple(reversed(choices))})
-
-    first = presentation.selected_choices(random.Random(7))
-    repeated = presentation.selected_choices(random.Random(7))
-    from_reordered_rows = reordered.selected_choices(random.Random(7))
-
-    assert first == repeated == from_reordered_rows
-    assert Literal("correct") in first
-    assert len(set(first) & {Literal("tied-a"), Literal("tied-b")}) == 1
-    assert Literal("lower") not in first
-
-
-def test_multiple_choice_repeated_renders_vary_tied_selection_and_display_order() -> None:
-    presentation = MultipleChoicePresentation(
-        card_key=card_key(),
-        front=Literal("question"),
-        back=Literal("correct"),
-        choices=(
-            option("correct"),
-            option("high", 3),
-            option("tied-a", 2),
-            option("tied-b", 2),
-            option("tied-c", 2),
-            option("low", 1),
-        ),
-        max_choices=3,
-    )
-    rng = random.Random(1)
-
-    renders = tuple(presentation.selected_choices(rng) for _ in range(8))
-    tied = {Literal("tied-a"), Literal("tied-b"), Literal("tied-c")}
-
-    assert all({Literal("correct"), Literal("high")} <= set(rendered) for rendered in renders)
-    assert all(len(set(rendered) & tied) == 1 for rendered in renders)
-    assert all(Literal("low") not in rendered for rendered in renders)
-    assert len({frozenset(set(rendered) & tied) for rendered in renders}) > 1
-    assert len({rendered.index(Literal("correct")) for rendered in renders}) > 1
+    assert first == second
+    assert first.front == "question\n  1. incorrect\n  2. correct"
+    assert first.back == "correct"
+    assert card.choices == (Literal("incorrect"), Literal("correct"))
 
 
 @pytest.mark.parametrize(
@@ -146,27 +202,91 @@ def test_multiple_choice_repeated_renders_vary_tied_selection_and_display_order(
         ),
     ],
 )
-def test_multiple_choice_rejects_invalid_direct_construction(
+def test_multiple_choice_card_rejects_invalid_semantic_data(
     choices: tuple[Literal, ...],
     back: Literal,
     message: str,
 ) -> None:
     with pytest.raises(ValidationError, match=message):
-        MultipleChoicePresentation(
+        MultipleChoiceCard(
             card_key=card_key(),
             front=Literal("question"),
             back=back,
-            choices=tuple(ChoiceOption(choice=choice) for choice in choices),
+            choices=choices,
         )
 
 
-@pytest.mark.parametrize("max_choices", [0, 1, True, 2.5, "2"])
-def test_multiple_choice_rejects_invalid_max_choices(max_choices: object) -> None:
-    with pytest.raises(ValidationError, match="max_choices"):
-        MultipleChoicePresentation(
-            card_key=card_key(),
-            front=Literal("question"),
-            back=Literal("correct"),
-            choices=(option("correct"), option("incorrect")),
-            max_choices=max_choices,
+def ordered_rows() -> tuple[OrderedListRow, OrderedListRow]:
+    return (
+        OrderedListRow(
+            entity=URIRef("https://example.org/first"),
+            group=URIRef("https://example.org/group"),
+            position=1,
+            label=Literal("First"),
+        ),
+        OrderedListRow(
+            entity=URIRef("https://example.org/second"),
+            group=URIRef("https://example.org/group"),
+            position=2,
+            label=Literal("Second"),
+        ),
+    )
+
+
+def test_ordered_list_card_accepts_valid_semantic_data() -> None:
+    rows = ordered_rows()
+
+    card = OrderedListCard(
+        card_key=CardKey.entity(rows[1].entity),
+        ordered_rows=rows,
+        hidden_position=2,
+    )
+
+    assert card.ordered_rows == rows
+    assert card.hidden_position == 2
+
+
+@pytest.mark.parametrize(
+    ("rows", "card_key_value", "message"),
+    [
+        (
+            ordered_rows()[:1],
+            CardKey.entity(ordered_rows()[0].entity),
+            "at least two rows",
+        ),
+        (
+            (
+                ordered_rows()[0],
+                ordered_rows()[1].model_copy(update={"position": 1}),
+            ),
+            CardKey.entity(ordered_rows()[1].entity),
+            "unique positions",
+        ),
+        (
+            (
+                ordered_rows()[0],
+                ordered_rows()[1].model_copy(
+                    update={"group": URIRef("https://example.org/other-group")}
+                ),
+            ),
+            CardKey.entity(ordered_rows()[1].entity),
+            "one group",
+        ),
+        (
+            ordered_rows(),
+            CardKey.entity(ordered_rows()[0].entity),
+            "hidden row must match the card identity",
+        ),
+    ],
+)
+def test_ordered_list_card_rejects_invalid_semantic_data(
+    rows: tuple[OrderedListRow, ...],
+    card_key_value: CardKey,
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        OrderedListCard(
+            card_key=card_key_value,
+            ordered_rows=rows,
+            hidden_position=1 if len(rows) == 1 else 2,
         )

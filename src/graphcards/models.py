@@ -1,4 +1,4 @@
-"""Immutable domain models for RDF-backed card identities."""
+"""Immutable domain models for RDF-backed cards and rendered views."""
 
 from __future__ import annotations
 
@@ -143,3 +143,17 @@ class CardKey(RdfModel):
         except ValidationError as error:
             message = validation_message(error)
             raise StorageError(f"stored card identity is invalid: {message}") from error
+
+
+class Card(RdfModel):
+    """Validated semantic data for one regenerable card."""
+
+    card_key: CardKey
+
+
+class CardView(RdfModel):
+    """Learner-facing strings produced by a stateless presentation renderer."""
+
+    card_key: CardKey
+    front: str
+    back: str

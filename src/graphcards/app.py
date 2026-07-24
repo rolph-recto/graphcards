@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import random
 from datetime import datetime
 
 from fsrs import Rating, Scheduler
 from rdflib import Graph
 
-from graphcards.decks import DeckDefinition, Presentation
+from graphcards.decks import DeckDefinition
 from graphcards.errors import PresentationError
-from graphcards.presentation import execute_presentations
+from graphcards.models import Card, CardView
+from graphcards.presentation import execute_cards
 from graphcards.storage import Repository, StoredCard, datetime_as_utc, utc_now
 
 
@@ -21,26 +23,40 @@ class StudyService:
         graph: Graph,
         repository: Repository,
         scheduler: Scheduler,
+        rng: random.Random | None = None,
     ) -> None:
         self.graph = graph
         self.repository = repository
         self.scheduler = scheduler
+        self.rng = rng or random.Random()
 
     def sync(self, deck: DeckDefinition, now: datetime | None = None) -> tuple[int, int]:
-        presentations = self.render_all(deck)
-        return self.repository.sync_deck(deck.name, presentations, now or utc_now())
+        cards = self.generate_all(deck)
+        return self.repository.sync_deck(deck.name, cards, now or utc_now())
 
-    def render_all(self, deck: DeckDefinition) -> dict[str, Presentation]:
-        """Render every current presentation for a deck in one query."""
+    def generate_all(self, deck: DeckDefinition) -> dict[str, Card]:
+        """Generate every current semantic card for a deck in one query."""
 
-        return execute_presentations(self.graph, deck)
+        return execute_cards(self.graph, deck, rng=self.rng)
 
-    def render(self, deck: DeckDefinition, card: StoredCard) -> Presentation:
-        presentations = execute_presentations(self.graph, deck, card.card_key)
-        presentation = presentations.get(card.card_id)
-        if presentation is None:
-            raise PresentationError(f"deck {deck.name!r} no longer renders card {card.card_id}")
-        return presentation
+    def render_all(self, deck: DeckDefinition) -> dict[str, CardView]:
+        """Generate and render all current cards at the application boundary."""
+
+        return {card_id: deck.render(card) for card_id, card in self.generate_all(deck).items()}
+
+    def render(self, deck: DeckDefinition, stored_card: StoredCard) -> CardView:
+        cards = execute_cards(
+            self.graph,
+            deck,
+            stored_card.card_key,
+            rng=self.rng,
+        )
+        card = cards.get(stored_card.card_id)
+        if card is None:
+            raise PresentationError(
+                f"deck {deck.name!r} no longer generates card {stored_card.card_id}"
+            )
+        return deck.render(card)
 
     def suspend(
         self,

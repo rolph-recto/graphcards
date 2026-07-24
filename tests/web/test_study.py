@@ -12,9 +12,9 @@ from rdflib import Literal
 from graphcards.app import StudyService
 from graphcards.config import AppConfig
 from graphcards.decks import (
-    BasicPresentation,
-    ChoiceOption,
-    MultipleChoicePresentation,
+    BasicCard,
+    BasicDeck,
+    MultipleChoiceDeck,
     OrderedListDeck,
 )
 from graphcards.errors import PresentationError
@@ -618,7 +618,6 @@ def test_session_skips_presentation_errors(config: AppConfig) -> None:
             StudyMode.DUE,
             1,
             0,
-            random.Random(0),
         )
 
         assert session.index == 1
@@ -628,12 +627,14 @@ def test_session_skips_presentation_errors(config: AppConfig) -> None:
         assert "cannot render test card" in session.skipped[0]
 
 
-def test_session_uses_custom_presentation_front_text(config: AppConfig) -> None:
-    class CustomPresentation(BasicPresentation):
-        def front_text(self, rng: random.Random) -> str:
-            return f"Web custom: {super().front_text(rng)}"
-
+def test_session_uses_custom_configured_jinja_template(config: AppConfig) -> None:
     deck = config.deck("capitals-basic")
+    custom_deck = BasicDeck(
+        name="custom",
+        target=TargetKind.TRIPLE,
+        query_path=Path("unused.rq"),
+        front_template="Web custom: {{ front }}",
+    )
     graph = load_graph(config.sources)
     with Repository(config.state_path) as repository:
         app = StudyService(graph, repository, config.fsrs.create_scheduler())
@@ -642,10 +643,12 @@ def test_session_uses_custom_presentation_front_text(config: AppConfig) -> None:
         cards = repository.due_cards(deck.name, now, 1)
 
         def render_custom(_deck, card):
-            return CustomPresentation(
-                card_key=card.card_key,
-                front=Literal("custom front"),
-                back=Literal("custom back"),
+            return custom_deck.render(
+                BasicCard(
+                    card_key=card.card_key,
+                    front=Literal("custom front"),
+                    back=Literal("custom back"),
+                )
             )
 
         app.render = render_custom  # type: ignore[method-assign]
@@ -656,46 +659,31 @@ def test_session_uses_custom_presentation_front_text(config: AppConfig) -> None:
             StudyMode.DUE,
             1,
             0,
-            random.Random(0),
         )
 
         assert session.current is not None
         assert session.current.front == "Web custom: custom front"
 
 
-def test_browser_session_reuses_rng_across_priority_choice_renders(
+def test_browser_session_uses_controller_rng_during_card_generation(
     config: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen_rngs: list[random.Random] = []
+    original_selection = MultipleChoiceDeck._selected_choices
 
-    class RecordingMultipleChoice(MultipleChoicePresentation):
-        def front_text(self, rng: random.Random) -> str:
-            seen_rngs.append(rng)
-            return super().front_text(rng)
+    def record_selection(self, choices, rng):
+        seen_rngs.append(rng)
+        return original_selection(self, choices, rng)
+
+    monkeypatch.setattr(MultipleChoiceDeck, "_selected_choices", record_selection)
 
     deck = config.deck("capitals-choice")
     graph = load_graph(config.sources)
     with Repository(config.state_path) as repository:
         session_rng = random.Random(1)
         controller = StudyController(config, graph, repository, session_rng)
-
-        def render_limited(_deck, card):
-            return RecordingMultipleChoice(
-                card_key=card.card_key,
-                front=Literal("question"),
-                back=Literal("correct"),
-                choices=(
-                    ChoiceOption(choice=Literal("correct")),
-                    ChoiceOption(choice=Literal("high"), priority=3),
-                    ChoiceOption(choice=Literal("tied-a"), priority=2),
-                    ChoiceOption(choice=Literal("tied-b"), priority=2),
-                    ChoiceOption(choice=Literal("tied-c"), priority=2),
-                    ChoiceOption(choice=Literal("low"), priority=1),
-                ),
-                max_choices=3,
-            )
-
-        controller.study_service.render = render_limited  # type: ignore[method-assign]
+        seen_after_sync = len(seen_rngs)
         session = controller.start_session(
             csrf_token=controller.csrf_token,
             deck_name=deck.name,
@@ -704,22 +692,13 @@ def test_browser_session_reuses_rng_across_priority_choice_renders(
             requested_limit=0,
         )
 
-        renders: list[tuple[str, ...]] = []
         while session.current is not None:
             current = session.current
-            renders.append(
-                tuple(line.split(". ", maxsplit=1)[1] for line in current.front.splitlines()[1:])
-            )
-            assert current.back == "correct"
+            assert isinstance(current.view.front, str)
+            assert isinstance(current.view.back, str)
             session.reveal(session.session_token, current.card.card_id)
             session.rate(session.session_token, current.card.card_id, Rating.Good)
 
-        tied = {"tied-a", "tied-b", "tied-c"}
-        assert session.rng is controller.rng is session_rng
-        assert seen_rngs == [session_rng, session_rng]
-        assert len(renders) == 2
-        assert all({"correct", "high"} <= set(rendered) for rendered in renders)
-        assert all(len(set(rendered) & tied) == 1 for rendered in renders)
-        assert all("low" not in rendered for rendered in renders)
-        assert len({frozenset(set(rendered) & tied) for rendered in renders}) > 1
-        assert len({rendered.index("correct") for rendered in renders}) > 1
+        assert controller.study_service.rng is controller.rng is session_rng
+        assert len(seen_rngs) > seen_after_sync
+        assert all(rng is session_rng for rng in seen_rngs)

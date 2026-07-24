@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 import secrets
 from dataclasses import dataclass
 from enum import StrEnum
@@ -13,6 +12,7 @@ from fsrs import Rating
 from graphcards.app import StudyService
 from graphcards.decks import DeckDefinition
 from graphcards.errors import PresentationError, StaleReviewError
+from graphcards.models import CardView
 from graphcards.storage import StoredCard, utc_now
 
 
@@ -44,9 +44,16 @@ class RequestFailure(Exception):
 @dataclass
 class CurrentCard:
     card: StoredCard
-    front: str
-    back: str
+    view: CardView
     revealed: bool = False
+
+    @property
+    def front(self) -> str:
+        return self.view.front
+
+    @property
+    def back(self) -> str:
+        return self.view.back
 
 
 class StudySession:
@@ -60,7 +67,6 @@ class StudySession:
         mode: StudyMode,
         days: int,
         requested_limit: int,
-        rng: random.Random,
     ) -> None:
         self.deck = deck
         self.service = service
@@ -68,7 +74,6 @@ class StudySession:
         self.mode = mode
         self.days = days
         self.requested_limit = requested_limit
-        self.rng = rng
         self.session_token = secrets.token_urlsafe(32)
         self.index = 0
         self.completed_count = 0
@@ -94,16 +99,14 @@ class StudySession:
                 self.index += 1
                 continue
             try:
-                presentation = self.service.render(self.deck, card)
-                front = presentation.front_text(self.rng)
+                view = self.service.render(self.deck, card)
             except PresentationError as error:
                 self.skipped.append(f"{card.card_id}: {error}")
                 self.index += 1
                 continue
             self.current = CurrentCard(
                 card=card,
-                front=front,
-                back=str(presentation.back),
+                view=view,
             )
             return
         self.current = None

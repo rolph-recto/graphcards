@@ -1,4 +1,4 @@
-"""Multiple-choice decks and presentations."""
+"""Multiple-choice card generation and stateless rendering."""
 
 from __future__ import annotations
 
@@ -14,73 +14,40 @@ from rdflib.term import Identifier
 from graphcards.decks.base import (
     DEFAULT_MAX_CHOICES,
     DeckDefinition,
-    Presentation,
+    TemplateSource,
 )
 from graphcards.errors import PresentationError
-from graphcards.models import CardKey, RdfModel, validation_message
+from graphcards.models import Card, CardKey, validation_message
 
 
-class ChoiceOption(RdfModel):
-    """One candidate answer and its normalized distractor-selection priority."""
+class MultipleChoiceCard(Card):
+    """A question with its already-selected, already-ordered answer choices."""
 
-    choice: Identifier
-    priority: Annotated[int, Field(strict=True, ge=0)] = 0
-
-
-class MultipleChoicePresentation(Presentation):
-    """A self-rated presentation with shuffled choices and a correct back."""
-
-    choices: tuple[ChoiceOption, ...]
-    max_choices: Annotated[int, Field(strict=True, ge=2)] = DEFAULT_MAX_CHOICES
+    front: Identifier
+    back: Identifier
+    choices: tuple[Identifier, ...]
 
     @model_validator(mode="after")
-    def validate_choices(self) -> MultipleChoicePresentation:
+    def validate_choices(self) -> MultipleChoiceCard:
         if len(self.choices) < 2:
-            raise ValueError("a multiple-choice presentation needs at least two choices")
-        choice_values = tuple(option.choice for option in self.choices)
-        if len(set(choice_values)) != len(choice_values):
-            raise ValueError("a multiple-choice presentation cannot contain duplicate choices")
-        if self.back not in choice_values:
+            raise ValueError("a multiple-choice card needs at least two choices")
+        if len(set(self.choices)) != len(self.choices):
+            raise ValueError("a multiple-choice card cannot contain duplicate choices")
+        if self.back not in self.choices:
             raise ValueError("the multiple-choice back must be one of its choices")
         return self
 
-    def _selected_distractors(self, rng: random.Random) -> list[Identifier]:
-        tiers: dict[int, list[Identifier]] = defaultdict(list)
-        for option in self.choices:
-            if option.choice != self.back:
-                tiers[option.priority].append(option.choice)
-
-        remaining = self.max_choices - 1
-        distractors: list[Identifier] = []
-        for priority in sorted(tiers, reverse=True):
-            tier = sorted(tiers[priority], key=lambda choice: choice.n3())
-            rng.shuffle(tier)
-            retained = tier[:remaining]
-            distractors.extend(retained)
-            remaining -= len(retained)
-            if remaining == 0:
-                break
-        return distractors
-
-    def selected_choices(self, rng: random.Random) -> tuple[Identifier, ...]:
-        selected = [self.back, *self._selected_distractors(rng)]
-        rng.shuffle(selected)
-        return tuple(selected)
-
-    def front_text(self, rng: random.Random) -> str:
-        lines = [str(self.front)]
-        lines.extend(
-            f"  {index}. {choice}"
-            for index, choice in enumerate(self.selected_choices(rng), start=1)
-        )
-        return "\n".join(lines)
-
 
 class MultipleChoiceDeck(DeckDefinition):
-    """Configured multiple-choice query behavior."""
+    """Configured multiple-choice generation and rendering behavior."""
 
     config_name = "multiple_choice"
     required_variables = frozenset({"front", "choice", "is_correct"})
+    card_type = MultipleChoiceCard
+    front_template: TemplateSource = (
+        "{{ front }}{% for choice in choices %}\n  {{ loop.index }}. {{ choice }}{% endfor %}"
+    )
+    back_template: TemplateSource = "{{ back }}"
 
     max_choices: Annotated[int, Field(strict=True, ge=2)] = DEFAULT_MAX_CHOICES
 
@@ -111,13 +78,38 @@ class MultipleChoiceDeck(DeckDefinition):
             row_number=row_number,
         )
 
+    def _selected_choices(
+        self,
+        choices: dict[Identifier, tuple[bool, int]],
+        rng: random.Random,
+    ) -> tuple[Identifier, ...]:
+        correct = next(value for value, (is_correct, _priority) in choices.items() if is_correct)
+        tiers: dict[int, list[Identifier]] = defaultdict(list)
+        for value, (is_correct, priority) in choices.items():
+            if not is_correct:
+                tiers[priority].append(value)
+
+        remaining = self.max_choices - 1
+        selected = [correct]
+        for priority in sorted(tiers, reverse=True):
+            tier = sorted(tiers[priority], key=lambda choice: choice.n3())
+            rng.shuffle(tier)
+            retained = tier[:remaining]
+            selected.extend(retained)
+            remaining -= len(retained)
+            if remaining == 0:
+                break
+        rng.shuffle(selected)
+        return tuple(selected)
+
     def group(
         self,
         result: object,
         *,
         expected: set[str],
         card_key: CardKey | None = None,
-    ) -> dict[str, Presentation]:
+        rng: random.Random,
+    ) -> dict[str, Card]:
         del card_key
         fronts: dict[CardKey, set[Identifier]] = defaultdict(set)
         choices: dict[CardKey, dict[Identifier, tuple[bool, int]]] = defaultdict(dict)
@@ -144,7 +136,7 @@ class MultipleChoiceDeck(DeckDefinition):
                     )
             choices[key][choice] = (is_correct, priority)
 
-        presentations: list[Presentation] = []
+        cards: list[Card] = []
         for key, front_values in fronts.items():
             if len(front_values) != 1:
                 raise PresentationError(
@@ -160,8 +152,8 @@ class MultipleChoiceDeck(DeckDefinition):
                     f"deck {self.name!r} needs exactly one correct choice for card {key.digest}"
                 )
             try:
-                presentations.append(
-                    MultipleChoicePresentation(
+                cards.append(
+                    MultipleChoiceCard(
                         card_key=key,
                         front=next(iter(front_values)),
                         back=next(
@@ -169,16 +161,12 @@ class MultipleChoiceDeck(DeckDefinition):
                             for value, (is_correct, _priority) in card_choices.items()
                             if is_correct
                         ),
-                        choices=tuple(
-                            ChoiceOption(choice=value, priority=priority)
-                            for value, (_is_correct, priority) in card_choices.items()
-                        ),
-                        max_choices=self.max_choices,
+                        choices=self._selected_choices(card_choices, rng),
                     )
                 )
             except ValidationError as error:
                 raise PresentationError(
-                    f"deck {self.name!r} has an invalid multiple-choice presentation "
+                    f"deck {self.name!r} has an invalid multiple-choice card "
                     f"for card {key.digest}: {validation_message(error)}"
                 ) from error
-        return self._by_digest(presentations)
+        return self._by_digest(cards)

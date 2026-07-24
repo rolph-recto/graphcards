@@ -1,4 +1,4 @@
-"""Shared deck-definition execution and presentation models."""
+"""Shared configured card-generation and rendering definitions."""
 
 from __future__ import annotations
 
@@ -6,17 +6,33 @@ import random
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from functools import lru_cache
 from inspect import isabstract
 from pathlib import Path
 from typing import Annotated, ClassVar
 
-from pydantic import ConfigDict, Field, ValidationInfo, field_validator
+from jinja2 import Environment, StrictUndefined, Template
+from pydantic import (
+    AfterValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationInfo,
+    field_validator,
+)
 from rdflib import Graph, Literal
 from rdflib.namespace import XSD
 from rdflib.term import Identifier
 
 from graphcards.errors import PresentationError
-from graphcards.models import CardKey, FrozenModel, RdfModel, TargetKind, resolve_config_path
+from graphcards.models import (
+    Card,
+    CardKey,
+    CardView,
+    FrozenModel,
+    TargetKind,
+    resolve_config_path,
+)
 
 DEFAULT_MAX_CHOICES = 4
 DEFAULT_WINDOW_SIZE = 5
@@ -27,18 +43,35 @@ IDENTITY_VARIABLES = {
 }
 
 
-class Presentation(RdfModel):
-    """One generated learner-facing card presentation."""
+_TEMPLATE_ENVIRONMENT = Environment(
+    autoescape=False,
+    keep_trailing_newline=True,
+    trim_blocks=False,
+    lstrip_blocks=False,
+    undefined=StrictUndefined,
+)
 
-    card_key: CardKey
-    front: Identifier
-    back: Identifier
 
-    def front_text(self, rng: random.Random) -> str:
-        """Format the front; presentations may use RNG for display-only variation."""
+@lru_cache
+def _template(source: str) -> Template:
+    return _TEMPLATE_ENVIRONMENT.from_string(source)
 
-        del rng
-        return str(self.front)
+
+def _validate_template_source(source: str) -> str:
+    if not source.strip():
+        raise ValueError("must be a non-blank Jinja template")
+    try:
+        _template(source)
+    except Exception as error:
+        raise ValueError(f"must be a valid Jinja template: {error}") from error
+    return source
+
+
+TemplateSource = Annotated[
+    str,
+    StringConstraints(strict=True, strip_whitespace=False),
+    AfterValidator(_validate_template_source),
+]
 
 
 class DeckDefinition(FrozenModel, ABC):
@@ -51,6 +84,7 @@ class DeckDefinition(FrozenModel, ABC):
 
     config_name: ClassVar[str]
     required_variables: ClassVar[frozenset[str]]
+    card_type: ClassVar[type[Card]]
     uses_card_bindings: ClassVar[bool] = True
     exact_projection: ClassVar[tuple[str, ...] | None] = None
     _registry: ClassVar[dict[str, type[DeckDefinition]]] = {}
@@ -58,6 +92,8 @@ class DeckDefinition(FrozenModel, ABC):
     name: Annotated[str, Field(min_length=1)]
     target: TargetKind
     query_path: Path = Field(validation_alias="query")
+    front_template: TemplateSource
+    back_template: TemplateSource
 
     @field_validator("query_path", mode="before")
     @classmethod
@@ -97,6 +133,29 @@ class DeckDefinition(FrozenModel, ABC):
             or not all(isinstance(variable, str) and variable for variable in required)
         ):
             raise ValueError("deck definition must define required_variables as non-empty strings")
+        card_type = getattr(definition, "card_type", None)
+        if not isinstance(card_type, type) or not issubclass(card_type, Card):
+            raise ValueError("deck definition must define a Card subclass as card_type")
+        for name in ("front_template", "back_template"):
+            field = definition.model_fields.get(name)
+            contract = DeckDefinition.model_fields[name]
+            if (
+                field is None
+                or field.annotation != contract.annotation
+                or field.metadata != contract.metadata
+            ):
+                raise ValueError(
+                    f"deck definition must declare {name} with the TemplateSource type"
+                )
+            if not field.is_required() and field.default_factory is None:
+                try:
+                    if not isinstance(field.default, str):
+                        raise ValueError("must be a string")
+                    _validate_template_source(field.default)
+                except ValueError as error:
+                    raise ValueError(
+                        f"deck definition has an invalid {name} default: {error}"
+                    ) from error
         return definition
 
     @classmethod
@@ -142,12 +201,14 @@ class DeckDefinition(FrozenModel, ABC):
                 f"could not read query file for deck {self.name!r}: {error}"
             ) from error
 
-    def execute_presentations(
+    def execute_cards(
         self,
         graph: Graph,
         card_key: CardKey | None = None,
-    ) -> dict[str, Presentation]:
-        """Run this deck's query and build current presentations."""
+        *,
+        rng: random.Random,
+    ) -> dict[str, Card]:
+        """Run this deck's query and generate current semantic cards."""
 
         if card_key is not None and card_key.target_kind != self.target:
             raise PresentationError(
@@ -182,16 +243,38 @@ class DeckDefinition(FrozenModel, ABC):
                 f"deck {self.name!r} does not SELECT required variables: {joined}"
             )
 
-        presentations = self.group(result, expected=expected, card_key=card_key)
+        cards = self.group(result, expected=expected, card_key=card_key, rng=rng)
         if card_key is not None:
-            unexpected = [
-                item.card_key for item in presentations.values() if item.card_key != card_key
-            ]
+            unexpected = [item.card_key for item in cards.values() if item.card_key != card_key]
             if unexpected:
                 raise PresentationError(
-                    f"deck {self.name!r} ignored the supplied card bindings while rendering"
+                    f"deck {self.name!r} ignored the supplied card bindings while generating"
                 )
-        return presentations
+        return cards
+
+    def render_context(self, card: Card) -> Mapping[str, object]:
+        """Return the curated semantic data exposed to this deck's templates."""
+
+        return card.model_dump(exclude={"card_key"})
+
+    def render(self, card: Card) -> CardView:
+        """Render one compatible semantic card through this configured deck."""
+
+        if not isinstance(card, self.card_type):
+            raise PresentationError(
+                f"deck {self.name!r} renders {self.card_type.__name__}, not {type(card).__name__}"
+            )
+        try:
+            context = self.render_context(card)
+            front = _template(self.front_template).render(**context)
+            back = _template(self.back_template).render(**context)
+        except PresentationError:
+            raise
+        except Exception as error:
+            raise PresentationError(
+                f"deck {self.name!r} could not render its card: {error}"
+            ) from error
+        return CardView(card_key=card.card_key, front=front, back=back)
 
     @abstractmethod
     def group(
@@ -200,8 +283,9 @@ class DeckDefinition(FrozenModel, ABC):
         *,
         expected: set[str],
         card_key: CardKey | None = None,
-    ) -> dict[str, Presentation]:
-        """Convert validated SPARQL rows into presentations keyed by card ID."""
+        rng: random.Random,
+    ) -> dict[str, Card]:
+        """Convert validated SPARQL rows into semantic cards keyed by card ID."""
 
     @staticmethod
     def _row_values(row: object) -> dict[str, Identifier]:
@@ -259,14 +343,14 @@ class DeckDefinition(FrozenModel, ABC):
         return converted
 
     @staticmethod
-    def _by_digest(presentations: list[Presentation]) -> dict[str, Presentation]:
+    def _by_digest(cards: list[Card]) -> dict[str, Card]:
         # Comparing identities as well as hashes prevents a collision from
         # silently merging two distinct RDF cards.
-        by_digest: dict[str, Presentation] = {}
-        for presentation in presentations:
-            card_id = presentation.card_key.digest
+        by_digest: dict[str, Card] = {}
+        for card in cards:
+            card_id = card.card_key.digest
             existing = by_digest.get(card_id)
-            if existing is not None and existing.card_key != presentation.card_key:
+            if existing is not None and existing.card_key != card.card_key:
                 raise PresentationError("SHA-256 collision between two different card identities")
-            by_digest[card_id] = presentation
+            by_digest[card_id] = card
         return by_digest

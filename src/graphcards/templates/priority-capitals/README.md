@@ -3,7 +3,7 @@
 This workspace demonstrates priority-aware multiple-choice distractors.
 
 The RDF data only contains domain facts: countries, capitals, cities, and
-labels. Presentation priority lives entirely in the SPARQL query.
+labels. Distractor priority lives entirely in the SPARQL query.
 
 The query uses `UNION` to combine four subqueries. Each subquery returns a
 different group of choices and binds its own integer `?priority`: correct
@@ -14,10 +14,11 @@ The deck sets `max_choices = 4`, so GraphCards reserves one slot for the
 priority-zero correct answer, exhausts priorities three and two, and randomly
 selects one of the two priority-one distractors for the final slot. This keeps
 choice policy in the deck without adding study-specific metadata to the graph.
-Each presentation randomizes candidates within the tied tier, then separately
-shuffles all four retained choices, including the correct answer, for display.
-The session keeps one random-number stream, so repeated presentations can choose
-a different cutoff distractor and display order.
+Card generation randomizes candidates within the tied tier, then separately
+shuffles all four retained choices, including the correct answer. The resulting
+semantic card has a fixed choice order before its Jinja presentation renders.
+The application keeps one random-number stream, so repeated generations can
+choose a different cutoff distractor and display order.
 
 Try it with:
 

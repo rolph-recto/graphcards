@@ -1,37 +1,35 @@
-"""Registered deck definitions and generated presentation models."""
+"""Registered deck definitions, semantic cards, and rendering contracts."""
 
-from graphcards.decks.analogy import AnalogyDeck, AnalogyPresentation
+from graphcards.decks.analogy import AnalogyCard, AnalogyDeck
 from graphcards.decks.base import (
     DEFAULT_MAX_CHOICES,
     DEFAULT_WINDOW_SIZE,
     DeckDefinition,
-    Presentation,
+    TemplateSource,
 )
-from graphcards.decks.basic import BasicDeck, BasicPresentation
+from graphcards.decks.basic import BasicCard, BasicDeck
 from graphcards.decks.multiple_choice import (
-    ChoiceOption,
+    MultipleChoiceCard,
     MultipleChoiceDeck,
-    MultipleChoicePresentation,
 )
 from graphcards.decks.ordered_list import (
+    OrderedListCard,
     OrderedListDeck,
-    OrderedListPresentation,
     OrderedListRow,
 )
 
 __all__ = [
     "DEFAULT_MAX_CHOICES",
     "DEFAULT_WINDOW_SIZE",
+    "AnalogyCard",
     "AnalogyDeck",
-    "AnalogyPresentation",
+    "BasicCard",
     "BasicDeck",
-    "BasicPresentation",
-    "ChoiceOption",
     "DeckDefinition",
+    "MultipleChoiceCard",
     "MultipleChoiceDeck",
-    "MultipleChoicePresentation",
+    "OrderedListCard",
     "OrderedListDeck",
-    "OrderedListPresentation",
     "OrderedListRow",
-    "Presentation",
+    "TemplateSource",
 ]

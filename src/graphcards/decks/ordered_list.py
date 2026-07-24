@@ -1,23 +1,24 @@
-"""Ordered-list completion decks and presentations."""
+"""Ordered-list completion cards, generation, and rendering."""
 
 from __future__ import annotations
 
 import random
 from collections import defaultdict
+from collections.abc import Mapping
 from typing import Annotated
 from typing import Literal as TypingLiteral
 
 from pydantic import Field, ValidationError, field_validator, model_validator
-from rdflib import Literal, URIRef
+from rdflib import URIRef
 from rdflib.term import Identifier
 
 from graphcards.decks.base import (
     DEFAULT_WINDOW_SIZE,
     DeckDefinition,
-    Presentation,
+    TemplateSource,
 )
 from graphcards.errors import PresentationError
-from graphcards.models import CardKey, RdfModel, TargetKind, validation_message
+from graphcards.models import Card, CardKey, RdfModel, TargetKind, validation_message
 
 
 class OrderedListRow(RdfModel):
@@ -29,41 +30,11 @@ class OrderedListRow(RdfModel):
     label: Identifier
 
 
-class OrderedListPresentation(Presentation):
-    """A presentation that hides one member of a non-cyclic ordered list."""
+class OrderedListCard(Card):
+    """Semantic rows and hidden position for one ordered-list card."""
 
-    ordered_rows: tuple[OrderedListRow, ...] = Field(exclude=True, repr=False)
-    hidden_position: Annotated[int, Field(strict=True, ge=1)] = Field(exclude=True)
-    window_size: Annotated[int, Field(strict=True, ge=0)] = Field(exclude=True)
-
-    @staticmethod
-    def _window(
-        rows: tuple[OrderedListRow, ...],
-        hidden_position: int,
-        window_size: int,
-    ) -> str:
-        if window_size == 0 or window_size >= len(rows):
-            visible = rows
-            omitted_before = omitted_after = False
-        else:
-            target_index = hidden_position - 1
-            start = max(0, target_index - window_size // 2)
-            start = min(start, len(rows) - window_size)
-            end = start + window_size
-            visible = rows[start:end]
-            omitted_before = start > 0
-            omitted_after = end < len(rows)
-
-        lines: list[str] = []
-        if omitted_before:
-            lines.append("…")
-        lines.extend(
-            f"{row.position}. {'?' if row.position == hidden_position else row.label}"
-            for row in visible
-        )
-        if omitted_after:
-            lines.append("…")
-        return "\n".join(lines)
+    ordered_rows: tuple[OrderedListRow, ...]
+    hidden_position: Annotated[int, Field(strict=True, ge=1)]
 
     @classmethod
     def from_rows(
@@ -72,22 +43,18 @@ class OrderedListPresentation(Presentation):
         card_key: CardKey,
         rows: list[OrderedListRow],
         hidden: OrderedListRow,
-        window_size: int,
-    ) -> OrderedListPresentation:
-        """Build one card while retaining the list data that determines its display."""
+    ) -> OrderedListCard:
+        """Build one semantic card from a complete validated list."""
 
         ordered_rows = tuple(sorted(rows, key=lambda row: row.position))
         return cls(
             card_key=card_key,
-            front=Literal(cls._window(ordered_rows, hidden.position, window_size)),
-            back=hidden.label,
             ordered_rows=ordered_rows,
             hidden_position=hidden.position,
-            window_size=window_size,
         )
 
     @model_validator(mode="after")
-    def validate_ordered_list(self) -> OrderedListPresentation:
+    def validate_ordered_list(self) -> OrderedListCard:
         if len(self.ordered_rows) < 2:
             raise ValueError("must contain at least two rows")
         positions = [row.position for row in self.ordered_rows]
@@ -103,31 +70,60 @@ class OrderedListPresentation(Presentation):
 
         hidden = self.ordered_rows[self.hidden_position - 1]
         if self.card_key != CardKey.entity(hidden.entity):
-            raise ValueError("hidden row must match the presentation card identity")
-        expected_front = Literal(
-            self._window(self.ordered_rows, self.hidden_position, self.window_size)
-        )
-        if self.front != expected_front or self.back != hidden.label:
-            raise ValueError("front and back must match the hidden ordered-list row")
+            raise ValueError("hidden row must match the card identity")
         return self
-
-    def front_text(self, rng: random.Random) -> str:
-        """Render the retained window, hiding this presentation's target row."""
-
-        del rng
-        return self._window(self.ordered_rows, self.hidden_position, self.window_size)
 
 
 class OrderedListDeck(DeckDefinition):
-    """Configured ordered-list completion query behavior."""
+    """Configured ordered-list generation and rendering behavior."""
 
     config_name = "ordered_list"
     required_variables = frozenset({"group", "position", "label"})
     uses_card_bindings = False
     exact_projection = ("entity", "group", "position", "label")
+    card_type = OrderedListCard
+    front_template: TemplateSource = (
+        "{% if omitted_before %}…\n{% endif %}"
+        "{% for row in rows %}{{ row.position }}. {{ row.value }}"
+        "{% if not loop.last or omitted_after %}\n{% endif %}"
+        "{% endfor %}{% if omitted_after %}…{% endif %}"
+    )
+    back_template: TemplateSource = "{{ answer }}"
 
     target: TypingLiteral[TargetKind.ENTITY]
     window_size: Annotated[int, Field(strict=True, ge=0)] = DEFAULT_WINDOW_SIZE
+
+    def render_context(
+        self,
+        card: Card,
+    ) -> Mapping[str, object]:
+        if not isinstance(card, OrderedListCard):
+            return {}
+        window_size = self.window_size
+        if window_size == 0 or window_size >= len(card.ordered_rows):
+            visible = card.ordered_rows
+            omitted_before = omitted_after = False
+        else:
+            target_index = card.hidden_position - 1
+            start = max(0, target_index - window_size // 2)
+            start = min(start, len(card.ordered_rows) - window_size)
+            end = start + window_size
+            visible = card.ordered_rows[start:end]
+            omitted_before = start > 0
+            omitted_after = end < len(card.ordered_rows)
+        hidden = card.ordered_rows[card.hidden_position - 1]
+        return {
+            "rows": tuple(
+                {
+                    "position": row.position,
+                    "value": "?" if row.position == card.hidden_position else str(row.label),
+                }
+                for row in visible
+            ),
+            "omitted_before": omitted_before,
+            "omitted_after": omitted_after,
+            "answer": str(hidden.label),
+        }
 
     @field_validator("target", mode="before")
     @classmethod
@@ -172,7 +168,9 @@ class OrderedListDeck(DeckDefinition):
         *,
         expected: set[str],
         card_key: CardKey | None = None,
-    ) -> dict[str, Presentation]:
+        rng: random.Random,
+    ) -> dict[str, Card]:
+        del rng
         rows_by_group: dict[Identifier, list[OrderedListRow]] = defaultdict(list)
         entity_groups: dict[URIRef, Identifier] = {}
         entity_keys: dict[URIRef, CardKey] = {}
@@ -196,15 +194,14 @@ class OrderedListDeck(DeckDefinition):
             entity_keys[parsed.entity] = key
             rows_by_group[parsed.group].append(parsed)
 
-        presentations: list[Presentation] = []
+        cards: list[Card] = []
         for group, group_rows in rows_by_group.items():
             try:
-                group_presentations = [
-                    OrderedListPresentation.from_rows(
+                group_cards = [
+                    OrderedListCard.from_rows(
                         card_key=entity_keys[row.entity],
                         rows=group_rows,
                         hidden=row,
-                        window_size=self.window_size,
                     )
                     for row in sorted(group_rows, key=lambda item: item.position)
                 ]
@@ -213,14 +210,12 @@ class OrderedListDeck(DeckDefinition):
                     f"deck {self.name!r} ordered-list group {group.n3()} "
                     f"{validation_message(error)}"
                 ) from error
-            presentations.extend(
-                presentation
-                for presentation in group_presentations
-                if card_key is None or presentation.card_key == card_key
+            cards.extend(
+                card for card in group_cards if card_key is None or card.card_key == card_key
             )
 
-        if card_key is not None and not presentations:
+        if card_key is not None and not cards:
             raise PresentationError(
                 f"deck {self.name!r} ordered-list query does not contain card {card_key.digest}"
             )
-        return self._by_digest(presentations)
+        return self._by_digest(cards)

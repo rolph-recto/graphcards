@@ -32,7 +32,12 @@ class StudyController:
         self.repository = repository
         self.rng = rng
         self.csrf_token = secrets.token_urlsafe(32)
-        self.study_service = StudyService(graph, repository, config.fsrs.create_scheduler())
+        self.study_service = StudyService(
+            graph,
+            repository,
+            config.fsrs.create_scheduler(),
+            rng,
+        )
         self.session: StudySession | None = None
         sync_time = utc_now()
         for deck in config.decks:
@@ -148,6 +153,5 @@ class StudyController:
             mode,
             days,
             requested_limit,
-            self.rng,
         )
         return self.session

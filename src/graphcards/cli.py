@@ -16,7 +16,7 @@ from graphcards.app import StudyService
 from graphcards.config import AppConfig, load_config
 from graphcards.decks import DeckDefinition
 from graphcards.errors import GraphCardsError
-from graphcards.presentation import execute_presentations, load_graph
+from graphcards.presentation import execute_cards, load_graph
 from graphcards.scaffold import available_templates, initialize_workspace
 from graphcards.storage import CardStatus, Repository, datetime_to_text, utc_now
 from graphcards.web import run_server
@@ -79,7 +79,7 @@ def _selected_decks(config: AppConfig, name: str | None) -> tuple[DeckDefinition
 def _run_validate(config: AppConfig, deck_name: str | None, output: TextIO) -> None:
     graph = load_graph(config.sources)
     for deck in _selected_decks(config, deck_name):
-        count = len(execute_presentations(graph, deck))
+        count = len(execute_cards(graph, deck))
         print(f"{deck.name}: valid ({count} cards)", file=output)
 
 

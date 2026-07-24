@@ -68,9 +68,9 @@ All configured RDF sources are loaded into one RDFLib graph. RDFLib determines t
 the filename. The state database is separate from the RDF files and may safely be excluded from
 version control. `display_timezone` accepts an IANA timezone name and defaults to `UTC`; it controls
 browser date labels, history buckets, and streak-day boundaries without changing UTC storage.
-Pydantic validates configuration and the immutable card and presentation models.
+Pydantic validates configuration, immutable semantic card models, and rendered card views.
 
-## Presentation query contract
+## Card query and presentation contract
 
 Every deck uses a SPARQL `SELECT` query and declares one identity `target`.
 
@@ -86,15 +86,24 @@ IRIs or literals. No triple term may be a blank node.
 A `target = "entity"` deck instead binds `?entity`, which must be an IRI. Literals and blank
 nodes cannot identify entity cards.
 
-Presentation variables are independent of the target. A `kind = "basic"` deck binds `?front`
+Card-data variables are independent of the target. A `kind = "basic"` deck binds `?front`
 and `?back`. One card may occur in duplicate identical rows, but conflicting front/back pairs
 are rejected.
 
 Internally, each configured kind resolves to a registered `DeckDefinition` subclass. The
 definition owns its kind-specific settings, required variables, query execution, validation, and
-row grouping. It produces immutable `Presentation` objects that contain only per-card data and
-display behavior. The CLI applies one reveal-and-rate interaction to every presentation without
-branching on kind names.
+row grouping. Query rows become immutable `Card` subclasses containing semantic RDF/query data
+and a `CardKey`. The configured deck then applies its Jinja templates and returns a `CardView`
+with learner-facing `front` and `back` strings:
+
+```text
+SPARQL row -> card generation (including RNG) -> Card -> deck rendering -> CardView
+```
+
+Card validation belongs to the semantic model. A deck rejects the wrong card subclass at its
+render boundary, and rendering does not receive a random-number generator or mutate card state.
+The browser works with `CardView` objects, while synchronization persists only the separate
+`CardKey` identity and FSRS schedule.
 
 ```sparql
 SELECT ?subject ?predicate ?object ?front ?back
@@ -121,10 +130,11 @@ four. It counts the correct answer as well as distractors. GraphCards validates 
 result, always includes the correct answer, and then fills the remaining slots by exhausting
 higher-priority distractor tiers before considering lower-priority tiers. Ties within a tier are
 randomized before GraphCards fills the available slots. It then separately shuffles the full
-retained set, including the correct answer, for display. Repeated presentations draw from the
-study session's continuing random-number stream, so a cutoff tie and the displayed order can
-vary from one render to the next. If the query returns fewer choices than the configured maximum,
-all choices are shown.
+retained set, including the correct answer. Both random operations happen while constructing the
+`MultipleChoiceCard`; the selected, ordered choices are fixed before its presentation renders.
+Repeated card generation draws from the application's continuing random-number stream, so a
+cutoff tie and displayed order can vary from one generated card to the next. If the query returns
+fewer choices than the configured maximum, all choices are shown.
 
 A `kind = "ordered_list"` deck tests an entity's place in a labeled, non-cyclic ordered list. Its
 query must select exactly `?entity`, `?group`, `?position`, and `?label`. Each group must contain at
@@ -157,33 +167,71 @@ WHERE {
 
 The target triple is the only card identity and is the only triple synchronized into the FSRS
 schedule. The source triple must be complete, distinct from the target, and use the same predicate;
-it is presentation-only. `?hide` is a plain or `xsd:string` literal whose value is `subject` or
-`object`. The corresponding target term is replaced by `?` on the front and is derived as the answer
-on the back; no `?answer` binding is used. Optional label bindings use the names shown above and fall
-back to the RDF term's string form. Without a predicate label, the compact `:` relation marker is
-shown; a bound predicate label is shown in its place. Duplicate rows for a target must agree on the
-source triple, hide mode, and effective display labels. Analogy presentations use the same reveal,
-rating, and scheduling flows in the browser study interface.
+it is semantic analogy context, not a separately scheduled card. `?hide` is a plain or
+`xsd:string` literal whose value is `subject` or `object`. The corresponding target term is
+replaced by `?` on the front and is derived as the answer on the back; no `?answer` binding is
+used. Optional label bindings use the names shown above and fall back to the RDF term's string
+form. Without a predicate label, the compact `:` relation marker is shown; a bound predicate label
+is shown in its place. Duplicate rows for a target must agree on the source triple, hide mode, and
+effective display labels. Analogy cards use the same render, reveal, rating, and scheduling flows
+in the browser study interface.
+
+### Customizing card templates
+
+Every built-in deck accepts optional `front_template` and `back_template` Jinja source strings.
+Omitting either setting uses that kind's built-in template. Multiline TOML strings are supported
+and their whitespace is preserved:
+
+```toml
+[[decks]]
+name = "capitals-basic"
+target = "triple"
+kind = "basic"
+query = "queries/capitals-basic.rq"
+front_template = """{% if front %}
+Question: {{ front }}
+{% endif %}"""
+back_template = "Answer: {{ back }}"
+```
+
+Templates are trusted workspace configuration and use strict undefined handling. GraphCards
+rejects blank or syntactically invalid templates while loading configuration; missing variables
+and other evaluation failures are reported when a card renders.
+
+Template variables are intentionally limited to the curated context for each deck kind:
+
+- `basic`: `front`, `back`
+- `multiple_choice`: `front`, `back`, `choices`
+- `analogy`: `source_subject`, `source_object`, `target_subject`, `target_object`, `relation`,
+  `hide`, `answer`
+- `ordered_list`: `rows` (each row has `position` and `value`), `omitted_before`,
+  `omitted_after`, `answer`
 
 ### Extending deck definitions
 
 Import a custom `DeckDefinition` subclass before loading configuration. Giving the subclass a
 unique `config_name` registers that TOML kind. Subclassing an existing definition inherits its
-typed configuration and query contract; override execution metadata or `group()` only when the
-new kind needs different behavior.
+typed configuration, semantic `card_type`, template defaults, rendering hook, and query contract.
+Override execution metadata or `group()` only when the new kind needs different generation
+behavior.
 
 ```python
-from graphcards.decks import BasicDeck
+from graphcards.decks import BasicDeck, TemplateSource
 
 
 class FullQueryBasicDeck(BasicDeck):
     config_name = "full_query_basic"
     uses_card_bindings = False
+    front_template: TemplateSource = "Review: {{ front }}"
 ```
 
 After this class is imported, `kind = "full_query_basic"` selects it. A completely new kind
-subclasses `DeckDefinition`, declares a non-empty `required_variables` frozenset, and implements
-`group()` to return presentations keyed by card digest.
+subclasses `DeckDefinition`, declares a non-empty `required_variables` frozenset, a Pydantic
+`Card` subclass as `card_type`, and typed `front_template` and `back_template` defaults using
+`TemplateSource` (or requires those fields in configuration). Its `group()` method accepts the
+generation RNG and returns semantic cards keyed by `card_key.digest`. Override
+`render_context(self, card)` when templates require derived view-only values; keep the context
+limited to card data rather than exposing the deck object or configuration.
 
 This entity-backed query is representative:
 
@@ -258,9 +306,9 @@ graphcards --config graphcards.toml sync
 graphcards --config graphcards.toml sync --deck capitals-basic
 ```
 
-`sync` loads all configured RDF sources into one graph and executes the presentation query for
-each selected deck. Every result is validated and converted into a triple- or entity-backed card
-identity before SQLite is changed.
+`sync` loads all configured RDF sources into one graph and executes the card query for each
+selected deck. Every result is validated into a semantic `Card` and converted into a triple- or
+entity-backed identity before SQLite is changed. Rendered `CardView` strings are never stored.
 
 Each deck is reconciled in one transaction:
 

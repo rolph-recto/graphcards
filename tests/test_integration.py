@@ -8,19 +8,18 @@ from pathlib import Path
 
 import pytest
 from fsrs import Card, Rating
-from rdflib import Literal, URIRef
+from rdflib import URIRef
 
 from graphcards.app import StudyService
 from graphcards.config import AppConfig, load_config
 from graphcards.decks import (
-    AnalogyPresentation,
-    BasicPresentation,
-    MultipleChoicePresentation,
-    OrderedListPresentation,
+    AnalogyCard,
+    MultipleChoiceCard,
 )
 from graphcards.errors import PresentationError, StorageError
-from graphcards.models import CardKey, TargetKind
-from graphcards.presentation import execute_presentations, load_graph
+from graphcards.models import Card as SemanticCard
+from graphcards.models import CardKey, CardView, TargetKind
+from graphcards.presentation import execute_cards, load_graph
 from graphcards.scaffold import initialize_workspace
 from graphcards.storage import Repository, datetime_to_text
 
@@ -40,27 +39,47 @@ def set_card_due(repository: Repository, card_id: str, due: datetime) -> None:
     )
 
 
+def test_study_service_separates_generated_cards_from_rendered_views(
+    config: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deck = config.deck("capitals-basic")
+    with Repository(config.state_path) as repository:
+        app = app_for(config, repository)
+        cards = app.generate_all(deck)
+        card_snapshots = {card_id: card.model_dump() for card_id, card in cards.items()}
+        monkeypatch.setattr(app, "generate_all", lambda selected: cards)
+
+        views = app.render_all(deck)
+
+    assert cards
+    assert all(isinstance(card, SemanticCard) for card in cards.values())
+    assert all(isinstance(view, CardView) for view in views.values())
+    assert {card_id: card.card_key for card_id, card in cards.items()} == {
+        card_id: view.card_key for card_id, view in views.items()
+    }
+    assert all(card_id == card.card_key.digest for card_id, card in cards.items())
+    assert {card_id: card.model_dump() for card_id, card in cards.items()} == card_snapshots
+
+
 def test_priority_capitals_template_exhausts_tiers_and_keeps_correct_answer(
     tmp_path: Path,
 ) -> None:
     initialize_workspace(tmp_path, template="priority-capitals")
     config = load_config(tmp_path / "graphcards.toml")
     deck = config.deck("priority-capitals")
-    presentations = execute_presentations(load_graph(config.sources), deck)
-    by_front = {str(presentation.front): presentation for presentation in presentations.values()}
-
-    france = by_front["Capital of France?"]
-    assert isinstance(france, MultipleChoicePresentation)
-    assert {str(option.choice): option.priority for option in france.choices} == {
-        "Paris": 0,
-        "Berlin": 3,
-        "Rome": 2,
-        "Madrid": 1,
-        "Lisbon": 1,
-    }
+    graph = load_graph(config.sources)
     rng = random.Random(0)
+
+    def generated_by_front() -> dict[str, MultipleChoiceCard]:
+        cards = execute_cards(graph, deck, rng=rng)
+        return {
+            str(card.front): card for card in cards.values() if isinstance(card, MultipleChoiceCard)
+        }
+
     france_renders = tuple(
-        {str(choice) for choice in france.selected_choices(rng)} for _ in range(8)
+        {str(choice) for choice in generated_by_front()["Capital of France?"].choices}
+        for _ in range(8)
     )
     assert all({"Paris", "Berlin", "Rome"} <= selected for selected in france_renders)
     assert all(len(selected & {"Madrid", "Lisbon"}) == 1 for selected in france_renders)
@@ -69,9 +88,8 @@ def test_priority_capitals_template_exhausts_tiers_and_keeps_correct_answer(
         "Lisbon",
     }
 
-    germany = by_front["Capital of Germany?"]
-    assert isinstance(germany, MultipleChoicePresentation)
-    selected = {str(choice) for choice in germany.selected_choices(random.Random(0))}
+    germany = generated_by_front()["Capital of Germany?"]
+    selected = {str(choice) for choice in germany.choices}
     assert {"Berlin", "Paris", "Rome"} <= selected
     assert len(selected & {"Madrid", "Lisbon"}) == 1
 
@@ -80,37 +98,24 @@ def test_ordered_planets_template_renders_a_bounded_completion_window(tmp_path: 
     initialize_workspace(tmp_path, template="ordered-planets")
     config = load_config(tmp_path / "graphcards.toml")
     deck = config.deck("planet-order")
-    presentations = execute_presentations(load_graph(config.sources), deck)
+    cards = execute_cards(load_graph(config.sources), deck)
 
-    mars = next(
-        presentation
-        for presentation in presentations.values()
-        if presentation.back == Literal("Mars")
-    )
-    assert isinstance(mars, OrderedListPresentation)
-    assert mars.front == Literal("…\n2. Venus\n3. Earth\n4. ?\n5. Jupiter\n6. Saturn\n…")
+    mars = next(card for card in cards.values() if deck.render(card).back == "Mars")
+    assert deck.render(mars).front == "…\n2. Venus\n3. Earth\n4. ?\n5. Jupiter\n6. Saturn\n…"
 
 
 def test_analogy_capitals_template_renders_both_hide_modes(tmp_path: Path) -> None:
     initialize_workspace(tmp_path, template="analogy-capitals")
     config = load_config(tmp_path / "graphcards.toml")
     deck = config.deck("capital-analogies")
-    presentations = execute_presentations(load_graph(config.sources), deck)
+    cards = execute_cards(load_graph(config.sources), deck)
 
-    object_card = next(
-        presentation
-        for presentation in presentations.values()
-        if presentation.back == Literal("Paris")
-    )
-    subject_card = next(
-        presentation
-        for presentation in presentations.values()
-        if presentation.back == Literal("Germany")
-    )
-    assert isinstance(object_card, AnalogyPresentation)
-    assert object_card.front == Literal("Germany capital of Berlin :: France capital of ?")
-    assert isinstance(subject_card, AnalogyPresentation)
-    assert subject_card.front == Literal("France capital of Paris :: ? capital of Berlin")
+    object_card = next(card for card in cards.values() if deck.render(card).back == "Paris")
+    subject_card = next(card for card in cards.values() if deck.render(card).back == "Germany")
+    assert isinstance(object_card, AnalogyCard)
+    assert deck.render(object_card).front == "Germany capital of Berlin :: France capital of ?"
+    assert isinstance(subject_card, AnalogyCard)
+    assert deck.render(subject_card).front == "France capital of Paris :: ? capital of Berlin"
 
 
 def test_sync_is_idempotent_and_entities_are_shared_across_decks(config: AppConfig) -> None:
@@ -243,7 +248,7 @@ def test_suspension_survives_sync_and_excludes_every_queue(config: AppConfig) ->
     deck = config.deck("capitals-basic")
     with Repository(config.state_path) as repository:
         app = app_for(config, repository)
-        presentations = app.render_all(deck)
+        cards = app.generate_all(deck)
         app.sync(deck, now)
         card = repository.due_cards(deck.name, now, 1)[0]
         reviewed = app.review(deck, card, Rating.Again, now)
@@ -286,7 +291,7 @@ def test_suspension_survives_sync_and_excludes_every_queue(config: AppConfig) ->
         assert suspended.suspension_reason == "needs a better prompt"
 
         repository.sync_deck(deck.name, {}, now + timedelta(seconds=1))
-        repository.sync_deck(deck.name, presentations, now + timedelta(seconds=2))
+        repository.sync_deck(deck.name, cards, now + timedelta(seconds=2))
         restored = next(
             row for row in repository.card_statuses(deck.name) if row.card_id == card.card_id
         )
@@ -414,12 +419,12 @@ def test_render_reruns_query_for_current_metadata(config: AppConfig, workspace: 
     deck = config.deck("capitals-basic")
     with Repository(config.state_path) as repository:
         original_app = app_for(config, repository)
-        presentations = execute_presentations(original_app.graph, deck)
+        cards = execute_cards(original_app.graph, deck)
         france = next(
-            presentation
-            for presentation in presentations.values()
-            if presentation.card_key.target_kind is TargetKind.TRIPLE
-            and str(presentation.card_key.terms[0]).endswith("France")
+            card
+            for card in cards.values()
+            if card.card_key.target_kind is TargetKind.TRIPLE
+            and str(card.card_key.terms[0]).endswith("France")
         )
         original_app.sync(deck, now)
         stored = repository.get_card(france.card_key.digest)
@@ -434,8 +439,8 @@ def test_render_reruns_query_for_current_metadata(config: AppConfig, workspace: 
         )
         updated_app = app_for(config, repository)
         rendered = updated_app.render(deck, stored)
-        assert isinstance(rendered, BasicPresentation)
-        assert str(rendered.front) == "Capital of France updated?"
+        assert isinstance(rendered, CardView)
+        assert rendered.front == "Capital of France updated?"
 
 
 def test_entity_removal_and_restoration_keeps_schedule(config: AppConfig, workspace: Path) -> None:
@@ -518,7 +523,7 @@ def test_entity_render_uses_current_metadata(config: AppConfig, workspace: Path)
             encoding="utf-8",
         )
         rendered = app_for(config, repository).render(deck, stored)
-        assert str(rendered.front) == "Capital of France updated?"
+        assert rendered.front.splitlines()[0] == "Capital of France updated?"
 
 
 def test_naive_synchronization_time_is_rejected(config: AppConfig) -> None:

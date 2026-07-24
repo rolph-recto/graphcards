@@ -1,8 +1,10 @@
-"""Relational analogy decks and presentations."""
+"""Relational analogy cards, generation, and rendering."""
 
 from __future__ import annotations
 
+import random
 from collections import defaultdict
+from collections.abc import Mapping
 from typing import Literal as TypingLiteral
 
 from pydantic import ValidationError, field_validator, model_validator
@@ -10,18 +12,18 @@ from rdflib import Literal
 from rdflib.namespace import XSD
 from rdflib.term import Identifier
 
-from graphcards.decks.base import DeckDefinition, Presentation
+from graphcards.decks.base import DeckDefinition, TemplateSource
 from graphcards.errors import PresentationError
-from graphcards.models import CardKey, TargetKind, validation_message
+from graphcards.models import Card, CardKey, TargetKind, validation_message
 
 
-class AnalogyPresentation(Presentation):
-    """A relational analogy that hides one term of a target triple."""
+class AnalogyCard(Card):
+    """Semantic source/target relation data with one hidden target position."""
 
     source_subject: Identifier
     source_predicate: Identifier
     source_object: Identifier
-    hide: Identifier
+    hide: TypingLiteral["subject", "object"]
     subject_label: Identifier | None = None
     predicate_label: Identifier | None = None
     object_label: Identifier | None = None
@@ -29,9 +31,11 @@ class AnalogyPresentation(Presentation):
     source_predicate_label: Identifier | None = None
     source_object_label: Identifier | None = None
 
-    @field_validator("hide", mode="after")
+    @field_validator("hide", mode="before")
     @classmethod
-    def normalize_hide(cls, value: Identifier) -> Literal:
+    def normalize_hide(cls, value: object) -> str:
+        if type(value) is str and value in {"subject", "object"}:
+            return value
         if (
             not isinstance(value, Literal)
             or value.language is not None
@@ -39,126 +43,86 @@ class AnalogyPresentation(Presentation):
             or str(value) not in {"subject", "object"}
         ):
             raise ValueError("?hide must be a literal with value subject or object")
-        return Literal(str(value))
+        return str(value)
 
     @model_validator(mode="after")
-    def validate_analogy(self) -> AnalogyPresentation:
+    def validate_analogy(self) -> AnalogyCard:
         if self.card_key.target_kind is not TargetKind.TRIPLE:
-            raise ValueError("an analogy presentation must use a triple card identity")
-        subject, predicate, object_ = self.card_key.terms
+            raise ValueError("an analogy card must use a triple card identity")
+        _subject, predicate, object_ = self.card_key.terms
         if self.source_predicate != predicate:
             raise ValueError("the source and target predicates must match")
         if (self.source_subject, self.source_predicate, self.source_object) == (
-            subject,
+            self.card_key.terms[0],
             predicate,
             object_,
         ):
             raise ValueError("the source triple must be distinct from the target triple")
-        expected_front, expected_back = self.front_and_back(
-            target_subject=subject,
-            target_predicate=predicate,
-            target_object=object_,
-            source_subject=self.source_subject,
-            source_predicate=self.source_predicate,
-            source_object=self.source_object,
-            hide=self.hide,
-            subject_label=self.subject_label,
-            predicate_label=self.predicate_label,
-            object_label=self.object_label,
-            source_subject_label=self.source_subject_label,
-            source_predicate_label=self.source_predicate_label,
-            source_object_label=self.source_object_label,
-        )
-        if self.front != expected_front:
-            raise ValueError("the analogy front does not match its target and source terms")
-        if self.back != expected_back:
-            raise ValueError("the analogy back does not match its hidden target term")
         return self
 
     @staticmethod
     def _text(term: Identifier, label: Identifier | None) -> str:
         return str(label if label is not None else term)
 
-    @classmethod
-    def _side_text(
-        cls,
-        subject: Identifier,
-        predicate: Identifier,
-        object_: Identifier,
-        *,
-        subject_label: Identifier | None,
-        predicate_label: Identifier | None,
-        object_label: Identifier | None,
-        hidden: str | None = None,
-    ) -> str:
-        del predicate
-        relation = str(predicate_label) if predicate_label is not None else ":"
-        rendered_object = "?" if hidden == "object" else cls._text(object_, object_label)
-        rendered_subject = "?" if hidden == "subject" else cls._text(subject, subject_label)
-        return f"{rendered_subject} {relation} {rendered_object}"
-
-    @classmethod
-    def front_and_back(
-        cls,
-        *,
-        target_subject: Identifier,
-        target_predicate: Identifier,
-        target_object: Identifier,
-        source_subject: Identifier,
-        source_predicate: Identifier,
-        source_object: Identifier,
-        hide: Literal,
-        subject_label: Identifier | None,
-        predicate_label: Identifier | None,
-        object_label: Identifier | None,
-        source_subject_label: Identifier | None,
-        source_predicate_label: Identifier | None,
-        source_object_label: Identifier | None,
-    ) -> tuple[Literal, Identifier]:
-        hide_mode = str(hide)
-        relation_label = predicate_label if predicate_label is not None else source_predicate_label
-        source_text = cls._side_text(
-            source_subject,
-            source_predicate,
-            source_object,
-            subject_label=source_subject_label,
-            predicate_label=relation_label,
-            object_label=source_object_label,
-        )
-        target_text = cls._side_text(
-            target_subject,
-            target_predicate,
-            target_object,
-            subject_label=subject_label,
-            predicate_label=relation_label,
-            object_label=object_label,
-            hidden=hide_mode,
-        )
-        answer = subject_label if hide_mode == "subject" and subject_label is not None else None
-        if answer is None and hide_mode == "object" and object_label is not None:
-            answer = object_label
-        if answer is None:
-            answer = target_subject if hide_mode == "subject" else target_object
-        return Literal(f"{source_text} :: {target_text}"), answer
-
     def duplicate_key(self) -> tuple[object, ...]:
+        subject, _predicate, object_ = self.card_key.terms
+        relation_label = (
+            self.predicate_label
+            if self.predicate_label is not None
+            else self.source_predicate_label
+        )
         return (
             self.source_subject,
             self.source_predicate,
             self.source_object,
-            str(self.hide),
-            str(self.front),
-            str(self.back),
+            self.hide,
+            self._text(self.source_subject, self.source_subject_label),
+            str(relation_label) if relation_label is not None else ":",
+            self._text(self.source_object, self.source_object_label),
+            self._text(subject, self.subject_label),
+            self._text(object_, self.object_label),
         )
 
 
 class AnalogyDeck(DeckDefinition):
-    """Configured relational analogy query behavior."""
+    """Configured relational analogy query and rendering behavior."""
 
     config_name = "analogy"
     required_variables = frozenset({"source_subject", "source_predicate", "source_object", "hide"})
+    card_type = AnalogyCard
+    front_template: TemplateSource = (
+        "{{ source_subject }} {{ relation }} {{ source_object }} :: "
+        '{% if hide == "subject" %}?{% else %}{{ target_subject }}{% endif %} '
+        "{{ relation }} "
+        '{% if hide == "object" %}?{% else %}{{ target_object }}{% endif %}'
+    )
+    back_template: TemplateSource = "{{ answer }}"
 
     target: TypingLiteral[TargetKind.TRIPLE]
+
+    def render_context(self, card: Card) -> Mapping[str, object]:
+        if not isinstance(card, AnalogyCard):
+            return {}
+        subject, _predicate, object_ = card.card_key.terms
+        relation_label = (
+            card.predicate_label
+            if card.predicate_label is not None
+            else card.source_predicate_label
+        )
+        answer = (
+            AnalogyCard._text(subject, card.subject_label)
+            if card.hide == "subject"
+            else AnalogyCard._text(object_, card.object_label)
+        )
+        return {
+            "source_subject": AnalogyCard._text(card.source_subject, card.source_subject_label),
+            "source_object": AnalogyCard._text(card.source_object, card.source_object_label),
+            "target_subject": AnalogyCard._text(subject, card.subject_label),
+            "target_object": AnalogyCard._text(object_, card.object_label),
+            "relation": str(relation_label) if relation_label is not None else ":",
+            "hide": card.hide,
+            "answer": answer,
+        }
 
     @field_validator("target", mode="before")
     @classmethod
@@ -173,17 +137,17 @@ class AnalogyDeck(DeckDefinition):
         *,
         expected: set[str],
         card_key: CardKey | None = None,
-    ) -> dict[str, Presentation]:
-        del card_key
+        rng: random.Random,
+    ) -> dict[str, Card]:
+        del card_key, rng
         grouped: dict[
             CardKey,
-            dict[tuple[object, ...], AnalogyPresentation],
+            dict[tuple[object, ...], AnalogyCard],
         ] = defaultdict(dict)
         for row_number, row in enumerate(result, start=1):  # type: ignore[arg-type]
             values = self._row_values(row)
             self._require_bound(values, expected, row_number)
             key = self._card_key(values, row_number)
-            target_subject, target_predicate, target_object = key.terms
             labels = {
                 name: values.get(name)
                 for name in (
@@ -196,20 +160,8 @@ class AnalogyDeck(DeckDefinition):
                 )
             }
             try:
-                front, back = AnalogyPresentation.front_and_back(
-                    target_subject=target_subject,
-                    target_predicate=target_predicate,
-                    target_object=target_object,
-                    source_subject=values["source_subject"],
-                    source_predicate=values["source_predicate"],
-                    source_object=values["source_object"],
-                    hide=values["hide"],  # type: ignore[arg-type]
-                    **labels,
-                )
-                presentation = AnalogyPresentation(
+                card = AnalogyCard(
                     card_key=key,
-                    front=front,
-                    back=back,
                     source_subject=values["source_subject"],
                     source_predicate=values["source_predicate"],
                     source_object=values["source_object"],
@@ -223,14 +175,14 @@ class AnalogyDeck(DeckDefinition):
                 raise PresentationError(
                     f"deck {self.name!r} row {row_number}: {message}"
                 ) from error
-            grouped[key][presentation.duplicate_key()] = presentation
+            grouped[key][card.duplicate_key()] = card
 
-        presentations: list[Presentation] = []
+        cards: list[Card] = []
         for key, values in grouped.items():
             if len(values) != 1:
                 raise PresentationError(
                     f"deck {self.name!r} returns conflicting analogy source, hide mode, or "
                     f"display labels for card {key.digest}"
                 )
-            presentations.append(next(iter(values.values())))
-        return self._by_digest(presentations)
+            cards.append(next(iter(values.values())))
+        return self._by_digest(cards)

@@ -7,17 +7,17 @@ import pytest
 from rdflib import Graph, Literal, URIRef
 
 from graphcards.decks import (
+    BasicCard,
     BasicDeck,
-    BasicPresentation,
     DeckDefinition,
+    MultipleChoiceCard,
     MultipleChoiceDeck,
-    MultipleChoicePresentation,
+    OrderedListCard,
     OrderedListDeck,
-    OrderedListPresentation,
 )
 from graphcards.errors import PresentationError
-from graphcards.models import CardKey, TargetKind
-from graphcards.presentation import execute_presentations
+from graphcards.models import Card, CardKey, TargetKind
+from graphcards.presentation import execute_cards
 
 PREFIX = """
 PREFIX ex: <https://example.org/>
@@ -32,7 +32,7 @@ def run_query(
     target: TargetKind = TargetKind.TRIPLE,
     max_choices: int | None = None,
     window_size: int | None = None,
-) -> dict[str, object]:
+) -> dict[str, Card]:
     query_path = tmp_path / "query.rq"
     query_path.write_text(PREFIX + query, encoding="utf-8")
     options: dict[str, object] = {}
@@ -46,7 +46,7 @@ def run_query(
         query_path=query_path,
         **options,
     )
-    return execute_presentations(Graph(), deck)
+    return execute_cards(Graph(), deck, rng=random.Random(0))
 
 
 def run_ordered_query(
@@ -54,7 +54,7 @@ def run_ordered_query(
     rows: str,
     *,
     window_size: int | None = None,
-) -> dict[str, object]:
+) -> dict[str, Card]:
     return run_query(
         tmp_path,
         f"""
@@ -70,8 +70,17 @@ def run_ordered_query(
     )
 
 
+def ordered_rendering_deck(tmp_path: Path, *, window_size: int = 5) -> OrderedListDeck:
+    return OrderedListDeck(
+        name="ordered",
+        target=TargetKind.ENTITY,
+        query_path=tmp_path / "unused.rq",
+        window_size=window_size,
+    )
+
+
 def test_basic_contract_groups_duplicate_rows(tmp_path: Path) -> None:
-    presentations = run_query(
+    cards = run_query(
         tmp_path,
         """
         SELECT ?subject ?predicate ?object ?front ?back WHERE {
@@ -82,16 +91,16 @@ def test_basic_contract_groups_duplicate_rows(tmp_path: Path) -> None:
         }
         """,
     )
-    presentation = next(iter(presentations.values()))
-    assert isinstance(presentation, BasicPresentation)
-    assert str(presentation.front) == "front"
+    card = next(iter(cards.values()))
+    assert isinstance(card, BasicCard)
+    assert str(card.front) == "front"
 
 
 def test_query_execution_delegates_to_custom_deck_definition(tmp_path: Path) -> None:
     class CustomBasic(BasicDeck):
         config_name = "custom_basic"
 
-    presentations = run_query(
+    cards = run_query(
         tmp_path,
         """
         SELECT ?subject ?predicate ?object ?front ?back WHERE {
@@ -103,11 +112,11 @@ def test_query_execution_delegates_to_custom_deck_definition(tmp_path: Path) -> 
         CustomBasic,
     )
 
-    assert isinstance(next(iter(presentations.values())), BasicPresentation)
+    assert isinstance(next(iter(cards.values())), BasicCard)
 
 
 def test_multiple_choice_contract(tmp_path: Path) -> None:
-    presentations = run_query(
+    cards = run_query(
         tmp_path,
         """
         SELECT ?subject ?predicate ?object ?front ?choice ?is_correct WHERE {
@@ -119,19 +128,14 @@ def test_multiple_choice_contract(tmp_path: Path) -> None:
         """,
         MultipleChoiceDeck,
     )
-    presentation = next(iter(presentations.values()))
-    assert isinstance(presentation, MultipleChoicePresentation)
-    assert tuple(option.choice for option in presentation.choices) == (
-        Literal("yes"),
-        Literal("no"),
-    )
-    assert tuple(option.priority for option in presentation.choices) == (0, 0)
-    assert presentation.max_choices == 4
-    assert presentation.back == Literal("yes")
+    card = next(iter(cards.values()))
+    assert isinstance(card, MultipleChoiceCard)
+    assert set(card.choices) == {Literal("yes"), Literal("no")}
+    assert card.back == Literal("yes")
 
 
 def test_multiple_choice_normalizes_optional_priorities(tmp_path: Path) -> None:
-    presentations = run_query(
+    cards = run_query(
         tmp_path,
         """
         SELECT ?subject ?predicate ?object ?front ?choice ?is_correct ?priority WHERE {
@@ -146,18 +150,13 @@ def test_multiple_choice_normalizes_optional_priorities(tmp_path: Path) -> None:
         max_choices=2,
     )
 
-    presentation = next(iter(presentations.values()))
-    assert isinstance(presentation, MultipleChoicePresentation)
-    assert tuple((option.choice, option.priority) for option in presentation.choices) == (
-        (Literal("correct"), 0),
-        (Literal("high"), 3),
-        (Literal("default"), 0),
-    )
-    assert presentation.max_choices == 2
+    card = next(iter(cards.values()))
+    assert isinstance(card, MultipleChoiceCard)
+    assert set(card.choices) == {Literal("correct"), Literal("high")}
 
 
 def test_multiple_choice_accepts_duplicate_missing_and_zero_priority(tmp_path: Path) -> None:
-    presentations = run_query(
+    cards = run_query(
         tmp_path,
         """
         SELECT ?subject ?predicate ?object ?front ?choice ?is_correct ?priority WHERE {
@@ -171,9 +170,9 @@ def test_multiple_choice_accepts_duplicate_missing_and_zero_priority(tmp_path: P
         MultipleChoiceDeck,
     )
 
-    presentation = next(iter(presentations.values()))
-    assert isinstance(presentation, MultipleChoicePresentation)
-    assert len(presentation.choices) == 2
+    card = next(iter(cards.values()))
+    assert isinstance(card, MultipleChoiceCard)
+    assert len(card.choices) == 2
 
 
 @pytest.mark.parametrize(
@@ -244,7 +243,7 @@ def test_multiple_choice_validates_lower_tiers_that_will_not_be_displayed(
 
 
 def test_entity_basic_contract(tmp_path: Path) -> None:
-    presentations = run_query(
+    cards = run_query(
         tmp_path,
         """
         SELECT ?entity ?front ?back WHERE {
@@ -253,37 +252,43 @@ def test_entity_basic_contract(tmp_path: Path) -> None:
         """,
         target=TargetKind.ENTITY,
     )
-    presentation = next(iter(presentations.values()))
-    assert isinstance(presentation, BasicPresentation)
-    assert presentation.card_key == CardKey.entity(URIRef("https://example.org/country"))
+    card = next(iter(cards.values()))
+    assert isinstance(card, BasicCard)
+    assert card.card_key == CardKey.entity(URIRef("https://example.org/country"))
 
 
 def test_ordered_list_hides_target_and_keeps_entity_identity(tmp_path: Path) -> None:
-    presentations = run_ordered_query(
+    cards = run_ordered_query(
         tmp_path,
         '(ex:a ex:group 1 "Alpha")\n(ex:b ex:group 2 "Beta")\n(ex:c ex:group 3 "Gamma")',
     )
 
-    target = presentations[CardKey.entity(URIRef("https://example.org/b")).digest]
-    assert isinstance(target, OrderedListPresentation)
+    target = cards[CardKey.entity(URIRef("https://example.org/b")).digest]
+    assert isinstance(target, OrderedListCard)
     assert target.card_key == CardKey.entity(URIRef("https://example.org/b"))
-    assert str(target.front) == "1. Alpha\n2. ?\n3. Gamma"
-    assert target.back == Literal("Beta")
-    assert target.front_text(random.Random(0)) == str(target.front)
+    view = ordered_rendering_deck(tmp_path).render(target)
+    assert view.front == "1. Alpha\n2. ?\n3. Gamma"
+    assert view.back == "Beta"
     assert [row.position for row in target.ordered_rows] == [1, 2, 3]
     assert target.hidden_position == 2
-    assert target.window_size == 5
-    assert set(target.model_dump()) == {"card_key", "front", "back"}
+    assert set(target.model_dump()) == {
+        "card_key",
+        "ordered_rows",
+        "hidden_position",
+    }
 
 
 def test_ordered_list_centers_window_and_shows_omitted_boundaries(tmp_path: Path) -> None:
-    presentations = run_ordered_query(
+    cards = run_ordered_query(
         tmp_path,
         "\n".join(f'(ex:e{n} ex:group {n} "E{n}")' for n in range(1, 8)),
     )
 
-    target = presentations[CardKey.entity(URIRef("https://example.org/e4")).digest]
-    assert str(target.front) == "…\n2. E2\n3. E3\n4. ?\n5. E5\n6. E6\n…"
+    target = cards[CardKey.entity(URIRef("https://example.org/e4")).digest]
+    assert (
+        ordered_rendering_deck(tmp_path).render(target).front
+        == "…\n2. E2\n3. E3\n4. ?\n5. E5\n6. E6\n…"
+    )
 
 
 @pytest.mark.parametrize(
@@ -298,27 +303,27 @@ def test_ordered_list_shifts_window_at_boundaries(
     entity: str,
     expected: str,
 ) -> None:
-    presentations = run_ordered_query(
+    cards = run_ordered_query(
         tmp_path,
         "\n".join(f'(ex:e{n} ex:group {n} "E{n}")' for n in range(1, 8)),
     )
 
-    target = presentations[CardKey.entity(URIRef(f"https://example.org/{entity}")).digest]
-    assert str(target.front) == expected
+    target = cards[CardKey.entity(URIRef(f"https://example.org/{entity}")).digest]
+    assert ordered_rendering_deck(tmp_path).render(target).front == expected
 
 
 def test_ordered_list_zero_window_size_shows_full_list(tmp_path: Path) -> None:
-    presentations = run_ordered_query(
+    cards = run_ordered_query(
         tmp_path,
         "\n".join(f'(ex:e{n} ex:group {n} "E{n}")' for n in range(1, 8)),
         window_size=0,
     )
 
-    target = presentations[CardKey.entity(URIRef("https://example.org/e4")).digest]
-    assert str(target.front) == "\n".join(
-        ["1. E1", "2. E2", "3. E3", "4. ?", "5. E5", "6. E6", "7. E7"]
-    )
-    assert "…" not in str(target.front)
+    target = cards[CardKey.entity(URIRef("https://example.org/e4")).digest]
+    deck = ordered_rendering_deck(tmp_path, window_size=0)
+    front = deck.render(target).front
+    assert front == "\n".join(["1. E1", "2. E2", "3. E3", "4. ?", "5. E5", "6. E6", "7. E7"])
+    assert "…" not in front
 
 
 def test_ordered_list_study_render_executes_full_query_before_selecting_card(
@@ -352,10 +357,11 @@ def test_ordered_list_study_render_executes_full_query_before_selecting_card(
         return original_query(*args, **kwargs)
 
     monkeypatch.setattr(graph, "query", recording_query)
-    execute_presentations(
+    execute_cards(
         graph,
         deck,
         CardKey.entity(URIRef("https://example.org/b")),
+        rng=random.Random(0),
     )
 
     assert init_bindings == [None]
@@ -446,8 +452,8 @@ def test_entity_runtime_binding_selects_one_card(tmp_path: Path) -> None:
         format="turtle",
     )
     key = CardKey.entity(URIRef("https://example.org/a"))
-    presentations = execute_presentations(graph, deck, key)
-    assert list(presentations) == [key.digest]
+    cards = execute_cards(graph, deck, key, rng=random.Random(0))
+    assert list(cards) == [key.digest]
 
 
 def test_runtime_binding_must_match_deck_target(tmp_path: Path) -> None:
@@ -463,7 +469,7 @@ def test_runtime_binding_must_match_deck_target(tmp_path: Path) -> None:
         Literal("o"),
     )
     with pytest.raises(PresentationError, match="targets entity"):
-        execute_presentations(Graph(), deck, triple)
+        execute_cards(Graph(), deck, triple, rng=random.Random(0))
 
 
 def test_multiple_choice_rejects_invalid_typed_boolean_lexical_value(tmp_path: Path) -> None:

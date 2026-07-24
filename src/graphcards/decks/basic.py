@@ -2,24 +2,31 @@
 
 from __future__ import annotations
 
+import random
 from collections import defaultdict
 
 from rdflib.term import Identifier
 
-from graphcards.decks.base import DeckDefinition, Presentation
+from graphcards.decks.base import DeckDefinition, TemplateSource
 from graphcards.errors import PresentationError
-from graphcards.models import CardKey
+from graphcards.models import Card, CardKey
 
 
-class BasicPresentation(Presentation):
-    """A front/back presentation that the student rates manually."""
+class BasicCard(Card):
+    """Raw front/back values for a manually rated card."""
+
+    front: Identifier
+    back: Identifier
 
 
 class BasicDeck(DeckDefinition):
-    """Configured basic front/back query behavior."""
+    """Configured basic front/back query and rendering behavior."""
 
     config_name = "basic"
     required_variables = frozenset({"front", "back"})
+    card_type = BasicCard
+    front_template: TemplateSource = "{{ front }}"
+    back_template: TemplateSource = "{{ back }}"
 
     def group(
         self,
@@ -27,8 +34,9 @@ class BasicDeck(DeckDefinition):
         *,
         expected: set[str],
         card_key: CardKey | None = None,
-    ) -> dict[str, Presentation]:
-        del card_key
+        rng: random.Random,
+    ) -> dict[str, Card]:
+        del card_key, rng
         grouped: dict[CardKey, set[tuple[Identifier, Identifier]]] = defaultdict(set)
         for row_number, row in enumerate(result, start=1):  # type: ignore[arg-type]
             values = self._row_values(row)
@@ -36,7 +44,7 @@ class BasicDeck(DeckDefinition):
             key = self._card_key(values, row_number)
             grouped[key].add((values["front"], values["back"]))
 
-        presentations: list[Presentation] = []
+        cards: list[Card] = []
         for key, pairs in grouped.items():
             if len(pairs) != 1:
                 raise PresentationError(
@@ -44,5 +52,5 @@ class BasicDeck(DeckDefinition):
                     f"{key.digest}"
                 )
             front, back = next(iter(pairs))
-            presentations.append(BasicPresentation(card_key=key, front=front, back=back))
-        return self._by_digest(presentations)
+            cards.append(BasicCard(card_key=key, front=front, back=back))
+        return self._by_digest(cards)
