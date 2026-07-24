@@ -7,7 +7,7 @@ from pathlib import Path
 from rdflib import Graph
 
 from rdfcards.config import DeckDefinition
-from rdfcards.decks import DeckKind
+from rdfcards.decks import DeckKind, OrderedListCompletion
 from rdfcards.errors import PresentationError
 from rdfcards.models import CardKey, TargetKind
 
@@ -47,10 +47,16 @@ def execute_presentations(
     deck: DeckDefinition,
     card_key: CardKey | None = None,
 ) -> dict[str, DeckKind]:
-    """Run and validate a deck query, optionally restricted to one stored identity."""
+    """Run and validate a deck query, optionally restricted to one stored identity.
+
+    Ordered-list decks intentionally execute their complete query even when one card is
+    requested.  Their presentation needs the target entity's complete group so it can
+    validate the list and choose a bounded window in application code.
+    """
 
     query = _read_query(deck)
     bindings = None
+    ordered_list = issubclass(deck.kind, OrderedListCompletion)
     if card_key is not None:
         if card_key.target_kind != deck.target:
             raise PresentationError(
@@ -59,7 +65,8 @@ def execute_presentations(
             )
         # Study-time rendering must use current metadata without allowing the query
         # to silently switch to a different identity.
-        bindings = card_key.query_bindings
+        if not ordered_list:
+            bindings = card_key.query_bindings
     try:
         result = graph.query(query, initBindings=bindings)
     except Exception as error:
@@ -69,18 +76,34 @@ def execute_presentations(
 
     expected = IDENTITY_VARIABLES[deck.target] | deck.kind.required_variables
     selected = {str(variable) for variable in result.vars or ()}
+    if ordered_list and selected != {"entity", "group", "position", "label"}:
+        raise PresentationError(
+            f"deck {deck.name!r} ordered-list queries must SELECT exactly "
+            "?entity, ?group, ?position, and ?label"
+        )
     missing = sorted(expected - selected)
     if missing:
         joined = ", ".join(f"?{name}" for name in missing)
         raise PresentationError(f"deck {deck.name!r} does not SELECT required variables: {joined}")
 
-    presentations = deck.kind.group(
-        result,
-        target=deck.target,
-        deck_name=deck.name,
-        expected=expected,
-        max_choices=deck.effective_max_choices,
-    )
+    if ordered_list:
+        presentations = deck.kind.group(
+            result,
+            target=deck.target,
+            deck_name=deck.name,
+            expected=expected,
+            max_choices=deck.effective_max_choices,
+            card_key=card_key,
+            window_size=deck.effective_window_size or 0,
+        )
+    else:
+        presentations = deck.kind.group(
+            result,
+            target=deck.target,
+            deck_name=deck.name,
+            expected=expected,
+            max_choices=deck.effective_max_choices,
+        )
     if card_key is not None:
         unexpected = [item.card_key for item in presentations.values() if item.card_key != card_key]
         if unexpected:

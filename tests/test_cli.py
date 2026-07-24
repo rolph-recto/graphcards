@@ -12,8 +12,8 @@ from rdflib import Literal, URIRef
 from rdfcards.app import StudyService
 from rdfcards.cli import _rate_presentation, _run_study, build_parser, main
 from rdfcards.config import AppConfig, DeckDefinition, load_config
-from rdfcards.decks import Basic, ChoiceOption, DeckKind, MultipleChoice
-from rdfcards.models import CardKey
+from rdfcards.decks import Basic, ChoiceOption, DeckKind, MultipleChoice, OrderedListCompletion
+from rdfcards.models import CardKey, TargetKind
 from rdfcards.storage import Repository
 
 
@@ -410,6 +410,51 @@ def test_study_uses_custom_deck_kind_front_text(config: AppConfig) -> None:
 
     assert CustomKind.rendered
     assert "Stopped. Reviewed 0 card(s)." in output.getvalue()
+
+
+def test_ordered_list_study_uses_shared_cli_reveal_and_rating_flow(
+    workspace: Path,
+    tmp_path: Path,
+) -> None:
+    query_path = tmp_path / "ordered.rq"
+    query_path.write_text(
+        """
+        PREFIX ex: <https://example.org/>
+        SELECT ?entity ?group ?position ?label WHERE {
+          VALUES (?entity ?group ?position ?label) {
+            (ex:France ex:ordered 1 "France")
+            (ex:Germany ex:ordered 2 "Germany")
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+    source_config = load_config(workspace / "rdfcards.toml")
+    deck = DeckDefinition(
+        name="ordered",
+        target=TargetKind.ENTITY,
+        kind=OrderedListCompletion,
+        query_path=query_path,
+    )
+    config = source_config.model_copy(update={"decks": (deck,)})
+    output = io.StringIO()
+
+    _run_study(
+        config,
+        deck.name,
+        1,
+        input_fn=inputs("", "3"),
+        output=output,
+        error=io.StringIO(),
+        rng=NoShuffleRandom(),
+    )
+
+    rendered = output.getvalue()
+    assert "1. ?" in rendered
+    assert "2. Germany" in rendered
+    assert "Back:" in rendered
+    assert "France" in rendered
+    assert "Reviewed 1 card(s)." in rendered
 
 
 def test_basic_study_records_rating(workspace: Path, count_reviews) -> None:

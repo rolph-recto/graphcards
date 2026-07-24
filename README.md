@@ -118,6 +118,15 @@ study session's continuing random-number stream, so a cutoff tie and the display
 vary from one render to the next. If the query returns fewer choices than the configured maximum,
 all choices are shown.
 
+A `kind = "ordered_list"` deck tests an entity's place in a labeled, non-cyclic ordered list. Its
+query must select exactly `?entity`, `?group`, `?position`, and `?label`. Each group must contain at
+least two rows with unique, contiguous positions starting at one, and each entity may occur in
+only one group. The complete query runs when a card is rendered; the scheduled entity's row is
+shown as `?`, while its IRI remains the card identity and its label is shown after reveal. The
+optional `window_size` deck setting defaults to five; `window_size = 0` shows the complete list.
+Longer lists use a contiguous window around the tested position and show `…` for omitted items at
+the beginning or end.
+
 This entity-backed query is representative:
 
 ```sparql
@@ -160,8 +169,10 @@ choice rows are presentation errors, so `validate`, `sync`, terminal study, and 
 report the same query contract.
 
 The query is run once to synchronize deck membership. Immediately before a due card is shown,
-it is run again with either `?subject`/`?predicate`/`?object` or `?entity` pre-bound to the
-scheduled identity. Queries should use those variables directly rather than overwriting them.
+ordinary decks run it again with either `?subject`/`?predicate`/`?object` or `?entity` pre-bound to
+the scheduled identity. Ordered-list decks intentionally run their full query unbound, validate
+all groups, and select the scheduled entity in application code. Queries should use identity
+variables directly rather than overwriting them.
 
 ## Card identity and graph changes
 
@@ -293,9 +304,10 @@ resumed from the CLI before its card reappears in a later sync.
 `study` synchronizes its selected deck before selecting due cards. Suspended cards are excluded
 from due study, practice, forgotten review, and review-ahead queues without changing their FSRS
 schedule. A resumed card returns at its existing schedule and may therefore be immediately due.
-A limit of zero means no session limit. Both basic and multiple-choice cards show the front, wait
-for Enter, reveal the back, and ask for one of the four FSRS ratings. Multiple-choice fronts
-include their priority-selected shuffled choices, and their back is the correct choice.
+A limit of zero means no session limit. Basic, multiple-choice, and ordered-list cards show the
+front, wait for Enter, reveal the back, and ask for one of the four FSRS ratings. Multiple-choice
+fronts include their priority-selected shuffled choices, ordered-list fronts include the bounded
+list window, and each back shows its configured answer.
 
 Run `serve` to open the Flask-based browser study interface. RDFCards synchronizes every
 configured deck, binds its single-threaded local server to an automatically selected port on

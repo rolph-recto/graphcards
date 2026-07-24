@@ -3,15 +3,17 @@ from __future__ import annotations
 import random
 import sqlite3
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from fsrs import Rating
 from rdflib import Literal
 
 from rdfcards.app import StudyService
-from rdfcards.config import AppConfig
-from rdfcards.decks import Basic, ChoiceOption, MultipleChoice
+from rdfcards.config import AppConfig, DeckDefinition
+from rdfcards.decks import Basic, ChoiceOption, MultipleChoice, OrderedListCompletion
 from rdfcards.errors import PresentationError
+from rdfcards.models import TargetKind
 from rdfcards.presentation import load_graph
 from rdfcards.storage import Repository, utc_now
 from rdfcards.web.controller import StudyController
@@ -60,6 +62,48 @@ def test_regular_study_uses_all_due_cards_and_hides_answer_until_reveal(
         class_name in body
         for class_name in ("rating-again", "rating-hard", "rating-good", "rating-easy")
     )
+
+
+def test_ordered_list_front_and_back_render_in_browser(config: AppConfig, tmp_path: Path) -> None:
+    query_path = tmp_path / "ordered.rq"
+    query_path.write_text(
+        """
+        PREFIX ex: <https://example.org/>
+        SELECT ?entity ?group ?position ?label WHERE {
+          VALUES (?entity ?group ?position ?label) {
+            (ex:France ex:ordered 1 "France")
+            (ex:Germany ex:ordered 2 "Germany")
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+    deck = DeckDefinition(
+        name="ordered",
+        target=TargetKind.ENTITY,
+        kind=OrderedListCompletion,
+        query_path=query_path,
+    )
+    ordered_config = config.model_copy(
+        update={"decks": (deck,), "state_path": tmp_path / "state.sqlite3"}
+    )
+    server = make_test_hub(ordered_config)
+    try:
+        session = start_session(server, "ordered")
+        assert session.current is not None
+        status, _, body = exchange(server, "GET", "/study")
+        assert status == 200
+        assert "1. ?" in body
+        assert "2. Germany" in body
+        assert "France" not in body
+
+        fields = current_form(server)
+        assert exchange(server, "POST", "/study/reveal", fields)[0] == 303
+        body = exchange(server, "GET", "/study")[2]
+        assert "France" in body
+        assert "Again" in body
+    finally:
+        server.close()
 
 
 @pytest.mark.parametrize("rating", list(Rating))

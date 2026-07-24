@@ -6,7 +6,7 @@ import pytest
 from rdflib import Graph, Literal, URIRef
 
 from rdfcards.config import DeckDefinition
-from rdfcards.decks import Basic, DeckKind, MultipleChoice
+from rdfcards.decks import Basic, DeckKind, MultipleChoice, OrderedListCompletion
 from rdfcards.errors import PresentationError
 from rdfcards.models import CardKey, TargetKind
 from rdfcards.presentation import execute_presentations
@@ -23,6 +23,7 @@ def run_query(
     kind: type[DeckKind] = Basic,
     target: TargetKind = TargetKind.TRIPLE,
     max_choices: int | None = None,
+    window_size: int | None = None,
 ) -> dict[str, object]:
     query_path = tmp_path / "query.rq"
     query_path.write_text(PREFIX + query, encoding="utf-8")
@@ -32,8 +33,30 @@ def run_query(
         kind=kind,
         query_path=query_path,
         max_choices=max_choices,
+        window_size=window_size,
     )
     return execute_presentations(Graph(), deck)
+
+
+def run_ordered_query(
+    tmp_path: Path,
+    rows: str,
+    *,
+    window_size: int | None = None,
+) -> dict[str, object]:
+    return run_query(
+        tmp_path,
+        f"""
+        SELECT ?entity ?group ?position ?label WHERE {{
+          VALUES (?entity ?group ?position ?label) {{
+            {rows}
+          }}
+        }}
+        """,
+        OrderedListCompletion,
+        target=TargetKind.ENTITY,
+        window_size=window_size,
+    )
 
 
 def test_basic_contract_groups_duplicate_rows(tmp_path: Path) -> None:
@@ -222,6 +245,143 @@ def test_entity_basic_contract(tmp_path: Path) -> None:
     presentation = next(iter(presentations.values()))
     assert isinstance(presentation, Basic)
     assert presentation.card_key == CardKey.entity(URIRef("https://example.org/country"))
+
+
+def test_ordered_list_hides_target_and_keeps_entity_identity(tmp_path: Path) -> None:
+    presentations = run_ordered_query(
+        tmp_path,
+        '(ex:a ex:group 1 "Alpha")\n(ex:b ex:group 2 "Beta")\n(ex:c ex:group 3 "Gamma")',
+    )
+
+    target = presentations[CardKey.entity(URIRef("https://example.org/b")).digest]
+    assert isinstance(target, OrderedListCompletion)
+    assert target.card_key == CardKey.entity(URIRef("https://example.org/b"))
+    assert str(target.front) == "1. Alpha\n2. ?\n3. Gamma"
+    assert target.back == Literal("Beta")
+
+
+def test_ordered_list_centers_window_and_shows_omitted_boundaries(tmp_path: Path) -> None:
+    presentations = run_ordered_query(
+        tmp_path,
+        "\n".join(f'(ex:e{n} ex:group {n} "E{n}")' for n in range(1, 8)),
+    )
+
+    target = presentations[CardKey.entity(URIRef("https://example.org/e4")).digest]
+    assert str(target.front) == "…\n2. E2\n3. E3\n4. ?\n5. E5\n6. E6\n…"
+
+
+@pytest.mark.parametrize(
+    ("entity", "expected"),
+    [
+        ("e1", "1. ?\n2. E2\n3. E3\n4. E4\n5. E5\n…"),
+        ("e7", "…\n3. E3\n4. E4\n5. E5\n6. E6\n7. ?"),
+    ],
+)
+def test_ordered_list_shifts_window_at_boundaries(
+    tmp_path: Path,
+    entity: str,
+    expected: str,
+) -> None:
+    presentations = run_ordered_query(
+        tmp_path,
+        "\n".join(f'(ex:e{n} ex:group {n} "E{n}")' for n in range(1, 8)),
+    )
+
+    target = presentations[CardKey.entity(URIRef(f"https://example.org/{entity}")).digest]
+    assert str(target.front) == expected
+
+
+def test_ordered_list_zero_window_size_shows_full_list(tmp_path: Path) -> None:
+    presentations = run_ordered_query(
+        tmp_path,
+        "\n".join(f'(ex:e{n} ex:group {n} "E{n}")' for n in range(1, 8)),
+        window_size=0,
+    )
+
+    target = presentations[CardKey.entity(URIRef("https://example.org/e4")).digest]
+    assert str(target.front) == "\n".join(
+        ["1. E1", "2. E2", "3. E3", "4. ?", "5. E5", "6. E6", "7. E7"]
+    )
+    assert "…" not in str(target.front)
+
+
+def test_ordered_list_study_render_executes_full_query_before_selecting_card(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query_path = tmp_path / "query.rq"
+    query_path.write_text(
+        PREFIX
+        + """
+        SELECT ?entity ?group ?position ?label WHERE {
+          VALUES (?entity ?group ?position ?label) {
+            (ex:a ex:group 1 "Alpha")
+            (ex:b ex:group 2 "Beta")
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+    deck = DeckDefinition(
+        name="ordered",
+        target=TargetKind.ENTITY,
+        kind=OrderedListCompletion,
+        query_path=query_path,
+    )
+    graph = Graph()
+    original_query = graph.query
+    init_bindings: list[object] = []
+
+    def recording_query(*args: object, **kwargs: object):
+        init_bindings.append(kwargs.get("initBindings"))
+        return original_query(*args, **kwargs)
+
+    monkeypatch.setattr(graph, "query", recording_query)
+    execute_presentations(
+        graph,
+        deck,
+        CardKey.entity(URIRef("https://example.org/b")),
+    )
+
+    assert init_bindings == [None]
+
+
+@pytest.mark.parametrize(
+    ("rows", "message"),
+    [
+        ('(ex:a ex:g 1 "A")', "at least two"),
+        ('(ex:a ex:g 1 "A")\n(ex:b ex:g 3 "B")', "contiguous"),
+        ('(ex:a ex:g 1 "A")\n(ex:b ex:g 1 "B")', "unique"),
+        ('(ex:a ex:g 1 "A")\n(ex:a ex:h 2 "A")', "multiple"),
+        ('(ex:a ex:g 0 "A")\n(ex:b ex:g 1 "B")', "at least 1"),
+        ('(ex:a ex:g "1" "A")\n(ex:b ex:g 2 "B")', "xsd:integer"),
+        ('("not-an-iri" ex:g 1 "A")\n(ex:b ex:g 2 "B")', "IRI"),
+    ],
+)
+def test_ordered_list_rejects_invalid_group_rows(
+    tmp_path: Path,
+    rows: str,
+    message: str,
+) -> None:
+    with pytest.raises(PresentationError, match=message):
+        run_ordered_query(tmp_path, rows)
+
+
+def test_ordered_list_requires_exact_query_projection(tmp_path: Path) -> None:
+    with pytest.raises(PresentationError, match="exactly"):
+        run_query(
+            tmp_path,
+            """
+            SELECT ?entity ?group ?position ?label ?extra WHERE {
+              VALUES (?entity ?group ?position ?label ?extra) {
+                (ex:a ex:g 1 "A" "extra")
+                (ex:b ex:g 2 "B" "extra")
+              }
+            }
+            """,
+            OrderedListCompletion,
+            target=TargetKind.ENTITY,
+        )
 
 
 def test_entity_deck_requires_entity_variable(tmp_path: Path) -> None:

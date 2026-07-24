@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from rdfcards.config import DeckDefinition, FsrsSettings, load_config
-from rdfcards.decks import Basic, DeckKind, MultipleChoice
+from rdfcards.decks import Basic, DeckKind, MultipleChoice, OrderedListCompletion
 from rdfcards.errors import ConfigError
 from rdfcards.models import TargetKind
 
@@ -83,6 +83,7 @@ def test_display_timezone_is_validated(tmp_path: Path) -> None:
 def test_deck_kind_resolves_configuration_names() -> None:
     assert DeckKind.from_name("basic") is Basic
     assert DeckKind.from_name("multiple_choice") is MultipleChoice
+    assert DeckKind.from_name("ordered_list") is OrderedListCompletion
     with pytest.raises(ValueError, match="basic"):
         DeckKind.from_name("unknown")
 
@@ -199,6 +200,63 @@ def test_invalid_toml_max_choices_is_a_config_error(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="max_choices"):
         load_config(path)
+
+
+def test_ordered_list_window_size_defaults_to_five(tmp_path: Path) -> None:
+    deck = DeckDefinition(
+        name="ordered",
+        target=TargetKind.ENTITY,
+        kind=OrderedListCompletion,
+        query_path=tmp_path / "query.rq",
+    )
+
+    assert deck.window_size is None
+    assert deck.effective_window_size == 5
+
+
+def test_ordered_list_accepts_zero_window_size(tmp_path: Path) -> None:
+    deck = DeckDefinition(
+        name="ordered",
+        target=TargetKind.ENTITY,
+        kind=OrderedListCompletion,
+        query_path=tmp_path / "query.rq",
+        window_size=0,
+    )
+
+    assert deck.effective_window_size == 0
+
+
+@pytest.mark.parametrize("value", [-1, True, 2.5, "5"])
+def test_invalid_ordered_list_window_size_is_rejected(tmp_path: Path, value: object) -> None:
+    with pytest.raises(ValidationError, match="window_size"):
+        DeckDefinition(
+            name="ordered",
+            target=TargetKind.ENTITY,
+            kind=OrderedListCompletion,
+            query_path=tmp_path / "query.rq",
+            window_size=value,
+        )
+
+
+def test_ordered_list_requires_entity_target(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="target entity"):
+        DeckDefinition(
+            name="ordered",
+            target=TargetKind.TRIPLE,
+            kind=OrderedListCompletion,
+            query_path=tmp_path / "query.rq",
+        )
+
+
+def test_basic_rejects_window_size(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="only valid for ordered_list"):
+        DeckDefinition(
+            name="basic",
+            target=TargetKind.ENTITY,
+            kind=Basic,
+            query_path=tmp_path / "query.rq",
+            window_size=5,
+        )
 
 
 def test_fsrs_step_overflow_is_an_actionable_config_error() -> None:

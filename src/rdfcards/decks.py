@@ -10,7 +10,7 @@ from inspect import isabstract
 from typing import Annotated, ClassVar, Self
 
 from pydantic import Field, ValidationError, model_validator
-from rdflib import Literal
+from rdflib import Literal, URIRef
 from rdflib.namespace import XSD
 from rdflib.term import Identifier
 
@@ -18,6 +18,7 @@ from rdfcards.errors import PresentationError
 from rdfcards.models import CardKey, RdfModel, TargetKind
 
 DEFAULT_MAX_CHOICES = 4
+DEFAULT_WINDOW_SIZE = 5
 
 
 class DeckKind(RdfModel, ABC):
@@ -369,3 +370,179 @@ class MultipleChoice(DeckKind):
             for index, choice in enumerate(self.selected_choices(rng), start=1)
         )
         return "\n".join(lines)
+
+
+class OrderedListRow(RdfModel):
+    """One validated row in an ordered-list query result."""
+
+    entity: URIRef
+    group: Identifier
+    position: Annotated[int, Field(strict=True, ge=1)]
+    label: Identifier
+
+
+class OrderedListCompletion(DeckKind):
+    """An entity card that hides one member of a non-cyclic ordered list."""
+
+    config_name = "ordered_list"
+    required_variables = frozenset({"group", "position", "label"})
+
+    @staticmethod
+    def _position(value: Identifier, deck_name: str, row_number: int) -> int:
+        """Validate an RDF integer without accepting RDFLib coercions."""
+
+        if not isinstance(value, Literal) or value.datatype != XSD.integer:
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} ?position must be an xsd:integer literal"
+            )
+        if re.fullmatch(r"[+-]?[0-9]+", str(value)) is None:
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} has an invalid xsd:integer lexical value "
+                "for ?position"
+            )
+        converted = value.toPython()
+        if isinstance(converted, bool) or not isinstance(converted, int):
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} has an invalid xsd:integer value "
+                "for ?position"
+            )
+        if converted < 1:
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} ?position must be at least 1"
+            )
+        return converted
+
+    @classmethod
+    def _row(
+        cls,
+        values: dict[str, Identifier],
+        *,
+        deck_name: str,
+        row_number: int,
+    ) -> OrderedListRow:
+        try:
+            return OrderedListRow(
+                entity=values["entity"],
+                group=values["group"],
+                position=cls._position(values["position"], deck_name, row_number),
+                label=values["label"],
+            )
+        except PresentationError:
+            raise
+        except ValidationError as error:
+            message = str(error.errors(include_url=False)[0]["msg"])
+            raise PresentationError(
+                f"deck {deck_name!r} row {row_number} has an invalid ordered-list row: "
+                f"{message.removeprefix('Value error, ')}"
+            ) from error
+
+    @staticmethod
+    def _window(rows: list[OrderedListRow], target: OrderedListRow, window_size: int) -> str:
+        """Return a bounded, contiguous numbered window around ``target``."""
+
+        if window_size == 0 or window_size >= len(rows):
+            visible = rows
+            omitted_before = omitted_after = False
+        else:
+            target_index = target.position - 1
+            start = max(0, target_index - window_size // 2)
+            start = min(start, len(rows) - window_size)
+            end = start + window_size
+            visible = rows[start:end]
+            omitted_before = start > 0
+            omitted_after = end < len(rows)
+
+        lines: list[str] = []
+        if omitted_before:
+            lines.append("…")
+        lines.extend(f"{row.position}. {'?' if row is target else row.label}" for row in visible)
+        if omitted_after:
+            lines.append("…")
+        return "\n".join(lines)
+
+    @classmethod
+    def group(
+        cls,
+        result: object,
+        *,
+        target: TargetKind,
+        deck_name: str,
+        expected: set[str],
+        max_choices: int | None,
+        card_key: CardKey | None = None,
+        window_size: int = DEFAULT_WINDOW_SIZE,
+    ) -> dict[str, Self]:
+        del max_choices
+        if target is not TargetKind.ENTITY:
+            raise PresentationError(f"deck {deck_name!r} ordered-list cards must target entities")
+        if isinstance(window_size, bool) or not isinstance(window_size, int) or window_size < 0:
+            raise PresentationError(f"deck {deck_name!r} ordered-list window_size is invalid")
+
+        rows_by_group: dict[Identifier, list[OrderedListRow]] = defaultdict(list)
+        entity_groups: dict[URIRef, Identifier] = {}
+        entity_keys: dict[URIRef, CardKey] = {}
+        for row_number, row in enumerate(result, start=1):  # type: ignore[arg-type]
+            values = cls._row_values(row)
+            cls._require_bound(values, expected, deck_name, row_number)
+            key = cls._card_key(values, target, deck_name, row_number)
+            parsed = cls._row(values, deck_name=deck_name, row_number=row_number)
+            existing_group = entity_groups.get(parsed.entity)
+            if existing_group is not None:
+                if existing_group != parsed.group:
+                    raise PresentationError(
+                        f"deck {deck_name!r} entity {parsed.entity.n3()} belongs to multiple "
+                        "ordered-list groups"
+                    )
+                raise PresentationError(
+                    f"deck {deck_name!r} returns duplicate ordered-list rows for "
+                    f"entity {parsed.entity.n3()}"
+                )
+            entity_groups[parsed.entity] = parsed.group
+            entity_keys[parsed.entity] = key
+            rows_by_group[parsed.group].append(parsed)
+
+        presentations: list[Self] = []
+        for group, group_rows in rows_by_group.items():
+            positions = sorted(row.position for row in group_rows)
+            if len(group_rows) < 2:
+                raise PresentationError(
+                    f"deck {deck_name!r} ordered-list group {group.n3()} must contain "
+                    "at least two rows"
+                )
+            expected_positions = list(range(1, len(group_rows) + 1))
+            if positions != expected_positions:
+                reason = "unique" if len(set(positions)) != len(positions) else "contiguous 1-based"
+                raise PresentationError(
+                    f"deck {deck_name!r} ordered-list group {group.n3()} must have {reason} "
+                    "positions"
+                )
+
+            ordered_rows = sorted(group_rows, key=lambda row: row.position)
+            for row in ordered_rows:
+                key = entity_keys[row.entity]
+                if card_key is not None and key != card_key:
+                    continue
+                try:
+                    presentations.append(
+                        cls(
+                            card_key=key,
+                            front=Literal(cls._window(ordered_rows, row, window_size)),
+                            back=row.label,
+                        )
+                    )
+                except ValidationError as error:
+                    message = str(error.errors(include_url=False)[0]["msg"])
+                    raise PresentationError(
+                        f"deck {deck_name!r} has an invalid ordered-list presentation for "
+                        f"card {key.digest}: {message.removeprefix('Value error, ')}"
+                    ) from error
+
+        if card_key is not None and not presentations:
+            raise PresentationError(
+                f"deck {deck_name!r} ordered-list query does not contain card {card_key.digest}"
+            )
+        return cls._by_digest(presentations)
+
+
+# Keep the shorter name available to callers while using one registered kind.
+OrderedList = OrderedListCompletion

@@ -21,7 +21,13 @@ from pydantic import (
     model_validator,
 )
 
-from rdfcards.decks import DEFAULT_MAX_CHOICES, DeckKind, MultipleChoice
+from rdfcards.decks import (
+    DEFAULT_MAX_CHOICES,
+    DEFAULT_WINDOW_SIZE,
+    DeckKind,
+    MultipleChoice,
+    OrderedListCompletion,
+)
 from rdfcards.errors import ConfigError
 from rdfcards.models import TargetKind
 
@@ -92,6 +98,7 @@ class DeckDefinition(FrozenModel):
     kind: type[DeckKind]
     query_path: Path = Field(validation_alias="query")
     max_choices: Annotated[int, Field(strict=True, ge=2)] | None = None
+    window_size: Annotated[int, Field(strict=True, ge=0)] | None = None
 
     @field_validator("kind", mode="before")
     @classmethod
@@ -105,9 +112,14 @@ class DeckDefinition(FrozenModel):
         return _resolve_path(value, info)
 
     @model_validator(mode="after")
-    def validate_max_choices(self) -> DeckDefinition:
+    def validate_presentation_options(self) -> DeckDefinition:
         if self.max_choices is not None and not issubclass(self.kind, MultipleChoice):
             raise ValueError("max_choices is only valid for multiple_choice decks")
+        is_ordered_list = issubclass(self.kind, OrderedListCompletion)
+        if self.window_size is not None and not is_ordered_list:
+            raise ValueError("window_size is only valid for ordered_list decks")
+        if is_ordered_list and self.target is not TargetKind.ENTITY:
+            raise ValueError("ordered_list decks must target entity cards")
         return self
 
     @property
@@ -116,6 +128,14 @@ class DeckDefinition(FrozenModel):
 
         if issubclass(self.kind, MultipleChoice):
             return self.max_choices if self.max_choices is not None else DEFAULT_MAX_CHOICES
+        return None
+
+    @property
+    def effective_window_size(self) -> int | None:
+        """Return the list window understood by ordered-list presentations."""
+
+        if issubclass(self.kind, OrderedListCompletion):
+            return self.window_size if self.window_size is not None else DEFAULT_WINDOW_SIZE
         return None
 
 
