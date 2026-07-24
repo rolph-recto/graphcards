@@ -163,7 +163,7 @@ on the back; no `?answer` binding is used. Optional label bindings use the names
 back to the RDF term's string form. Without a predicate label, the compact `:` relation marker is
 shown; a bound predicate label is shown in its place. Duplicate rows for a target must agree on the
 source triple, hide mode, and effective display labels. Analogy presentations use the same reveal,
-rating, and scheduling flows in both terminal and browser study.
+rating, and scheduling flows in the browser study interface.
 
 ### Extending deck definitions
 
@@ -223,8 +223,8 @@ Additional `UNION` branches can supply lower-priority choice groups. The bundled
 cutoff tie.
 
 Invalid `max_choices` values are configuration errors. Invalid priority bindings and conflicting
-choice rows are presentation errors, so `validate`, `sync`, terminal study, and browser study all
-report the same query contract.
+choice rows are presentation errors, so `validate`, `sync`, and browser study all report the same
+query contract.
 
 The query is run once to synchronize deck membership. Immediately before a due card is shown,
 ordinary decks run it again with either `?subject`/`?predicate`/`?object` or `?entity` pre-bound to
@@ -345,7 +345,6 @@ graphcards [-c PATH] templates
 graphcards [-c PATH] validate [--deck NAME]
 graphcards [-c PATH] sync [--deck NAME]
 graphcards [-c PATH] status [--deck NAME] [--full]
-graphcards [-c PATH] study NAME [--limit N]
 graphcards [-c PATH] suspend DECK CARD_ID [--reason TEXT]
 graphcards [-c PATH] resume DECK CARD_ID
 graphcards [-c PATH] serve
@@ -358,14 +357,6 @@ these commands use persisted membership state without loading RDF sources. Reaso
 trimmed, single-line text limited to 500 characters; control characters, Unicode format controls,
 and line separators are rejected. Reasons are cleared on resume. An inactive membership can be
 resumed from the CLI before its card reappears in a later sync.
-
-`study` synchronizes its selected deck before selecting due cards. Suspended cards are excluded
-from due study, practice, forgotten review, and review-ahead queues without changing their FSRS
-schedule. A resumed card returns at its existing schedule and may therefore be immediately due.
-A limit of zero means no session limit. Basic, multiple-choice, and ordered-list cards show the
-front, wait for Enter, reveal the back, and ask for one of the four FSRS ratings. Multiple-choice
-fronts include their priority-selected shuffled choices, ordered-list fronts include the bounded
-list window, and each back shows its configured answer.
 
 Run `serve` to open the Flask-based browser study interface. GraphCards synchronizes every
 configured deck, binds its single-threaded local server to an automatically selected port on

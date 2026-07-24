@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import io
-import random
 from pathlib import Path
 
 import pytest
@@ -9,7 +7,6 @@ from pydantic import ValidationError
 from rdflib import Graph, Literal, URIRef
 
 from graphcards.app import StudyService
-from graphcards.cli import _rate_presentation
 from graphcards.config import FsrsSettings, load_config
 from graphcards.decks import (
     AnalogyDeck,
@@ -368,36 +365,6 @@ def test_analogy_accepts_xsd_string_hide_literal(tmp_path: Path) -> None:
         """,
     )
     assert len(presentations) == 1
-
-
-def test_analogy_uses_generic_cli_reveal_and_rate_flow() -> None:
-    target = CardKey.triple(
-        URIRef("https://example.org/France"),
-        URIRef("https://example.org/capital"),
-        URIRef("https://example.org/Paris"),
-    )
-    presentation = AnalogyPresentation(
-        card_key=target,
-        front=Literal("Germany capital of Berlin :: France capital of ?"),
-        back=Literal("Paris"),
-        source_subject=URIRef("https://example.org/Germany"),
-        source_predicate=URIRef("https://example.org/capital"),
-        source_object=URIRef("https://example.org/Berlin"),
-        hide=Literal("object"),
-        subject_label=Literal("France"),
-        predicate_label=Literal("capital of"),
-        object_label=Literal("Paris"),
-        source_subject_label=Literal("Germany"),
-        source_predicate_label=Literal("capital of"),
-        source_object_label=Literal("Berlin"),
-    )
-    output = io.StringIO()
-    answers = iter(("", "3"))
-
-    assert _rate_presentation(presentation, lambda: next(answers), output, random.Random(0))
-    snapshots = output.getvalue()
-    assert "Front: Germany capital of Berlin :: France capital of ?" in snapshots
-    assert "Back:  Paris" in snapshots
 
 
 def test_analogy_configuration_requires_triple_target(tmp_path: Path) -> None:

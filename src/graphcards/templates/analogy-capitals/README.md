@@ -11,5 +11,5 @@ Try it with:
 
 ```console
 graphcards validate
-graphcards study capital-analogies
+graphcards serve
 ```

@@ -11,7 +11,7 @@ Try it with:
 
 ```console
 graphcards validate
-graphcards study planet-order
+graphcards serve
 ```
 
 Set `window_size = 0` in `graphcards.toml` to show the complete list on every

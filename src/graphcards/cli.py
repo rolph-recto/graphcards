@@ -1,4 +1,4 @@
-"""Argparse commands and terminal interaction for GraphCards."""
+"""Argparse commands for GraphCards."""
 
 from __future__ import annotations
 
@@ -7,28 +7,19 @@ import random
 import re
 import sqlite3
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import TextIO
 
-from fsrs import Rating
-
 from graphcards.app import StudyService
 from graphcards.config import AppConfig, load_config
-from graphcards.decks import DeckDefinition, Presentation
-from graphcards.errors import GraphCardsError, PresentationError
+from graphcards.decks import DeckDefinition
+from graphcards.errors import GraphCardsError
 from graphcards.presentation import execute_presentations, load_graph
 from graphcards.scaffold import available_templates, initialize_workspace
 from graphcards.storage import CardStatus, Repository, datetime_to_text, utc_now
 from graphcards.web import run_server
-
-
-def _nonnegative_int(value: str) -> int:
-    parsed = int(value)
-    if parsed < 0:
-        raise argparse.ArgumentTypeError("must be zero or greater")
-    return parsed
 
 
 def _card_id(value: str) -> str:
@@ -64,14 +55,6 @@ def build_parser() -> argparse.ArgumentParser:
                 "--full", action="store_true", help="show card-level schedule details"
             )
 
-    study_parser = subparsers.add_parser("study", help="review due cards")
-    study_parser.add_argument("deck", help="configured deck name")
-    study_parser.add_argument(
-        "--limit",
-        type=_nonnegative_int,
-        default=20,
-        help="maximum cards to review; 0 means unlimited (default: %(default)s)",
-    )
     suspend_parser = subparsers.add_parser(
         "suspend", help="exclude a card from one deck's study queues"
     )
@@ -175,76 +158,6 @@ def _run_status(config: AppConfig, deck_name: str | None, full: bool, output: Te
                 _print_status_table(repository.card_statuses(deck.name), now, output)
 
 
-def _rate_presentation(
-    presentation: Presentation,
-    input_fn: Callable[[], str],
-    output: TextIO,
-    rng: random.Random,
-) -> Rating | None:
-    """Run the terminal reveal-and-rate interaction shared by every deck kind."""
-
-    def prompt(message: str) -> str:
-        print(message, end="", flush=True, file=output)
-        return input_fn().strip()
-
-    print(f"\nFront: {presentation.front_text(rng)}", file=output)
-    while True:
-        answer = prompt("Press Enter to reveal, or q to quit: ")
-        if answer.casefold() == "q":
-            return None
-        if not answer:
-            break
-        print("Please press Enter to reveal, or q to quit.", file=output)
-
-    print(f"Back:  {presentation.back}", file=output)
-    ratings = {"1": Rating.Again, "2": Rating.Hard, "3": Rating.Good, "4": Rating.Easy}
-    while True:
-        answer = prompt("Rate 1=Again 2=Hard 3=Good 4=Easy, or q to quit: ")
-        if answer.casefold() == "q":
-            return None
-        if answer in ratings:
-            return ratings[answer]
-        print("Please enter 1, 2, 3, 4, or q.", file=output)
-
-
-def _run_study(
-    config: AppConfig,
-    deck_name: str,
-    limit: int,
-    input_fn: Callable[[], str],
-    output: TextIO,
-    error: TextIO,
-    rng: random.Random,
-) -> None:
-    deck = config.deck(deck_name)
-    graph = load_graph(config.sources)
-    with Repository(config.state_path) as repository:
-        app = StudyService(graph, repository, config.fsrs.create_scheduler())
-        session_time = utc_now()
-        app.sync(deck, session_time)
-        # Take a stable due-card snapshot for this session. Each presentation is
-        # still regenerated immediately before display by app.render().
-        cards = repository.due_cards(deck.name, session_time, None if limit == 0 else limit)
-        if not cards:
-            print("No cards are due.", file=output)
-            return
-        reviewed = 0
-        for card in cards:
-            try:
-                presentation = app.render(deck, card)
-            except PresentationError as presentation_error:
-                print(f"Skipping {card.card_id}: {presentation_error}", file=error)
-                continue
-            rating = _rate_presentation(presentation, input_fn, output, rng)
-            if rating is None:
-                # No review is persisted until a complete interaction produces a rating.
-                print(f"Stopped. Reviewed {reviewed} card(s).", file=output)
-                return
-            app.review(deck, card, rating, utc_now())
-            reviewed += 1
-        print(f"Reviewed {reviewed} card(s).", file=output)
-
-
 def _run_suspend(
     config: AppConfig,
     deck_name: str,
@@ -273,7 +186,6 @@ def _run_resume(
 def main(
     argv: Sequence[str] | None = None,
     *,
-    input_fn: Callable[[], str] = input,
     output: TextIO = sys.stdout,
     error: TextIO = sys.stderr,
     rng: random.Random | None = None,
@@ -305,16 +217,6 @@ def main(
             _run_sync(config, args.deck, output)
         elif args.command == "status":
             _run_status(config, args.deck, args.full, output)
-        elif args.command == "study":
-            _run_study(
-                config,
-                args.deck,
-                args.limit,
-                input_fn,
-                output,
-                error,
-                rng or random.Random(),
-            )
         elif args.command == "suspend":
             _run_suspend(config, args.deck, args.card_id, args.reason, output)
         elif args.command == "resume":
@@ -330,11 +232,6 @@ def main(
     except KeyboardInterrupt:
         if args.command == "serve":
             print("\nWeb server stopped.", file=error)
-        else:
-            print("\nInterrupted; the current card was not reviewed.", file=error)
-        return 130
-    except EOFError:
-        print("\nInput ended; the current card was not reviewed.", file=error)
         return 130
     except (GraphCardsError, OSError, sqlite3.Error) as command_error:
         print(f"error: {command_error}", file=error)

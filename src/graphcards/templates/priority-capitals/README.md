@@ -23,5 +23,5 @@ Try it with:
 
 ```console
 graphcards validate
-graphcards study priority-capitals
+graphcards serve
 ```
