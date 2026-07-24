@@ -335,8 +335,8 @@ class MultipleChoice(DeckKind):
                 ) from error
         return cls._by_digest(presentations)
 
-    def selected_choices(self, rng: random.Random) -> tuple[Identifier, ...]:
-        """Select prioritized distractors and shuffle the displayed choices."""
+    def _selected_distractors(self, rng: random.Random) -> list[Identifier]:
+        """Randomize each priority tier before retaining distractors."""
 
         tiers: dict[int, list[Identifier]] = defaultdict(list)
         for option in self.choices:
@@ -348,12 +348,17 @@ class MultipleChoice(DeckKind):
         for priority in sorted(tiers, reverse=True):
             tier = sorted(tiers[priority], key=lambda choice: choice.n3())
             rng.shuffle(tier)
-            distractors.extend(tier[:remaining])
-            remaining -= min(remaining, len(tier))
+            retained = tier[:remaining]
+            distractors.extend(retained)
+            remaining -= len(retained)
             if remaining == 0:
                 break
+        return distractors
 
-        selected = [self.back, *distractors]
+    def selected_choices(self, rng: random.Random) -> tuple[Identifier, ...]:
+        """Select prioritized distractors, then shuffle all retained choices."""
+
+        selected = [self.back, *self._selected_distractors(rng)]
         rng.shuffle(selected)
         return tuple(selected)
 

@@ -23,11 +23,6 @@ class ReverseRandom(random.Random):
         values.reverse()
 
 
-class NoShuffleRandom(random.Random):
-    def shuffle(self, values: list[object]) -> None:
-        del values
-
-
 def option(value: str, priority: int = 0) -> ChoiceOption:
     return ChoiceOption(choice=Literal(value), priority=priority)
 
@@ -67,14 +62,15 @@ def test_multiple_choice_exhausts_priority_tiers_and_includes_correct_answer() -
         max_choices=4,
     )
 
-    selected = presentation.selected_choices(NoShuffleRandom())
+    selected = set(presentation.selected_choices(random.Random(0)))
 
-    assert selected == (
+    assert selected == {
         Literal("correct"),
         Literal("high-a"),
         Literal("high-b"),
         Literal("low"),
-    )
+    }
+    assert Literal("default") not in selected
 
 
 def test_multiple_choice_randomizes_a_cutoff_tie_deterministically() -> None:
@@ -101,6 +97,33 @@ def test_multiple_choice_randomizes_a_cutoff_tie_deterministically() -> None:
     assert Literal("correct") in first
     assert len(set(first) & {Literal("tied-a"), Literal("tied-b")}) == 1
     assert Literal("lower") not in first
+
+
+def test_multiple_choice_repeated_renders_vary_tied_selection_and_display_order() -> None:
+    presentation = MultipleChoice(
+        card_key=card_key(),
+        front=Literal("question"),
+        back=Literal("correct"),
+        choices=(
+            option("correct"),
+            option("high", 3),
+            option("tied-a", 2),
+            option("tied-b", 2),
+            option("tied-c", 2),
+            option("low", 1),
+        ),
+        max_choices=3,
+    )
+    rng = random.Random(1)
+
+    renders = tuple(presentation.selected_choices(rng) for _ in range(8))
+    tied = {Literal("tied-a"), Literal("tied-b"), Literal("tied-c")}
+
+    assert all({Literal("correct"), Literal("high")} <= set(rendered) for rendered in renders)
+    assert all(len(set(rendered) & tied) == 1 for rendered in renders)
+    assert all(Literal("low") not in rendered for rendered in renders)
+    assert len({frozenset(set(rendered) & tied) for rendered in renders}) > 1
+    assert len({rendered.index(Literal("correct")) for rendered in renders}) > 1
 
 
 @pytest.mark.parametrize(

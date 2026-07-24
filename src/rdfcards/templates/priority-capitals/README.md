@@ -14,6 +14,10 @@ The deck sets `max_choices = 4`, so RDFCards reserves one slot for the
 priority-zero correct answer, exhausts priorities three and two, and randomly
 selects one of the two priority-one distractors for the final slot. This keeps
 choice policy in the deck without adding study-specific metadata to the graph.
+Each presentation randomizes candidates within the tied tier, then separately
+shuffles all four retained choices, including the correct answer, for display.
+The session keeps one random-number stream, so repeated presentations can choose
+a different cutoff distractor and display order.
 
 Try it with:
 

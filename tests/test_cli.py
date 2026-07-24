@@ -9,6 +9,7 @@ import pytest
 from fsrs import Rating
 from rdflib import Literal, URIRef
 
+from rdfcards.app import StudyService
 from rdfcards.cli import _rate_presentation, _run_study, build_parser, main
 from rdfcards.config import AppConfig, DeckDefinition, load_config
 from rdfcards.decks import Basic, ChoiceOption, DeckKind, MultipleChoice
@@ -93,38 +94,72 @@ def test_shared_interaction_hides_back_until_reveal(kind: type[DeckKind]) -> Non
         assert "2. incorrect" in snapshots[0]
 
 
-def test_terminal_multiple_choice_uses_priority_limit_and_keeps_correct_answer() -> None:
-    key = CardKey.triple(
-        URIRef("https://example.org/subject"),
-        URIRef("https://example.org/predicate"),
-        URIRef("https://example.org/object"),
-    )
-    limited = MultipleChoice(
-        card_key=key,
-        front=Literal("question"),
-        back=Literal("correct"),
-        choices=(
-            ChoiceOption(choice=Literal("correct")),
-            ChoiceOption(choice=Literal("high-a"), priority=2),
-            ChoiceOption(choice=Literal("high-b"), priority=2),
-            ChoiceOption(choice=Literal("low"), priority=1),
-        ),
-        max_choices=3,
-    )
+def test_terminal_study_reuses_rng_across_priority_choice_renders(
+    config: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_rngs: list[random.Random] = []
+
+    class RecordingMultipleChoice(MultipleChoice):
+        def front_text(self, rng: random.Random) -> str:
+            seen_rngs.append(rng)
+            return super().front_text(rng)
+
+    def render_limited(_service, _deck, card):
+        return RecordingMultipleChoice(
+            card_key=card.card_key,
+            front=Literal("question"),
+            back=Literal("correct"),
+            choices=(
+                ChoiceOption(choice=Literal("correct")),
+                ChoiceOption(choice=Literal("high"), priority=3),
+                ChoiceOption(choice=Literal("tied-a"), priority=2),
+                ChoiceOption(choice=Literal("tied-b"), priority=2),
+                ChoiceOption(choice=Literal("tied-c"), priority=2),
+                ChoiceOption(choice=Literal("low"), priority=1),
+            ),
+            max_choices=3,
+        )
+
+    monkeypatch.setattr(StudyService, "render", render_limited)
     output = io.StringIO()
+    snapshots: list[str] = []
+    answers = iter(("", "3", "", "3"))
 
-    rating = _rate_presentation(
-        limited,
-        inputs("", "3"),
+    def staged_input() -> str:
+        snapshots.append(output.getvalue())
+        return next(answers)
+
+    session_rng = random.Random(5)
+
+    _run_study(
+        config,
+        "capitals-basic",
+        0,
+        staged_input,
         output,
-        NoShuffleRandom(),
+        io.StringIO(),
+        session_rng,
     )
 
-    assert rating is Rating.Good
-    assert "1. correct" in output.getvalue()
-    assert "2. high-a" in output.getvalue()
-    assert "3. high-b" in output.getvalue()
-    assert "low" not in output.getvalue()
+    renders = tuple(
+        tuple(
+            line.split(". ", maxsplit=1)[1]
+            for line in snapshot.rsplit("\nFront: ", maxsplit=1)[1].splitlines()
+            if line.strip()[:1].isdigit()
+        )
+        for snapshot in snapshots[::2]
+    )
+    tied = {"tied-a", "tied-b", "tied-c"}
+
+    assert seen_rngs == [session_rng, session_rng]
+    assert len(renders) == 2
+    assert all(len(rendered) == 3 for rendered in renders)
+    assert all({"correct", "high"} <= set(rendered) for rendered in renders)
+    assert all(len(set(rendered) & tied) == 1 for rendered in renders)
+    assert all("low" not in rendered for rendered in renders)
+    assert len({frozenset(set(rendered) & tied) for rendered in renders}) > 1
+    assert len({rendered.index("correct") for rendered in renders}) > 1
 
 
 @pytest.mark.parametrize("kind", [Basic, MultipleChoice])

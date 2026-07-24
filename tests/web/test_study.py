@@ -14,6 +14,7 @@ from rdfcards.decks import Basic, ChoiceOption, MultipleChoice
 from rdfcards.errors import PresentationError
 from rdfcards.presentation import load_graph
 from rdfcards.storage import Repository, utc_now
+from rdfcards.web.controller import StudyController
 from rdfcards.web.study import StudyMode, StudySession
 from tests.web.support import (
     FlaskHub,
@@ -616,47 +617,63 @@ def test_session_uses_custom_deck_kind_front_text(config: AppConfig) -> None:
         assert session.current.front == "Web custom: custom front"
 
 
-def test_browser_multiple_choice_uses_priority_limit_and_keeps_correct_answer(
+def test_browser_session_reuses_rng_across_priority_choice_renders(
     config: AppConfig,
 ) -> None:
-    class NoShuffleRandom(random.Random):
-        def shuffle(self, values: list[object]) -> None:
-            del values
+    seen_rngs: list[random.Random] = []
+
+    class RecordingMultipleChoice(MultipleChoice):
+        def front_text(self, rng: random.Random) -> str:
+            seen_rngs.append(rng)
+            return super().front_text(rng)
 
     deck = config.deck("capitals-choice")
     graph = load_graph(config.sources)
     with Repository(config.state_path) as repository:
-        app = StudyService(graph, repository, config.fsrs.create_scheduler())
-        now = utc_now()
-        app.sync(deck, now)
-        cards = repository.due_cards(deck.name, now, 1)
+        session_rng = random.Random(1)
+        controller = StudyController(config, graph, repository, session_rng)
 
         def render_limited(_deck, card):
-            return MultipleChoice(
+            return RecordingMultipleChoice(
                 card_key=card.card_key,
                 front=Literal("question"),
                 back=Literal("correct"),
                 choices=(
                     ChoiceOption(choice=Literal("correct")),
-                    ChoiceOption(choice=Literal("high-a"), priority=2),
-                    ChoiceOption(choice=Literal("high-b"), priority=2),
+                    ChoiceOption(choice=Literal("high"), priority=3),
+                    ChoiceOption(choice=Literal("tied-a"), priority=2),
+                    ChoiceOption(choice=Literal("tied-b"), priority=2),
+                    ChoiceOption(choice=Literal("tied-c"), priority=2),
                     ChoiceOption(choice=Literal("low"), priority=1),
                 ),
                 max_choices=3,
             )
 
-        app.render = render_limited  # type: ignore[method-assign]
-        session = StudySession(
-            deck,
-            app,
-            cards,
-            StudyMode.DUE,
-            1,
-            0,
-            NoShuffleRandom(),
+        controller.study_service.render = render_limited  # type: ignore[method-assign]
+        session = controller.start_session(
+            csrf_token=controller.csrf_token,
+            deck_name=deck.name,
+            mode=StudyMode.DUE,
+            days=1,
+            requested_limit=0,
         )
 
-        assert session.current is not None
-        assert session.current.front == "question\n  1. correct\n  2. high-a\n  3. high-b"
-        assert session.current.back == "correct"
-        assert "low" not in session.current.front
+        renders: list[tuple[str, ...]] = []
+        while session.current is not None:
+            current = session.current
+            renders.append(
+                tuple(line.split(". ", maxsplit=1)[1] for line in current.front.splitlines()[1:])
+            )
+            assert current.back == "correct"
+            session.reveal(session.session_token, current.card.card_id)
+            session.rate(session.session_token, current.card.card_id, Rating.Good)
+
+        tied = {"tied-a", "tied-b", "tied-c"}
+        assert session.rng is controller.rng is session_rng
+        assert seen_rngs == [session_rng, session_rng]
+        assert len(renders) == 2
+        assert all({"correct", "high"} <= set(rendered) for rendered in renders)
+        assert all(len(set(rendered) & tied) == 1 for rendered in renders)
+        assert all("low" not in rendered for rendered in renders)
+        assert len({frozenset(set(rendered) & tied) for rendered in renders}) > 1
+        assert len({rendered.index("correct") for rendered in renders}) > 1

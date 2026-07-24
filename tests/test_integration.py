@@ -53,9 +53,16 @@ def test_priority_capitals_template_exhausts_tiers_and_keeps_correct_answer(
         "Madrid": 1,
         "Lisbon": 1,
     }
-    france_selected = {str(choice) for choice in france.selected_choices(random.Random(0))}
-    assert {"Paris", "Berlin", "Rome"} <= france_selected
-    assert len(france_selected & {"Madrid", "Lisbon"}) == 1
+    rng = random.Random(0)
+    france_renders = tuple(
+        {str(choice) for choice in france.selected_choices(rng)} for _ in range(8)
+    )
+    assert all({"Paris", "Berlin", "Rome"} <= selected for selected in france_renders)
+    assert all(len(selected & {"Madrid", "Lisbon"}) == 1 for selected in france_renders)
+    assert {next(iter(selected & {"Madrid", "Lisbon"})) for selected in france_renders} == {
+        "Madrid",
+        "Lisbon",
+    }
 
     germany = by_front["Capital of Germany?"]
     assert isinstance(germany, MultipleChoice)

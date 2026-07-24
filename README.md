@@ -112,8 +112,11 @@ Multiple-choice decks accept `max_choices`, a strict integer of at least two tha
 four. It counts the correct answer as well as distractors. RDFCards validates the complete query
 result, always includes the correct answer, and then fills the remaining slots by exhausting
 higher-priority distractor tiers before considering lower-priority tiers. Ties within a tier are
-randomized, and the final selected choices are shuffled for display. If the query returns fewer
-choices than the configured maximum, all choices are shown.
+randomized before RDFCards fills the available slots. It then separately shuffles the full
+retained set, including the correct answer, for display. Repeated presentations draw from the
+study session's continuing random-number stream, so a cutoff tie and the displayed order can
+vary from one render to the next. If the query returns fewer choices than the configured maximum,
+all choices are shown.
 
 This entity-backed query is representative:
 
