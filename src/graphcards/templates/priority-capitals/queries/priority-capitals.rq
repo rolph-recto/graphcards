@@ -1,0 +1,55 @@
+PREFIX ex: <https://example.org/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+SELECT ?entity ?front ?choice ?is_correct ?priority
+WHERE {
+  ?entity ex:capital ?correct_answer ; rdfs:label ?country_name .
+
+  {
+    {
+      # Correct answers deliberately have the lowest priority. GraphCards still
+      # reserves their slot before it selects any distractors.
+      SELECT ?entity ?choice_resource (0 AS ?priority)
+      WHERE {
+        ?entity ex:capital ?choice_resource .
+      }
+    }
+    UNION
+    {
+      SELECT ?entity ?choice_resource (3 AS ?priority)
+      WHERE {
+        VALUES (?entity ?choice_resource) {
+          (ex:France ex:Berlin)
+          (ex:Germany ex:Paris)
+        }
+      }
+    }
+    UNION
+    {
+      SELECT ?entity ?choice_resource (2 AS ?priority)
+      WHERE {
+        VALUES (?entity ?choice_resource) {
+          (ex:France ex:Rome)
+          (ex:Germany ex:Rome)
+        }
+      }
+    }
+    UNION
+    {
+      # These tied choices compete for the final distractor slot.
+      SELECT ?entity ?choice_resource (1 AS ?priority)
+      WHERE {
+        VALUES (?entity ?choice_resource) {
+          (ex:France ex:Madrid)
+          (ex:France ex:Lisbon)
+          (ex:Germany ex:Madrid)
+          (ex:Germany ex:Lisbon)
+        }
+      }
+    }
+  }
+
+  ?choice_resource a ex:City ; rdfs:label ?choice .
+  BIND(CONCAT("Capital of ", STR(?country_name), "?") AS ?front)
+  BIND(?choice_resource = ?correct_answer AS ?is_correct)
+}

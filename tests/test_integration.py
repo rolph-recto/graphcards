@@ -8,16 +8,21 @@ from pathlib import Path
 
 import pytest
 from fsrs import Card, Rating
-from rdflib import URIRef
+from rdflib import Literal, URIRef
 
-from rdfcards.app import StudyService
-from rdfcards.config import AppConfig, load_config
-from rdfcards.decks import BasicPresentation, MultipleChoicePresentation
-from rdfcards.errors import PresentationError, StorageError
-from rdfcards.models import CardKey, TargetKind
-from rdfcards.presentation import execute_presentations, load_graph
-from rdfcards.scaffold import initialize_workspace
-from rdfcards.storage import Repository, datetime_to_text
+from graphcards.app import StudyService
+from graphcards.config import AppConfig, load_config
+from graphcards.decks import (
+    AnalogyPresentation,
+    BasicPresentation,
+    MultipleChoicePresentation,
+    OrderedListPresentation,
+)
+from graphcards.errors import PresentationError, StorageError
+from graphcards.models import CardKey, TargetKind
+from graphcards.presentation import execute_presentations, load_graph
+from graphcards.scaffold import initialize_workspace
+from graphcards.storage import Repository, datetime_to_text
 
 
 def app_for(config: AppConfig, repository: Repository) -> StudyService:
@@ -39,7 +44,7 @@ def test_priority_capitals_template_exhausts_tiers_and_keeps_correct_answer(
     tmp_path: Path,
 ) -> None:
     initialize_workspace(tmp_path, template="priority-capitals")
-    config = load_config(tmp_path / "rdfcards.toml")
+    config = load_config(tmp_path / "graphcards.toml")
     deck = config.deck("priority-capitals")
     presentations = execute_presentations(load_graph(config.sources), deck)
     by_front = {str(presentation.front): presentation for presentation in presentations.values()}
@@ -69,6 +74,43 @@ def test_priority_capitals_template_exhausts_tiers_and_keeps_correct_answer(
     selected = {str(choice) for choice in germany.selected_choices(random.Random(0))}
     assert {"Berlin", "Paris", "Rome"} <= selected
     assert len(selected & {"Madrid", "Lisbon"}) == 1
+
+
+def test_ordered_planets_template_renders_a_bounded_completion_window(tmp_path: Path) -> None:
+    initialize_workspace(tmp_path, template="ordered-planets")
+    config = load_config(tmp_path / "graphcards.toml")
+    deck = config.deck("planet-order")
+    presentations = execute_presentations(load_graph(config.sources), deck)
+
+    mars = next(
+        presentation
+        for presentation in presentations.values()
+        if presentation.back == Literal("Mars")
+    )
+    assert isinstance(mars, OrderedListPresentation)
+    assert mars.front == Literal("…\n2. Venus\n3. Earth\n4. ?\n5. Jupiter\n6. Saturn\n…")
+
+
+def test_analogy_capitals_template_renders_both_hide_modes(tmp_path: Path) -> None:
+    initialize_workspace(tmp_path, template="analogy-capitals")
+    config = load_config(tmp_path / "graphcards.toml")
+    deck = config.deck("capital-analogies")
+    presentations = execute_presentations(load_graph(config.sources), deck)
+
+    object_card = next(
+        presentation
+        for presentation in presentations.values()
+        if presentation.back == Literal("Paris")
+    )
+    subject_card = next(
+        presentation
+        for presentation in presentations.values()
+        if presentation.back == Literal("Germany")
+    )
+    assert isinstance(object_card, AnalogyPresentation)
+    assert object_card.front == Literal("Germany capital of Berlin :: France capital of ?")
+    assert isinstance(subject_card, AnalogyPresentation)
+    assert subject_card.front == Literal("France capital of Paris :: ? capital of Berlin")
 
 
 def test_sync_is_idempotent_and_entities_are_shared_across_decks(config: AppConfig) -> None:

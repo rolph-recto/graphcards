@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rdfcards.config import load_config
+from graphcards.config import load_config
 from tests.web.support import exchange, make_test_hub, start_session
 
 
@@ -25,7 +25,7 @@ def test_web_study_renders_analogy_front_then_labelled_answer(tmp_path: Path) ->
         """,
         encoding="utf-8",
     )
-    config_path = tmp_path / "rdfcards.toml"
+    config_path = tmp_path / "graphcards.toml"
     config_path.write_text(
         'state_path = "state.sqlite3"\n'
         '[[decks]]\nname = "analogy"\ntarget = "triple"\nkind = "analogy"\n'

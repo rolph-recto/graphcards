@@ -1,0 +1,23 @@
+state_path = ".graphcards/state.sqlite3"
+display_timezone = "UTC"
+sources = ["data/knowledge.ttl"]
+
+[fsrs]
+desired_retention = 0.9
+maximum_interval = 36500
+learning_steps_minutes = [1, 10]
+relearning_steps_minutes = [10]
+enable_fuzzing = true
+
+[[decks]]
+name = "capitals-basic"
+target = "triple"
+kind = "basic"
+query = "queries/capitals-basic.rq"
+
+[[decks]]
+name = "capitals-choice"
+target = "entity"
+kind = "multiple_choice"
+query = "queries/capitals-choice.rq"
+max_choices = 4

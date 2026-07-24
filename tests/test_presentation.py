@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from rdflib import Graph, Literal, URIRef
 
-from rdfcards.decks import (
+from graphcards.decks import (
     BasicDeck,
     BasicPresentation,
     DeckDefinition,
@@ -15,9 +15,9 @@ from rdfcards.decks import (
     OrderedListDeck,
     OrderedListPresentation,
 )
-from rdfcards.errors import PresentationError
-from rdfcards.models import CardKey, TargetKind
-from rdfcards.presentation import execute_presentations
+from graphcards.errors import PresentationError
+from graphcards.models import CardKey, TargetKind
+from graphcards.presentation import execute_presentations
 
 PREFIX = """
 PREFIX ex: <https://example.org/>

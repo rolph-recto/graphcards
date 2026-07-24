@@ -1,30 +1,35 @@
-# RDFCards
+# GraphCards
 
-RDFCards is a local flashcard program in which the thing being learned is either an RDF triple
+GraphCards is a local flashcard program in which the thing being learned is either an RDF triple
 or an IRI-identified RDF entity. SPARQL queries define how each card is presented. The same
 triple or entity has one FSRS schedule even when several decks present it differently.
 
 ## Install and try it
 
-RDFCards requires Python 3.14. This repository uses
+GraphCards requires Python 3.14. This repository uses
 [uv](https://docs.astral.sh/uv/):
 
 ```console
 uv sync
-uv run rdfcards init demo
-uv run rdfcards templates
-uv run rdfcards init capitals-demo --template capitals
-uv run rdfcards init priority-demo --template priority-capitals
+uv run graphcards init demo
+uv run graphcards templates
+uv run graphcards init capitals-demo --template capitals
+uv run graphcards init priority-demo --template priority-capitals
+uv run graphcards init planets-demo --template ordered-planets
+uv run graphcards init analogy-demo --template analogy-capitals
 ```
 
-`init` requires a destination and creates an empty `rdfcards.toml` with no sources or decks.
+`init` requires a destination and creates an empty `graphcards.toml` with no sources or decks.
 It refuses to overwrite an existing configuration. Add your RDF sources, presentation queries,
 and deck definitions before validating or studying the workspace. The optional `--template NAME`
-flag creates a bundled workspace template instead. Run `rdfcards templates` to list the names
+flag creates a bundled workspace template instead. Run `graphcards templates` to list the names
 available in the installed package; `capitals` provides working triple-backed
 basic cards and entity-backed multiple-choice cards. `priority-capitals` is a
 focused multiple-choice example with five candidates, four displayed choices,
 several priority tiers, and a cutoff tie.
+`ordered-planets` demonstrates ordered-list completion cards with a bounded
+window, and `analogy-capitals` demonstrates analogy cards with both hidden
+subjects and hidden objects.
 
 ## Configuration
 
@@ -32,7 +37,7 @@ Paths are relative to the TOML file, not to the process's working directory.
 Empty `sources` and `decks` arrays are valid.
 
 ```toml
-state_path = ".rdfcards/state.sqlite3"
+state_path = ".graphcards/state.sqlite3"
 display_timezone = "America/New_York"
 sources = ["data/knowledge.ttl"]
 
@@ -110,10 +115,10 @@ have higher priority. Duplicate rows for the same choice must agree on both corr
 effective priority.
 
 Multiple-choice decks accept `max_choices`, a strict integer of at least two that defaults to
-four. It counts the correct answer as well as distractors. RDFCards validates the complete query
+four. It counts the correct answer as well as distractors. GraphCards validates the complete query
 result, always includes the correct answer, and then fills the remaining slots by exhausting
 higher-priority distractor tiers before considering lower-priority tiers. Ties within a tier are
-randomized before RDFCards fills the available slots. It then separately shuffles the full
+randomized before GraphCards fills the available slots. It then separately shuffles the full
 retained set, including the correct answer, for display. Repeated presentations draw from the
 study session's continuing random-number stream, so a cutoff tie and the displayed order can
 vary from one render to the next. If the query returns fewer choices than the configured maximum,
@@ -166,7 +171,7 @@ typed configuration and query contract; override execution metadata or `group()`
 new kind needs different behavior.
 
 ```python
-from rdfcards.decks import BasicDeck
+from graphcards.decks import BasicDeck
 
 
 class FullQueryBasicDeck(BasicDeck):
@@ -239,16 +244,16 @@ that state is restored. Changing a triple term or entity IRI creates a new card.
 share a schedule across triple decks, and matching entities share one across entity decks; triple
 and entity schedules never merge.
 
-RDFCards uses schema v4 state and migrates schema v3 databases in place. The additive migration
+GraphCards uses schema v4 state and migrates schema v3 databases in place. The additive migration
 does not rewrite cards or reviews; existing memberships start unsuspended. Other schema versions
-remain unsupported. A schema v4 database cannot be opened by an older RDFCards version, so make a
+remain unsupported. A schema v4 database cannot be opened by an older GraphCards version, so make a
 copy of important state before upgrading.
 
 ## How synchronization works
 
 ```console
-rdfcards --config rdfcards.toml sync
-rdfcards --config rdfcards.toml sync --deck capitals-basic
+graphcards --config graphcards.toml sync
+graphcards --config graphcards.toml sync --deck capitals-basic
 ```
 
 `sync` loads all configured RDF sources into one graph and executes the presentation query for
@@ -333,15 +338,15 @@ events; resuming clears the reason and does not add or alter review history.
 ## Commands
 
 ```text
-rdfcards [-c PATH] init DIRECTORY [--template NAME]
-rdfcards [-c PATH] templates
-rdfcards [-c PATH] validate [--deck NAME]
-rdfcards [-c PATH] sync [--deck NAME]
-rdfcards [-c PATH] status [--deck NAME] [--full]
-rdfcards [-c PATH] study NAME [--limit N]
-rdfcards [-c PATH] suspend DECK CARD_ID [--reason TEXT]
-rdfcards [-c PATH] resume DECK CARD_ID
-rdfcards [-c PATH] serve
+graphcards [-c PATH] init DIRECTORY [--template NAME]
+graphcards [-c PATH] templates
+graphcards [-c PATH] validate [--deck NAME]
+graphcards [-c PATH] sync [--deck NAME]
+graphcards [-c PATH] status [--deck NAME] [--full]
+graphcards [-c PATH] study NAME [--limit N]
+graphcards [-c PATH] suspend DECK CARD_ID [--reason TEXT]
+graphcards [-c PATH] resume DECK CARD_ID
+graphcards [-c PATH] serve
 ```
 
 `validate` does not create or modify study state. `status --full` follows each deck summary with
@@ -360,7 +365,7 @@ front, wait for Enter, reveal the back, and ask for one of the four FSRS ratings
 fronts include their priority-selected shuffled choices, ordered-list fronts include the bounded
 list window, and each back shows its configured answer.
 
-Run `serve` to open the Flask-based browser study interface. RDFCards synchronizes every
+Run `serve` to open the Flask-based browser study interface. GraphCards synchronizes every
 configured deck, binds its single-threaded local server to an automatically selected port on
 `127.0.0.1`, prints and opens the local URL, and keeps serving until Ctrl-C. The deck list shows
 current available and suspended counts and supports regular due-card study, reviewing recently

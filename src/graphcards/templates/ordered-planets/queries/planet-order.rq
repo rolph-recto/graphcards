@@ -1,0 +1,8 @@
+PREFIX ex: <https://example.org/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+SELECT ?entity ?group ?position ?label
+WHERE {
+  ?entity ex:planetOrder ?position ; rdfs:label ?label .
+  BIND(ex:planets AS ?group)
+}

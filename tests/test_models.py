@@ -5,8 +5,8 @@ from pydantic import ValidationError
 from rdflib import BNode, Literal, URIRef
 from rdflib.namespace import XSD
 
-from rdfcards.errors import PresentationError
-from rdfcards.models import CardKey, TargetKind
+from graphcards.errors import PresentationError
+from graphcards.models import CardKey, TargetKind
 
 EX = "https://example.org/"
 
@@ -22,6 +22,7 @@ def triple(object_: object = URIRef(EX + "o")) -> CardKey:
 def test_hash_is_stable_and_order_sensitive() -> None:
     first = triple()
     assert first.digest == triple().digest
+    assert first.digest == "dfbb3aa1d4034c83e3cf563f64aacfd4de6bfdc418f26facb0d5755fe99661d3"
     reversed_terms = CardKey.triple(*reversed(first.terms))
     assert first.digest != reversed_terms.digest
     assert len(first.digest) == 64

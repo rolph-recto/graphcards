@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 
 import pytest
 
-from rdfcards.web.study import StudyMode
+from graphcards.web.study import StudyMode
 from tests.web.support import FlaskHub, exchange, start_form
 
 

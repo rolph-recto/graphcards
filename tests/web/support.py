@@ -6,13 +6,13 @@ from urllib.parse import urlencode
 
 from flask import Flask
 
-from rdfcards.config import AppConfig
-from rdfcards.presentation import load_graph
-from rdfcards.storage import Repository, datetime_to_text
-from rdfcards.web import create_flask_app
-from rdfcards.web.controller import StudyController
-from rdfcards.web.server import LocalStudyServer
-from rdfcards.web.study import StudyMode, StudySession
+from graphcards.config import AppConfig
+from graphcards.presentation import load_graph
+from graphcards.storage import Repository, datetime_to_text
+from graphcards.web import create_flask_app
+from graphcards.web.controller import StudyController
+from graphcards.web.server import LocalStudyServer
+from graphcards.web.study import StudyMode, StudySession
 
 
 class FlaskHub:

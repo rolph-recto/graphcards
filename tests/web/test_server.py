@@ -6,9 +6,9 @@ import sqlite3
 
 import pytest
 
-import rdfcards.web.server as web_server_module
-from rdfcards.config import AppConfig
-from rdfcards.web import create_flask_app, create_web_server, run_server
+import graphcards.web.server as web_server_module
+from graphcards.config import AppConfig
+from graphcards.web import create_flask_app, create_web_server, run_server
 
 
 def test_package_exports_public_web_entry_points() -> None:

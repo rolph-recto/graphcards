@@ -11,12 +11,12 @@ import pytest
 from fsrs import Rating
 from rdflib import Literal, URIRef
 
-import rdfcards.web.app as web_app_module
-from rdfcards.config import AppConfig
-from rdfcards.decks import BasicPresentation
-from rdfcards.models import CardKey
-from rdfcards.storage import datetime_to_text, utc_now
-from rdfcards.web.study import StudyMode
+import graphcards.web.app as web_app_module
+from graphcards.config import AppConfig
+from graphcards.decks import BasicPresentation
+from graphcards.models import CardKey
+from graphcards.storage import datetime_to_text, utc_now
+from graphcards.web.study import StudyMode
 from tests.web.support import (
     FlaskHub,
     exchange,

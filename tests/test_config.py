@@ -5,22 +5,22 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from rdfcards.config import FsrsSettings, load_config
-from rdfcards.decks import (
+from graphcards.config import FsrsSettings, load_config
+from graphcards.decks import (
     BasicDeck,
     DeckDefinition,
     MultipleChoiceDeck,
     OrderedListDeck,
     Presentation,
 )
-from rdfcards.errors import ConfigError
-from rdfcards.models import CardKey, TargetKind
+from graphcards.errors import ConfigError
+from graphcards.models import CardKey, TargetKind
 
 
 def test_paths_are_relative_to_config(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(workspace.parent)
-    config = load_config(workspace / "rdfcards.toml")
-    assert config.state_path == workspace / ".rdfcards" / "state.sqlite3"
+    config = load_config(workspace / "graphcards.toml")
+    assert config.state_path == workspace / ".graphcards" / "state.sqlite3"
     assert config.sources == (workspace / "data" / "knowledge.ttl",)
     assert config.deck("capitals-basic").query_path == workspace / "queries" / "capitals-basic.rq"
     assert config.deck("capitals-basic").target is TargetKind.TRIPLE
@@ -59,14 +59,14 @@ def test_paths_are_relative_to_config(workspace: Path, monkeypatch: pytest.Monke
     ],
 )
 def test_invalid_config_is_rejected(tmp_path: Path, body: str, message: str) -> None:
-    path = tmp_path / "rdfcards.toml"
+    path = tmp_path / "graphcards.toml"
     path.write_text(body, encoding="utf-8")
     with pytest.raises(ConfigError, match=message):
         load_config(path)
 
 
 def test_empty_config_is_valid(tmp_path: Path) -> None:
-    path = tmp_path / "rdfcards.toml"
+    path = tmp_path / "graphcards.toml"
     path.write_text("", encoding="utf-8")
     config = load_config(path)
     assert config.sources == ()
@@ -74,7 +74,7 @@ def test_empty_config_is_valid(tmp_path: Path) -> None:
 
 
 def test_display_timezone_is_validated(tmp_path: Path) -> None:
-    path = tmp_path / "rdfcards.toml"
+    path = tmp_path / "graphcards.toml"
     path.write_text('display_timezone = "America/New_York"\n', encoding="utf-8")
 
     config = load_config(path)
@@ -147,7 +147,7 @@ def test_unknown_deck_lists_available(config: object) -> None:
 
 
 def test_unknown_configuration_fields_are_rejected(tmp_path: Path) -> None:
-    path = tmp_path / "rdfcards.toml"
+    path = tmp_path / "graphcards.toml"
     path.write_text(
         'sources=["data.ttl"]\nunknown=true\n'
         '[[decks]]\nname="x"\ntarget="triple"\nkind="basic"\nquery="x.rq"\n',
@@ -200,7 +200,7 @@ def test_basic_deck_rejects_max_choices(tmp_path: Path) -> None:
 
 
 def test_invalid_toml_max_choices_is_a_config_error(tmp_path: Path) -> None:
-    path = tmp_path / "rdfcards.toml"
+    path = tmp_path / "graphcards.toml"
     path.write_text(
         '[[decks]]\nname="choices"\ntarget="entity"\nkind="multiple_choice"\n'
         'query="choices.rq"\nmax_choices=1\n',

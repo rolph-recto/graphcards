@@ -6,8 +6,8 @@ import pytest
 from pydantic import ValidationError
 from rdflib import Literal, URIRef
 
-from rdfcards.decks import BasicPresentation, ChoiceOption, MultipleChoicePresentation
-from rdfcards.models import CardKey
+from graphcards.decks import BasicPresentation, ChoiceOption, MultipleChoicePresentation
+from graphcards.models import CardKey
 
 
 def card_key() -> CardKey:

@@ -8,19 +8,19 @@ import pytest
 from pydantic import ValidationError
 from rdflib import Graph, Literal, URIRef
 
-from rdfcards.app import StudyService
-from rdfcards.cli import _rate_presentation
-from rdfcards.config import FsrsSettings, load_config
-from rdfcards.decks import (
+from graphcards.app import StudyService
+from graphcards.cli import _rate_presentation
+from graphcards.config import FsrsSettings, load_config
+from graphcards.decks import (
     AnalogyDeck,
     AnalogyPresentation,
     DeckDefinition,
     Presentation,
 )
-from rdfcards.errors import ConfigError, PresentationError
-from rdfcards.models import CardKey, TargetKind
-from rdfcards.presentation import execute_presentations
-from rdfcards.storage import Repository
+from graphcards.errors import ConfigError, PresentationError
+from graphcards.models import CardKey, TargetKind
+from graphcards.presentation import execute_presentations
+from graphcards.storage import Repository
 
 PREFIX = """
 PREFIX ex: <https://example.org/>
@@ -401,7 +401,7 @@ def test_analogy_uses_generic_cli_reveal_and_rate_flow() -> None:
 
 
 def test_analogy_configuration_requires_triple_target(tmp_path: Path) -> None:
-    path = tmp_path / "rdfcards.toml"
+    path = tmp_path / "graphcards.toml"
     path.write_text(
         '[[decks]]\nname="analogy"\ntarget="entity"\nkind="analogy"\nquery="query.rq"\n',
         encoding="utf-8",

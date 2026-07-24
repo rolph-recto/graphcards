@@ -1,0 +1,4 @@
+state_path = ".graphcards/state.sqlite3"
+display_timezone = "UTC"
+sources = []
+decks = []

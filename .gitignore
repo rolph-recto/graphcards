@@ -8,6 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
-.rdfcards/
+.graphcards/
 .pytest_cache/
 .ruff_cache/

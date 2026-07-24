@@ -9,20 +9,20 @@ import pytest
 from fsrs import Rating
 from rdflib import Literal
 
-from rdfcards.app import StudyService
-from rdfcards.config import AppConfig
-from rdfcards.decks import (
+from graphcards.app import StudyService
+from graphcards.config import AppConfig
+from graphcards.decks import (
     BasicPresentation,
     ChoiceOption,
     MultipleChoicePresentation,
     OrderedListDeck,
 )
-from rdfcards.errors import PresentationError
-from rdfcards.models import TargetKind
-from rdfcards.presentation import load_graph
-from rdfcards.storage import Repository, utc_now
-from rdfcards.web.controller import StudyController
-from rdfcards.web.study import StudyMode, StudySession
+from graphcards.errors import PresentationError
+from graphcards.models import TargetKind
+from graphcards.presentation import load_graph
+from graphcards.storage import Repository, utc_now
+from graphcards.web.controller import StudyController
+from graphcards.web.study import StudyMode, StudySession
 from tests.web.support import (
     FlaskHub,
     current_form,

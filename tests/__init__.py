@@ -1,1 +1,1 @@
-"""RDFCards test suite."""
+"""GraphCards test suite."""

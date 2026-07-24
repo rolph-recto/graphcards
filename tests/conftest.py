@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from rdfcards.config import AppConfig, load_config
-from rdfcards.scaffold import initialize_workspace
-from rdfcards.storage import Repository
+from graphcards.config import AppConfig, load_config
+from graphcards.scaffold import initialize_workspace
+from graphcards.storage import Repository
 
 
 @pytest.fixture
@@ -17,7 +17,7 @@ def workspace(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def config(workspace: Path) -> AppConfig:
-    return load_config(workspace / "rdfcards.toml")
+    return load_config(workspace / "graphcards.toml")
 
 
 @pytest.fixture

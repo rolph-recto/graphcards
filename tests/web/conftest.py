@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from rdfcards.config import AppConfig
+from graphcards.config import AppConfig
 from tests.web.support import make_test_hub
 
 

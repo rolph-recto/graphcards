@@ -9,10 +9,10 @@ import pytest
 from fsrs import Rating
 from rdflib import Literal, URIRef
 
-from rdfcards.app import StudyService
-from rdfcards.cli import _rate_presentation, _run_study, build_parser, main
-from rdfcards.config import AppConfig, load_config
-from rdfcards.decks import (
+from graphcards.app import StudyService
+from graphcards.cli import _rate_presentation, _run_study, build_parser, main
+from graphcards.config import AppConfig, load_config
+from graphcards.decks import (
     BasicDeck,
     BasicPresentation,
     ChoiceOption,
@@ -20,8 +20,8 @@ from rdfcards.decks import (
     OrderedListDeck,
     Presentation,
 )
-from rdfcards.models import CardKey, TargetKind
-from rdfcards.storage import Repository
+from graphcards.models import CardKey, TargetKind
+from graphcards.storage import Repository
 
 
 class NoShuffleRandom(random.Random):
@@ -203,13 +203,13 @@ def test_init_creates_workspace_and_refuses_overwrite(tmp_path: Path) -> None:
     destination = tmp_path / "demo"
     code, output, error = run_cli("init", str(destination))
     assert code == 0
-    assert "Created empty RDFCards workspace" in output
+    assert "Created empty GraphCards workspace" in output
     assert not error
-    assert (destination / "rdfcards.toml").is_file()
-    config = load_config(destination / "rdfcards.toml")
+    assert (destination / "graphcards.toml").is_file()
+    config = load_config(destination / "graphcards.toml")
     assert config.sources == ()
     assert config.decks == ()
-    assert [path.name for path in destination.iterdir()] == ["rdfcards.toml"]
+    assert [path.name for path in destination.iterdir()] == ["graphcards.toml"]
 
     code, _, error = run_cli("init", str(destination))
     assert code == 2
@@ -223,7 +223,7 @@ def test_init_creates_named_template(tmp_path: Path) -> None:
     assert code == 0
     assert "template 'capitals'" in output
     assert error == ""
-    config = load_config(destination / "rdfcards.toml")
+    config = load_config(destination / "graphcards.toml")
     assert len(config.sources) == 1
     assert {deck.name for deck in config.decks} == {"capitals-basic", "capitals-choice"}
     assert (destination / "data" / "knowledge.ttl").is_file()
@@ -243,7 +243,7 @@ def test_init_creates_priority_capitals_example(tmp_path: Path) -> None:
     assert code == 0
     assert "template 'priority-capitals'" in output
     assert error == ""
-    config_path = destination / "rdfcards.toml"
+    config_path = destination / "graphcards.toml"
     config = load_config(config_path)
     deck = config.deck("priority-capitals")
     assert deck.max_choices == 4
@@ -253,6 +253,55 @@ def test_init_creates_priority_capitals_example(tmp_path: Path) -> None:
     code, output, error = run_cli("--config", str(config_path), "validate")
     assert code == 0
     assert output == "priority-capitals: valid (2 cards)\n"
+    assert error == ""
+
+
+def test_init_creates_ordered_planets_example(tmp_path: Path) -> None:
+    destination = tmp_path / "planets-demo"
+    code, output, error = run_cli(
+        "init",
+        str(destination),
+        "--template",
+        "ordered-planets",
+    )
+
+    assert code == 0
+    assert "template 'ordered-planets'" in output
+    assert error == ""
+    config_path = destination / "graphcards.toml"
+    config = load_config(config_path)
+    deck = config.deck("planet-order")
+    assert deck.window_size == 5
+    assert (destination / "README.md").is_file()
+    assert (destination / "queries" / "planet-order.rq").is_file()
+
+    code, output, error = run_cli("--config", str(config_path), "validate")
+    assert code == 0
+    assert output == "planet-order: valid (8 cards)\n"
+    assert error == ""
+
+
+def test_init_creates_analogy_capitals_example(tmp_path: Path) -> None:
+    destination = tmp_path / "analogy-demo"
+    code, output, error = run_cli(
+        "init",
+        str(destination),
+        "--template",
+        "analogy-capitals",
+    )
+
+    assert code == 0
+    assert "template 'analogy-capitals'" in output
+    assert error == ""
+    config_path = destination / "graphcards.toml"
+    config = load_config(config_path)
+    config.deck("capital-analogies")
+    assert (destination / "README.md").is_file()
+    assert (destination / "queries" / "capital-analogies.rq").is_file()
+
+    code, output, error = run_cli("--config", str(config_path), "validate")
+    assert code == 0
+    assert output == "capital-analogies: valid (6 cards)\n"
     assert error == ""
 
 
@@ -267,7 +316,7 @@ def test_templates_lists_names_without_loading_config() -> None:
     code, output, error = run_cli("--config", "missing.toml", "templates")
 
     assert code == 0
-    assert output == "capitals\npriority-capitals\n"
+    assert output == "analogy-capitals\ncapitals\nordered-planets\npriority-capitals\n"
     assert error == ""
 
 
@@ -282,14 +331,14 @@ def test_template_init_checks_all_destinations_before_writing(tmp_path: Path) ->
     assert code == 2
     assert "refusing to overwrite" in error
     assert existing.read_text(encoding="utf-8") == "keep"
-    assert not (destination / "rdfcards.toml").exists()
+    assert not (destination / "graphcards.toml").exists()
     assert not (destination / "queries").exists()
 
 
 def test_empty_workspace_commands_succeed(tmp_path: Path) -> None:
     destination = tmp_path / "empty"
     assert run_cli("init", str(destination))[0] == 0
-    config_path = str(destination / "rdfcards.toml")
+    config_path = str(destination / "graphcards.toml")
 
     for command in ("validate", "sync", "status"):
         code, output, error = run_cli("--config", config_path, command)
@@ -299,7 +348,7 @@ def test_empty_workspace_commands_succeed(tmp_path: Path) -> None:
 
 
 def test_validate_sync_and_status(workspace: Path) -> None:
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
     code, output, _ = run_cli("--config", config_path, "validate")
     assert code == 0
     assert "capitals-basic: valid (2 cards)" in output
@@ -315,7 +364,7 @@ def test_validate_sync_and_status(workspace: Path) -> None:
 
 
 def test_full_status_shows_card_details_for_selected_deck(workspace: Path) -> None:
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
     assert run_cli("--config", config_path, "sync")[0] == 0
 
     code, output, error = run_cli(
@@ -339,7 +388,7 @@ def test_full_status_shows_card_details_for_selected_deck(workspace: Path) -> No
 
 
 def test_full_status_shows_each_deck_and_handles_empty_state(workspace: Path) -> None:
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
 
     code, output, error = run_cli("--config", config_path, "status", "--full")
 
@@ -351,7 +400,7 @@ def test_full_status_shows_each_deck_and_handles_empty_state(workspace: Path) ->
 
 
 def test_full_status_reflects_a_persisted_review(workspace: Path) -> None:
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
     code, _, _ = run_cli(
         "--config",
         config_path,
@@ -438,7 +487,7 @@ def test_ordered_list_study_uses_shared_cli_reveal_and_rating_flow(
         """,
         encoding="utf-8",
     )
-    source_config = load_config(workspace / "rdfcards.toml")
+    source_config = load_config(workspace / "graphcards.toml")
     deck = OrderedListDeck(
         name="ordered",
         target=TargetKind.ENTITY,
@@ -466,7 +515,7 @@ def test_ordered_list_study_uses_shared_cli_reveal_and_rating_flow(
 
 
 def test_basic_study_records_rating(workspace: Path, count_reviews) -> None:
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
     code, output, error = run_cli(
         "--config",
         config_path,
@@ -494,15 +543,15 @@ def test_serve_dispatches_to_web_hub(
     def fake_server(config, **_kwargs):
         calls.append(config.state_path)
 
-    monkeypatch.setattr("rdfcards.cli.run_server", fake_server)
+    monkeypatch.setattr("graphcards.cli.run_server", fake_server)
     code, output, error = run_cli(
         "--config",
-        str(workspace / "rdfcards.toml"),
+        str(workspace / "graphcards.toml"),
         "serve",
     )
 
     assert code == 0
-    assert calls == [workspace / ".rdfcards" / "state.sqlite3"]
+    assert calls == [workspace / ".graphcards" / "state.sqlite3"]
     assert output == ""
     assert error == ""
 
@@ -519,10 +568,10 @@ def test_interrupting_serve_has_server_message(
     def interrupt_server(*_args, **_kwargs):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("rdfcards.cli.run_server", interrupt_server)
+    monkeypatch.setattr("graphcards.cli.run_server", interrupt_server)
     code, output, error = run_cli(
         "--config",
-        str(workspace / "rdfcards.toml"),
+        str(workspace / "graphcards.toml"),
         "serve",
     )
 
@@ -532,7 +581,7 @@ def test_interrupting_serve_has_server_message(
 
 
 def test_multiple_choice_study_records_manual_rating(workspace: Path) -> None:
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
     code, output, error = run_cli(
         "--config",
         config_path,
@@ -561,7 +610,7 @@ def test_multiple_choice_study_records_manual_rating(workspace: Path) -> None:
 def test_quit_does_not_review_current_card(
     workspace: Path, count_reviews, answers: tuple[str, ...]
 ) -> None:
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
     code, output, _ = run_cli(
         "--config",
         config_path,
@@ -580,7 +629,7 @@ def test_quit_does_not_review_current_card(
 def test_multiple_choice_quit_does_not_review_current_card(
     workspace: Path, count_reviews, answers: tuple[str, ...]
 ) -> None:
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
     code, output, _ = run_cli(
         "--config",
         config_path,
@@ -609,7 +658,7 @@ def test_interrupt_does_not_review_current_card(
         except StopIteration:
             raise KeyboardInterrupt from None
 
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
     code, _, error = run_cli(
         "--config",
         config_path,
@@ -638,7 +687,7 @@ def test_end_of_input_does_not_review_current_card(
         except StopIteration:
             raise EOFError from None
 
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
     code, _, error = run_cli(
         "--config",
         config_path,
@@ -654,7 +703,7 @@ def test_end_of_input_does_not_review_current_card(
 
 
 def test_empty_due_queue(workspace: Path) -> None:
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
     code, _, _ = run_cli(
         "--config",
         config_path,
@@ -672,7 +721,7 @@ def test_empty_due_queue(workspace: Path) -> None:
 
 
 def test_status_uses_persisted_state_when_source_is_unavailable(workspace: Path) -> None:
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
     assert run_cli("--config", config_path, "sync")[0] == 0
     (workspace / "data" / "knowledge.ttl").unlink()
     code, output, error = run_cli("--config", config_path, "status")
@@ -684,7 +733,7 @@ def test_status_uses_persisted_state_when_source_is_unavailable(workspace: Path)
 def test_cli_suspends_and_resumes_membership_without_loading_sources(
     workspace: Path,
 ) -> None:
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
     assert run_cli("--config", config_path, "sync")[0] == 0
     config = load_config(config_path)
     with Repository(config.state_path) as repository:
@@ -733,7 +782,7 @@ def test_cli_suspends_and_resumes_membership_without_loading_sources(
 
 
 def test_cli_suspension_rejects_invalid_or_unknown_card_ids(workspace: Path) -> None:
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
     with pytest.raises(SystemExit, match="2"):
         build_parser().parse_args(["suspend", "capitals-basic", "not-a-card"])
 
@@ -764,7 +813,7 @@ def test_cli_suspension_rejects_terminal_control_characters(
     workspace: Path,
     reason: str,
 ) -> None:
-    config_path = str(workspace / "rdfcards.toml")
+    config_path = str(workspace / "graphcards.toml")
     assert run_cli("--config", config_path, "sync")[0] == 0
     config = load_config(config_path)
     with Repository(config.state_path) as repository:
@@ -793,7 +842,7 @@ def test_missing_config_has_actionable_error(tmp_path: Path) -> None:
 
 
 def test_fsrs_step_overflow_has_actionable_cli_error(workspace: Path) -> None:
-    config_path = workspace / "rdfcards.toml"
+    config_path = workspace / "graphcards.toml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
             "learning_steps_minutes = [1, 10]",
