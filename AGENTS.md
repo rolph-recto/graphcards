@@ -15,5 +15,9 @@ uv build
 
 - Tests should assert behavior, not check backwards compatibility.
 
+- When completing a bean, commit its bean file together with the implementation changes that
+  deliver it. Prefix the commit subject with the bean ID, for example:
+  `[graphcards-xxxx] Implement the feature`.
+
 - Before finishing, inspect `git status` and avoid staging generated workspaces, databases, build
   artifacts, caches, or unrelated user files.
