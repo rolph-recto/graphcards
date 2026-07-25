@@ -17,6 +17,7 @@ graphcards = "graphcards.cli:main"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6,<7",
     "pytest>=9,<10",
     "ruff>=0.14,<1",
 ]

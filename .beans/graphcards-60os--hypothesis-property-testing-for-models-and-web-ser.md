@@ -1,10 +1,11 @@
 ---
 # graphcards-60os
 title: Hypothesis property testing for models and web server
-status: todo
+status: completed
 type: task
+priority: normal
 created_at: 2026-07-24T20:09:55Z
-updated_at: 2026-07-24T20:09:55Z
+updated_at: 2026-07-25T02:48:04Z
 ---
 
 Add Hypothesis-based property testing for GraphCards data models, persistence boundaries, and web server behavior.
@@ -36,3 +37,11 @@ Web-server properties:
 - Valid requests return only documented status classes and preserve repository invariants across repeated or stale requests.
 
 Prefer properties that assert domain and HTTP behavior rather than exact HTML layout. Keep focused example-based tests for specific presentation wording and route details.
+
+## Summary of Changes
+
+- Added Hypothesis 6 development dependency and updated uv.lock.
+- Added bounded deterministic shared strategies for RDF terms, card models, configuration, persistence, and web inputs.
+- Added property suites covering model/config validation, deck generation/rendering, storage synchronization/reviews/suspension, and web transport/study lifecycle/security behavior.
+- Hardened N3 reconstruction against non-canonical malformed terms and translated missing target bindings into PresentationError.
+- Verified with 295 tests, ruff check, ruff format check, uv lock --check, and uv build.

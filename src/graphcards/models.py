@@ -103,9 +103,14 @@ class CardKey(RdfModel):
 
     @classmethod
     def from_bindings(cls, target: TargetKind, values: Mapping[str, Identifier]) -> CardKey:
-        if target is TargetKind.ENTITY:
-            return cls.entity(values["entity"])
-        return cls.triple(values["subject"], values["predicate"], values["object"])
+        try:
+            if target is TargetKind.ENTITY:
+                return cls.entity(values["entity"])
+            return cls.triple(values["subject"], values["predicate"], values["object"])
+        except KeyError as error:
+            raise PresentationError(
+                f"missing binding for {target.value} card identity: ?{error.args[0]}"
+            ) from error
 
     @property
     def n3_terms(self) -> tuple[str, ...]:
@@ -136,7 +141,9 @@ class CardKey(RdfModel):
             terms = tuple(from_n3(value) for value in values)
         except Exception as error:
             raise StorageError("stored card identity contains an invalid N3 term") from error
-        if any(term is None for term in terms):
+        if any(
+            term is None or term.n3() != value for term, value in zip(terms, values, strict=True)
+        ):
             raise StorageError("stored card identity contains an invalid N3 term")
         try:
             return cls(target_kind=target, terms=terms)  # type: ignore[arg-type]
