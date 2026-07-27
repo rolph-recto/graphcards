@@ -1,4 +1,4 @@
-"""Create empty or template-based GraphCards workspaces from package resources."""
+"""Create empty or template-based JSON-deck GraphCards workspaces."""
 
 from __future__ import annotations
 

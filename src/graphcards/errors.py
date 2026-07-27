@@ -7,7 +7,7 @@ class ConfigError(GraphCardsError):
 
 
 class PresentationError(GraphCardsError):
-    """A presentation query or its results are invalid."""
+    """A generated exercise or its presentation is invalid."""
 
 
 class StorageError(GraphCardsError):

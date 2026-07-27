@@ -10,7 +10,7 @@ from http import HTTPStatus
 from fsrs import Rating
 
 from graphcards.app import StudyService
-from graphcards.decks import DeckDefinition
+from graphcards.decks import Deck
 from graphcards.errors import PresentationError, StaleReviewError
 from graphcards.models import CardView
 from graphcards.storage import StoredCard, utc_now
@@ -61,7 +61,7 @@ class StudySession:
 
     def __init__(
         self,
-        deck: DeckDefinition,
+        deck: Deck,
         service: StudyService,
         cards: list[StoredCard],
         mode: StudyMode,

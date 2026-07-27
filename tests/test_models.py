@@ -1,44 +1,45 @@
 from __future__ import annotations
 
 import pytest
-from rdflib import BNode, Literal, URIRef
+from pydantic import ValidationError
 
-from graphcards.errors import PresentationError
-from graphcards.models import CardKey
-
-EX = "https://example.org/"
+from graphcards.models import CardKey, CardView, Exercise
 
 
-def triple(object_: object = URIRef(EX + "o")) -> CardKey:
-    return CardKey.triple(
-        URIRef(EX + "s"),
-        URIRef(EX + "p"),
-        object_,  # type: ignore[arg-type]
-    )
+def test_card_key_digest_is_stable_and_order_sensitive() -> None:
+    first = CardKey.exercise("deck", "generator", "entity")
+    same = CardKey.exercise("deck", "generator", "entity")
+    changed = CardKey.exercise("deck", "entity", "generator")
+
+    assert first.digest == same.digest
+    assert first.digest != changed.digest
 
 
-def test_hash_is_stable_and_order_sensitive() -> None:
-    first = triple()
-    assert first.digest == triple().digest
-    assert first.digest == "dfbb3aa1d4034c83e3cf563f64aacfd4de6bfdc418f26facb0d5755fe99661d3"
-    reversed_terms = CardKey.triple(*reversed(first.terms))
-    assert first.digest != reversed_terms.digest
-    assert len(first.digest) == 64
+def test_card_key_length_prefixes_prevent_boundary_ambiguity() -> None:
+    assert CardKey.exercise("ab", "c", "d").digest != CardKey.exercise("a", "bc", "d").digest
 
 
-def test_length_prefixes_prevent_term_boundary_ambiguity() -> None:
-    first = CardKey.triple(URIRef(EX + "ab"), URIRef(EX + "c"), Literal("d"))
-    second = CardKey.triple(URIRef(EX + "a"), URIRef(EX + "bc"), Literal("d"))
-    assert first.digest != second.digest
+def test_exercise_rejects_identity_scope_mismatches() -> None:
+    key = CardKey.exercise("deck", "generator", "entity")
+
+    with pytest.raises(ValidationError, match="generator ID"):
+        Exercise(card_key=key, generator_id="other", target_id="entity")
+    with pytest.raises(ValidationError, match="target ID"):
+        Exercise(card_key=key, generator_id="generator", target_id="other")
 
 
-@pytest.mark.parametrize("position", ["subject", "object"])
-def test_blank_nodes_are_rejected(position: str) -> None:
-    values = {
-        "subject": URIRef(EX + "s"),
-        "predicate": URIRef(EX + "p"),
-        "object": URIRef(EX + "o"),
-    }
-    values[position] = BNode()
-    with pytest.raises(PresentationError, match="blank nodes"):
-        CardKey.triple(values["subject"], values["predicate"], values["object"])
+def test_card_view_preserves_rendered_whitespace() -> None:
+    key = CardKey.exercise("deck", "generator", "entity")
+
+    view = CardView(card_key=key, front="\n  front  \n", back="\nback\n")
+
+    assert view.front == "\n  front  \n"
+    assert view.back == "\nback\n"
+
+
+def test_domain_models_are_frozen() -> None:
+    key = CardKey.exercise("deck", "generator", "entity")
+    view = CardView(card_key=key, front="front", back="back")
+
+    with pytest.raises(ValidationError):
+        view.front = "changed"  # type: ignore[misc]

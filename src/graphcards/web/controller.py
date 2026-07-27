@@ -7,11 +7,9 @@ import secrets
 from datetime import datetime, timedelta
 from http import HTTPStatus
 
-from rdflib import Graph
-
 from graphcards.app import StudyService
 from graphcards.config import AppConfig
-from graphcards.decks import DeckDefinition
+from graphcards.decks import Deck
 from graphcards.errors import ConfigError
 from graphcards.storage import DeckStatus, Repository, utc_now
 from graphcards.web.status import HistoryRange, HistoryView, StatusCard, history_view
@@ -24,7 +22,6 @@ class StudyController:
     def __init__(
         self,
         config: AppConfig,
-        graph: Graph,
         repository: Repository,
         rng: random.Random,
     ) -> None:
@@ -33,7 +30,6 @@ class StudyController:
         self.rng = rng
         self.csrf_token = secrets.token_urlsafe(32)
         self.study_service = StudyService(
-            graph,
             repository,
             config.fsrs.create_scheduler(),
             rng,
@@ -43,13 +39,13 @@ class StudyController:
         for deck in config.decks:
             self.study_service.sync(deck, sync_time)
 
-    def deck_statuses(self) -> tuple[tuple[DeckDefinition, DeckStatus], ...]:
+    def deck_statuses(self) -> tuple[tuple[Deck, DeckStatus], ...]:
         now = utc_now()
         return tuple((deck, self.repository.status(deck.name, now)) for deck in self.config.decks)
 
     def card_statuses(
         self,
-        deck: DeckDefinition,
+        deck: Deck,
         now: datetime,
     ) -> tuple[StatusCard, ...]:
         """Load active schedules and derive their time-dependent FSRS metric."""
@@ -67,7 +63,7 @@ class StudyController:
 
     def card_history(
         self,
-        deck: DeckDefinition,
+        deck: Deck,
         selected_range: HistoryRange,
         now: datetime,
     ) -> HistoryView:

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% set wrapper_class = "study-shell" %}
-{% block title %}{{ session.deck.name }}{% endblock %}
-{% block masthead %}<p class="deck-name">{{ session.deck.name }}</p>{% endblock %}
+{% block title %}{{ session.deck.display_name }}{% endblock %}
+{% block masthead %}<p class="deck-name">{{ session.deck.display_name }}</p>{% endblock %}
 {% block content %}
   <nav class="study-nav"><a href="{{ url_for('index') }}">← All decks</a></nav>
   <article class="card">

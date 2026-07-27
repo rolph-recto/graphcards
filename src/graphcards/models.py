@@ -1,23 +1,22 @@
-"""Immutable domain models for RDF-backed cards and rendered views."""
+"""Immutable domain models for generated exercises and rendered views."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from enum import StrEnum
+import unicodedata
 from hashlib import sha256
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, ValidationError, ValidationInfo, model_validator
-from rdflib import BNode, Literal, URIRef
-from rdflib.term import Identifier
-from rdflib.util import from_n3
-
-from graphcards.errors import PresentationError, StorageError
-
-
-class TargetKind(StrEnum):
-    TRIPLE = "triple"
-    ENTITY = "entity"
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictStr,
+    StringConstraints,
+    ValidationError,
+    ValidationInfo,
+    model_validator,
+)
 
 
 def validation_message(error: ValidationError) -> str:
@@ -27,14 +26,8 @@ def validation_message(error: ValidationError) -> str:
     return message.removeprefix("Value error, ")
 
 
-class RdfModel(BaseModel):
-    """Frozen Pydantic base that permits RDFLib term objects."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid", frozen=True)
-
-
 class FrozenModel(BaseModel):
-    """Immutable, strict base for user configuration models."""
+    """Immutable, strict base for configuration and domain models."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -54,113 +47,74 @@ def resolve_config_path(value: object, info: ValidationInfo) -> Path:
     base = context.get("base")
     if not path.is_absolute() and isinstance(base, Path):
         path = base / path
-    return path.resolve()
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError) as error:
+        raise ValueError(f"could not resolve path: {error}") from error
 
 
-class CardKey(RdfModel):
-    """A validated global identity for one triple- or entity-backed FSRS card."""
+class CardKey(FrozenModel):
+    """Stable persistence identity composed from deck, generator, and entity IDs."""
 
-    target_kind: TargetKind
-    terms: tuple[Identifier, ...]
+    deck_id: StrictStr
+    generator_id: StrictStr
+    entity_id: StrictStr
 
     @model_validator(mode="after")
     def validate_identity(self) -> CardKey:
-        if self.target_kind is TargetKind.ENTITY:
-            if len(self.terms) != 1 or not isinstance(self.terms[0], URIRef):
-                raise ValueError("a learnable entity must be identified by one IRI")
-            return self
-        if len(self.terms) != 3:
-            raise ValueError("a triple card must contain exactly three RDF terms")
-        subject, predicate, object_ = self.terms
-        if isinstance(subject, BNode) or isinstance(object_, BNode):
-            raise ValueError(
-                "learnable triples cannot contain blank nodes; replace them with stable IRIs"
-            )
-        if not isinstance(subject, URIRef):
-            raise ValueError("a learnable triple subject must be an IRI")
-        if not isinstance(predicate, URIRef):
-            raise ValueError("a learnable triple predicate must be an IRI")
-        if not isinstance(object_, (URIRef, Literal)):
-            raise ValueError("a learnable triple object must be an IRI or literal")
+        if any(not value.strip() for value in (self.deck_id, self.generator_id, self.entity_id)):
+            raise ValueError("exercise identity parts must be non-blank strings")
+        if any(
+            unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"}
+            for value in self.identity_parts
+            for character in value
+        ):
+            raise ValueError("exercise identity parts must not contain control characters")
         return self
 
     @classmethod
-    def _create(cls, target: TargetKind, terms: tuple[Identifier, ...]) -> CardKey:
-        try:
-            return cls(target_kind=target, terms=terms)
-        except ValidationError as error:
-            # Query results are a presentation concern; callers should not need to
-            # understand Pydantic's error representation.
-            raise PresentationError(validation_message(error)) from error
-
-    @classmethod
-    def triple(cls, subject: Identifier, predicate: Identifier, object_: Identifier) -> CardKey:
-        return cls._create(TargetKind.TRIPLE, (subject, predicate, object_))
-
-    @classmethod
-    def entity(cls, entity: Identifier) -> CardKey:
-        return cls._create(TargetKind.ENTITY, (entity,))
-
-    @classmethod
-    def from_bindings(cls, target: TargetKind, values: Mapping[str, Identifier]) -> CardKey:
-        try:
-            if target is TargetKind.ENTITY:
-                return cls.entity(values["entity"])
-            return cls.triple(values["subject"], values["predicate"], values["object"])
-        except KeyError as error:
-            raise PresentationError(
-                f"missing binding for {target.value} card identity: ?{error.args[0]}"
-            ) from error
+    def exercise(cls, deck_id: str, generator_id: str, entity_id: str) -> CardKey:
+        return cls(deck_id=deck_id, generator_id=generator_id, entity_id=entity_id)
 
     @property
-    def n3_terms(self) -> tuple[str, ...]:
-        return tuple(term.n3() for term in self.terms)
+    def identity_parts(self) -> tuple[str, str, str]:
+        return self.deck_id, self.generator_id, self.entity_id
 
     @property
     def digest(self) -> str:
-        # Domain separation prevents an entity IRI from colliding with a triple
-        # containing the same lexical value. Length prefixes preserve term boundaries.
-        digest = sha256(f"graphcards:{self.target_kind.value}:v1\0".encode())
-        for value in self.n3_terms:
+        digest = sha256(b"graphcards:exercise:v1\0")
+        for value in self.identity_parts:
             encoded = value.encode("utf-8")
             digest.update(len(encoded).to_bytes(8, "big"))
             digest.update(encoded)
         return digest.hexdigest()
 
-    @property
-    def query_bindings(self) -> dict[str, Identifier]:
-        if self.target_kind is TargetKind.ENTITY:
-            return {"entity": self.terms[0]}
-        return dict(zip(("subject", "predicate", "object"), self.terms, strict=True))
 
-    @classmethod
-    def from_n3(cls, target: TargetKind, values: tuple[str, ...]) -> CardKey:
-        """Reconstruct an identity from storage and report corruption consistently."""
-
-        try:
-            terms = tuple(from_n3(value) for value in values)
-        except Exception as error:
-            raise StorageError("stored card identity contains an invalid N3 term") from error
-        if any(
-            term is None or term.n3() != value for term, value in zip(terms, values, strict=True)
-        ):
-            raise StorageError("stored card identity contains an invalid N3 term")
-        try:
-            return cls(target_kind=target, terms=terms)  # type: ignore[arg-type]
-        except ValidationError as error:
-            message = validation_message(error)
-            raise StorageError(f"stored card identity is invalid: {message}") from error
-
-
-class Card(RdfModel):
-    """Validated semantic data for one regenerable card."""
+class Card(FrozenModel):
+    """Validated semantic data for one regenerable exercise."""
 
     card_key: CardKey
 
 
-class CardView(RdfModel):
+class Exercise(FrozenModel):
+    """Validated semantic exercise data produced by a deck generator."""
+
+    card_key: CardKey
+    generator_id: StrictStr = Field(min_length=1)
+    target_id: StrictStr = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> Exercise:
+        if self.card_key.generator_id != self.generator_id:
+            raise ValueError("exercise generator ID does not match its card identity")
+        if self.card_key.entity_id != self.target_id:
+            raise ValueError("exercise target ID does not match its card identity")
+        return self
+
+
+class CardView(FrozenModel):
     """Learner-facing strings produced by a stateless presentation renderer."""
 
     card_key: CardKey
-    front: str
-    back: str
+    front: Annotated[str, StringConstraints(strip_whitespace=False)]
+    back: Annotated[str, StringConstraints(strip_whitespace=False)]

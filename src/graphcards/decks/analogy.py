@@ -1,188 +1,119 @@
-"""Relational analogy cards, generation, and rendering."""
+"""Entity-backed analogy exercise generator."""
 
 from __future__ import annotations
 
-import random
-from collections import defaultdict
-from collections.abc import Mapping
-from typing import Literal as TypingLiteral
+from typing import ClassVar, Literal
 
-from pydantic import ValidationError, field_validator, model_validator
-from rdflib import Literal
-from rdflib.namespace import XSD
-from rdflib.term import Identifier
+from pydantic import StrictStr, model_validator
 
-from graphcards.decks.base import DeckDefinition, TemplateSource
+from graphcards.decks.base import (
+    ExerciseGenerator,
+    ExerciseGeneratorContext,
+    _render_template,
+    _require_refs,
+)
 from graphcards.errors import PresentationError
-from graphcards.models import Card, CardKey, TargetKind, validation_message
+from graphcards.models import CardView, Exercise
+
+FRONT_TEMPLATE = (
+    "{{ source.data.get('front', source.data.get('prompt', "
+    "source.data.get('question', source.id))) }}"
+    " is to {{ source.data.get('back', source.data.get('answer', "
+    "source.data.get('label', source.id))) }}"
+    " as {{ target.data.get('front', target.data.get('prompt', "
+    "target.data.get('question', target.id))) }}"
+    " is to ?"
+)
+BACK_TEMPLATE = (
+    "{{ target.data.get('back', target.data.get('answer', target.data.get('label', target.id))) }}"
+)
 
 
-class AnalogyCard(Card):
-    """Semantic source/target relation data with one hidden target position."""
-
-    source_subject: Identifier
-    source_predicate: Identifier
-    source_object: Identifier
-    hide: TypingLiteral["subject", "object"]
-    subject_label: Identifier | None = None
-    predicate_label: Identifier | None = None
-    object_label: Identifier | None = None
-    source_subject_label: Identifier | None = None
-    source_predicate_label: Identifier | None = None
-    source_object_label: Identifier | None = None
-
-    @field_validator("hide", mode="before")
-    @classmethod
-    def normalize_hide(cls, value: object) -> str:
-        if type(value) is str and value in {"subject", "object"}:
-            return value
-        if (
-            not isinstance(value, Literal)
-            or value.language is not None
-            or value.datatype not in (None, XSD.string)
-            or str(value) not in {"subject", "object"}
-        ):
-            raise ValueError("?hide must be a literal with value subject or object")
-        return str(value)
+@ExerciseGenerator.register
+class AnalogyExerciseGenerator(ExerciseGenerator):
+    type: Literal["analogy"] = "analogy"
+    type_name = "analogy"
+    sources: dict[StrictStr, tuple[StrictStr, ...]]
+    template_context_names: ClassVar[frozenset[str]] = frozenset({"source", "target"})
 
     @model_validator(mode="after")
-    def validate_analogy(self) -> AnalogyCard:
-        if self.card_key.target_kind is not TargetKind.TRIPLE:
-            raise ValueError("an analogy card must use a triple card identity")
-        _subject, predicate, object_ = self.card_key.terms
-        if self.source_predicate != predicate:
-            raise ValueError("the source and target predicates must match")
-        if (self.source_subject, self.source_predicate, self.source_object) == (
-            self.card_key.terms[0],
-            predicate,
-            object_,
-        ):
-            raise ValueError("the source triple must be distinct from the target triple")
+    def validate_source_ids(self) -> AnalogyExerciseGenerator:
+        for target_id, source_ids in self.sources.items():
+            if not source_ids:
+                raise ValueError(
+                    f"generator {self.id!r} target {target_id!r} must define at least one source"
+                )
+            if len(source_ids) != len(set(source_ids)):
+                raise ValueError(
+                    f"generator {self.id!r} target {target_id!r} has duplicate sources"
+                )
+            if target_id in source_ids:
+                raise ValueError(
+                    f"generator {self.id!r} target {target_id!r} cannot use itself as a source"
+                )
         return self
 
-    @staticmethod
-    def _text(term: Identifier, label: Identifier | None) -> str:
-        return str(label if label is not None else term)
+    def validate_references(self, known_entity_ids: set[str]) -> None:
+        if not self.sources:
+            raise ValueError(f"generator {self.id!r} must define analogy sources")
+        _require_refs(self.id, self.sources.keys(), known_entity_ids, "target entity")
+        for target_id, source_ids in self.sources.items():
+            _require_refs(self.id, source_ids, known_entity_ids, f"source for target {target_id!r}")
 
-    def duplicate_key(self) -> tuple[object, ...]:
-        subject, _predicate, object_ = self.card_key.terms
-        relation_label = (
-            self.predicate_label
-            if self.predicate_label is not None
-            else self.source_predicate_label
+    @property
+    def target_ids(self) -> tuple[str, ...]:
+        return tuple(self.sources)
+
+    def generate(self, entity_id: str, context: ExerciseGeneratorContext) -> Exercise:
+        key = self._key(entity_id, context.deck_id)
+        source_id = context.rng.choice(self.sources[entity_id])
+        if source_id not in context.entities or entity_id not in context.entities:
+            raise PresentationError(f"generator {self.id!r} references an unknown analogy entity")
+        return AnalogyExercise(
+            card_key=key,
+            generator_id=self.id,
+            target_id=entity_id,
+            source_id=source_id,
         )
-        return (
-            self.source_subject,
-            self.source_predicate,
-            self.source_object,
-            self.hide,
-            self._text(self.source_subject, self.source_subject_label),
-            str(relation_label) if relation_label is not None else ":",
-            self._text(self.source_object, self.source_object_label),
-            self._text(subject, self.subject_label),
-            self._text(object_, self.object_label),
+
+    def validation_exercises(self, context: ExerciseGeneratorContext) -> tuple[Exercise, ...]:
+        return tuple(
+            AnalogyExercise(
+                card_key=self._key(target_id, context.deck_id),
+                generator_id=self.id,
+                target_id=target_id,
+                source_id=source_id,
+            )
+            for target_id, source_ids in self.sources.items()
+            for source_id in source_ids
         )
 
+    def render(self, exercise: Exercise, context: ExerciseGeneratorContext) -> CardView:
+        if not isinstance(exercise, AnalogyExercise):
+            raise PresentationError(f"generator {self.id!r} cannot render this exercise type")
+        try:
+            source = context.entities[exercise.source_id]
+            target = context.entities[exercise.target_id]
+            template_context = {"source": source, "target": target}
+            return CardView(
+                card_key=exercise.card_key,
+                front=_render_template(self.front_template or FRONT_TEMPLATE, template_context),
+                back=_render_template(self.back_template or BACK_TEMPLATE, template_context),
+            )
+        except (KeyError, TypeError) as error:
+            raise PresentationError(
+                f"generator {self.id!r} exercise references an unknown entity"
+            ) from error
 
-class AnalogyDeck(DeckDefinition):
-    """Configured relational analogy query and rendering behavior."""
 
-    config_name = "analogy"
-    required_variables = frozenset({"source_subject", "source_predicate", "source_object", "hide"})
-    card_type = AnalogyCard
-    front_template: TemplateSource = (
-        "{{ source_subject }} {{ relation }} {{ source_object }} :: "
-        '{% if hide == "subject" %}?{% else %}{{ target_subject }}{% endif %} '
-        "{{ relation }} "
-        '{% if hide == "object" %}?{% else %}{{ target_object }}{% endif %}'
-    )
-    back_template: TemplateSource = "{{ answer }}"
+class AnalogyExercise(Exercise):
+    source_id: StrictStr
 
-    target: TypingLiteral[TargetKind.TRIPLE]
+    @model_validator(mode="after")
+    def validate_source(self) -> AnalogyExercise:
+        if self.source_id == self.target_id:
+            raise ValueError("analogy source and target must be different entities")
+        return self
 
-    def render_context(self, card: Card) -> Mapping[str, object]:
-        if not isinstance(card, AnalogyCard):
-            return {}
-        subject, _predicate, object_ = card.card_key.terms
-        relation_label = (
-            card.predicate_label
-            if card.predicate_label is not None
-            else card.source_predicate_label
-        )
-        answer = (
-            AnalogyCard._text(subject, card.subject_label)
-            if card.hide == "subject"
-            else AnalogyCard._text(object_, card.object_label)
-        )
-        return {
-            "source_subject": AnalogyCard._text(card.source_subject, card.source_subject_label),
-            "source_object": AnalogyCard._text(card.source_object, card.source_object_label),
-            "target_subject": AnalogyCard._text(subject, card.subject_label),
-            "target_object": AnalogyCard._text(object_, card.object_label),
-            "relation": str(relation_label) if relation_label is not None else ":",
-            "hide": card.hide,
-            "answer": answer,
-        }
 
-    @field_validator("target", mode="before")
-    @classmethod
-    def require_triple_target(cls, value: object) -> object:
-        if value not in (TargetKind.TRIPLE, TargetKind.TRIPLE.value):
-            raise ValueError("analogy decks must target triple cards")
-        return value
-
-    def group(
-        self,
-        result: object,
-        *,
-        expected: set[str],
-        card_key: CardKey | None = None,
-        rng: random.Random,
-    ) -> dict[str, Card]:
-        del card_key, rng
-        grouped: dict[
-            CardKey,
-            dict[tuple[object, ...], AnalogyCard],
-        ] = defaultdict(dict)
-        for row_number, row in enumerate(result, start=1):  # type: ignore[arg-type]
-            values = self._row_values(row)
-            self._require_bound(values, expected, row_number)
-            key = self._card_key(values, row_number)
-            labels = {
-                name: values.get(name)
-                for name in (
-                    "subject_label",
-                    "predicate_label",
-                    "object_label",
-                    "source_subject_label",
-                    "source_predicate_label",
-                    "source_object_label",
-                )
-            }
-            try:
-                card = AnalogyCard(
-                    card_key=key,
-                    source_subject=values["source_subject"],
-                    source_predicate=values["source_predicate"],
-                    source_object=values["source_object"],
-                    hide=values["hide"],
-                    **labels,
-                )
-            except (ValidationError, ValueError) as error:
-                message = (
-                    validation_message(error) if isinstance(error, ValidationError) else str(error)
-                )
-                raise PresentationError(
-                    f"deck {self.name!r} row {row_number}: {message}"
-                ) from error
-            grouped[key][card.duplicate_key()] = card
-
-        cards: list[Card] = []
-        for key, values in grouped.items():
-            if len(values) != 1:
-                raise PresentationError(
-                    f"deck {self.name!r} returns conflicting analogy source, hide mode, or "
-                    f"display labels for card {key.digest}"
-                )
-            cards.append(next(iter(values.values())))
-        return self._by_digest(cards)
+__all__ = ["AnalogyExercise", "AnalogyExerciseGenerator"]

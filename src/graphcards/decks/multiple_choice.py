@@ -1,172 +1,123 @@
-"""Multiple-choice card generation and stateless rendering."""
+"""Target-centered entity-backed multiple-choice generator."""
 
 from __future__ import annotations
 
-import random
-from collections import defaultdict
-from typing import Annotated
+from typing import Annotated, ClassVar, Literal
 
-from pydantic import Field, ValidationError, model_validator
-from rdflib import Literal
-from rdflib.namespace import XSD
-from rdflib.term import Identifier
+from pydantic import Field, StrictInt, StrictStr, model_validator
 
 from graphcards.decks.base import (
-    DEFAULT_MAX_CHOICES,
-    DeckDefinition,
-    TemplateSource,
+    ExerciseGenerator,
+    ExerciseGeneratorContext,
+    _nonblank,
+    _render_template,
+    _require_refs,
 )
 from graphcards.errors import PresentationError
-from graphcards.models import Card, CardKey, validation_message
+from graphcards.models import CardView, Exercise
+
+DEFAULT_MAX_CHOICES = 4
+FRONT_TEMPLATE = (
+    "{{ target.data.get('front', target.data.get('prompt', "
+    "target.data.get('question', target.id))) }}"
+    "{% for choice in choice_entities %}\n  {{ loop.index }}. "
+    "{{ choice.data.get('label', choice.data.get('back', "
+    "choice.data.get('answer', choice.id))) }}"
+    "{% endfor %}"
+)
+BACK_TEMPLATE = (
+    "{{ target.data.get('label', target.data.get('back', target.data.get('answer', target.id))) }}"
+)
 
 
-class MultipleChoiceCard(Card):
-    """A question with its already-selected, already-ordered answer choices."""
-
-    front: Identifier
-    back: Identifier
-    choices: tuple[Identifier, ...]
+@ExerciseGenerator.register
+class MultipleChoiceExerciseGenerator(ExerciseGenerator):
+    type: Literal["multiple_choice"] = "multiple_choice"
+    type_name = "multiple_choice"
+    choices: dict[StrictStr, tuple[StrictStr, ...]]
+    max_choices: Annotated[StrictInt, Field(default=DEFAULT_MAX_CHOICES, ge=2)]
+    template_context_names: ClassVar[frozenset[str]] = frozenset({"target", "choice_entities"})
 
     @model_validator(mode="after")
-    def validate_choices(self) -> MultipleChoiceCard:
-        if len(self.choices) < 2:
-            raise ValueError("a multiple-choice card needs at least two choices")
-        if len(set(self.choices)) != len(self.choices):
-            raise ValueError("a multiple-choice card cannot contain duplicate choices")
-        if self.back not in self.choices:
-            raise ValueError("the multiple-choice back must be one of its choices")
+    def validate_pool_ids(self) -> MultipleChoiceExerciseGenerator:
+        for target_id, pool in self.choices.items():
+            _nonblank(target_id)
+            for entity_id in pool:
+                _nonblank(entity_id)
+        return self
+
+    def validate_references(self, known_entity_ids: set[str]) -> None:
+        if not self.choices:
+            raise ValueError(f"generator {self.id!r} must define choices")
+        for target_id, pool in self.choices.items():
+            _require_refs(self.id, (target_id,), known_entity_ids, "target entity")
+            _require_refs(self.id, pool, known_entity_ids, f"choices for target {target_id!r}")
+            if len(pool) != len(set(pool)):
+                raise ValueError(f"generator {self.id!r} has duplicate choices")
+            if len(pool) < 1:
+                raise ValueError(
+                    f"generator {self.id!r} choices for target {target_id!r} must contain at least "
+                    "one distractor"
+                )
+            if target_id in pool:
+                raise ValueError(
+                    f"generator {self.id!r} target {target_id!r} cannot be in its distractor pool"
+                )
+
+    @property
+    def target_ids(self) -> tuple[str, ...]:
+        return tuple(self.choices)
+
+    def generate(self, entity_id: str, context: ExerciseGeneratorContext) -> Exercise:
+        key = self._key(entity_id, context.deck_id)
+        pool = list(self.choices[entity_id])
+        context.rng.shuffle(pool)
+        choices = [entity_id, *pool[: self.max_choices - 1]]
+        context.rng.shuffle(choices)
+        return MultipleChoiceExercise(
+            card_key=key,
+            generator_id=self.id,
+            target_id=entity_id,
+            choices=tuple(choices),
+        )
+
+    def render(self, exercise: Exercise, context: ExerciseGeneratorContext) -> CardView:
+        if not isinstance(exercise, MultipleChoiceExercise):
+            raise PresentationError(f"generator {self.id!r} cannot render this exercise type")
+        try:
+            target = context.entities[exercise.target_id]
+            render_context = {
+                "target": target,
+                "choice_entities": tuple(context.entities[choice] for choice in exercise.choices),
+            }
+            front_template = self.front_template or FRONT_TEMPLATE
+            back_template = self.back_template or BACK_TEMPLATE
+            return CardView(
+                card_key=exercise.card_key,
+                front=_render_template(front_template, render_context),
+                back=_render_template(back_template, render_context),
+            )
+        except (KeyError, TypeError) as error:
+            raise PresentationError(
+                f"generator {self.id!r} exercise references an unknown entity"
+            ) from error
+
+
+class MultipleChoiceExercise(Exercise):
+    """Multiple-choice exercise identifying the target entity to render."""
+
+    choices: tuple[StrictStr, ...]
+
+    @model_validator(mode="after")
+    def validate_choices(self) -> MultipleChoiceExercise:
+        if len(self.choices) < 2 or len(set(self.choices)) != len(self.choices):
+            raise ValueError("multiple-choice choices must contain at least two unique entities")
+        if self.target_id not in self.choices:
+            raise ValueError("multiple-choice target must be one of its choices")
         return self
 
 
-class MultipleChoiceDeck(DeckDefinition):
-    """Configured multiple-choice generation and rendering behavior."""
-
-    config_name = "multiple_choice"
-    required_variables = frozenset({"front", "choice", "is_correct"})
-    card_type = MultipleChoiceCard
-    front_template: TemplateSource = (
-        "{{ front }}{% for choice in choices %}\n  {{ loop.index }}. {{ choice }}{% endfor %}"
-    )
-    back_template: TemplateSource = "{{ back }}"
-
-    max_choices: Annotated[int, Field(strict=True, ge=2)] = DEFAULT_MAX_CHOICES
-
-    def _boolean(self, value: Identifier, row_number: int) -> bool:
-        if not isinstance(value, Literal) or value.datatype != XSD.boolean:
-            raise PresentationError(
-                f"deck {self.name!r} row {row_number} ?is_correct must be an xsd:boolean literal"
-            )
-        if str(value) not in {"true", "false", "1", "0"}:
-            raise PresentationError(
-                f"deck {self.name!r} row {row_number} has an invalid xsd:boolean lexical value"
-            )
-        converted = value.toPython()
-        if not isinstance(converted, bool):
-            raise PresentationError(
-                f"deck {self.name!r} row {row_number} has an invalid xsd:boolean value"
-            )
-        return converted
-
-    def _priority(self, value: Identifier | None, row_number: int) -> int:
-        if value is None:
-            return 0
-        return self._rdf_integer(
-            value,
-            variable="priority",
-            minimum=0,
-            minimum_description="zero or greater",
-            row_number=row_number,
-        )
-
-    def _selected_choices(
-        self,
-        choices: dict[Identifier, tuple[bool, int]],
-        rng: random.Random,
-    ) -> tuple[Identifier, ...]:
-        correct = next(value for value, (is_correct, _priority) in choices.items() if is_correct)
-        tiers: dict[int, list[Identifier]] = defaultdict(list)
-        for value, (is_correct, priority) in choices.items():
-            if not is_correct:
-                tiers[priority].append(value)
-
-        remaining = self.max_choices - 1
-        selected = [correct]
-        for priority in sorted(tiers, reverse=True):
-            tier = sorted(tiers[priority], key=lambda choice: choice.n3())
-            rng.shuffle(tier)
-            retained = tier[:remaining]
-            selected.extend(retained)
-            remaining -= len(retained)
-            if remaining == 0:
-                break
-        rng.shuffle(selected)
-        return tuple(selected)
-
-    def group(
-        self,
-        result: object,
-        *,
-        expected: set[str],
-        card_key: CardKey | None = None,
-        rng: random.Random,
-    ) -> dict[str, Card]:
-        del card_key
-        fronts: dict[CardKey, set[Identifier]] = defaultdict(set)
-        choices: dict[CardKey, dict[Identifier, tuple[bool, int]]] = defaultdict(dict)
-        for row_number, row in enumerate(result, start=1):  # type: ignore[arg-type]
-            values = self._row_values(row)
-            self._require_bound(values, expected, row_number)
-            key = self._card_key(values, row_number)
-            fronts[key].add(values["front"])
-            choice = values["choice"]
-            is_correct = self._boolean(values["is_correct"], row_number)
-            priority = self._priority(values.get("priority"), row_number)
-            existing = choices[key].get(choice)
-            if existing is not None:
-                existing_correct, existing_priority = existing
-                if existing_correct != is_correct:
-                    raise PresentationError(
-                        f"deck {self.name!r} marks the same choice both correct and incorrect "
-                        f"for card {key.digest}"
-                    )
-                if existing_priority != priority:
-                    raise PresentationError(
-                        f"deck {self.name!r} assigns conflicting priorities to the same choice "
-                        f"for card {key.digest}"
-                    )
-            choices[key][choice] = (is_correct, priority)
-
-        cards: list[Card] = []
-        for key, front_values in fronts.items():
-            if len(front_values) != 1:
-                raise PresentationError(
-                    f"deck {self.name!r} returns conflicting fronts for card {key.digest}"
-                )
-            card_choices = choices[key]
-            if len(card_choices) < 2:
-                raise PresentationError(
-                    f"deck {self.name!r} needs at least two choices for card {key.digest}"
-                )
-            if sum(is_correct for is_correct, _priority in card_choices.values()) != 1:
-                raise PresentationError(
-                    f"deck {self.name!r} needs exactly one correct choice for card {key.digest}"
-                )
-            try:
-                cards.append(
-                    MultipleChoiceCard(
-                        card_key=key,
-                        front=next(iter(front_values)),
-                        back=next(
-                            value
-                            for value, (is_correct, _priority) in card_choices.items()
-                            if is_correct
-                        ),
-                        choices=self._selected_choices(card_choices, rng),
-                    )
-                )
-            except ValidationError as error:
-                raise PresentationError(
-                    f"deck {self.name!r} has an invalid multiple-choice card "
-                    f"for card {key.digest}: {validation_message(error)}"
-                ) from error
-        return self._by_digest(cards)
+__all__ = [
+    "MultipleChoiceExercise",
+    "MultipleChoiceExerciseGenerator",
+]

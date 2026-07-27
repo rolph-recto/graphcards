@@ -3,21 +3,31 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
 
 from fsrs import Card, Rating, ReviewLog
-from pydantic import ConfigDict, Field, ValidationError, field_validator
+from pydantic import ConfigDict, Field, StrictFloat, StrictInt, ValidationError, field_validator
 
 from graphcards.errors import StaleReviewError, StorageError
 from graphcards.models import Card as SemanticCard
-from graphcards.models import CardKey, RdfModel, TargetKind, validation_message
+from graphcards.models import CardKey, FrozenModel, validation_message
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 MAX_SUSPENSION_REASON_LENGTH = 500
 _UNSAFE_REASON_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON field {key!r}")
+        result[key] = value
+    return result
 
 
 def normalize_suspension_reason(value: object) -> object:
@@ -69,19 +79,26 @@ def _datetime_from_text(value: object) -> datetime:
     return parsed
 
 
-class StoredCard(RdfModel):
+class StoredCard(FrozenModel):
     card_id: str
     card_key: CardKey
     card_json: str
 
     def card(self) -> Card:
         try:
-            return Card.from_json(self.card_json)
+            card = Card.from_json(self.card_json)
+            datetime_as_utc(card.due)
+            if card.last_review is not None:
+                datetime_as_utc(card.last_review)
+            for value in (card.stability, card.difficulty):
+                if value is not None and (not math.isfinite(value) or value < 0):
+                    raise ValueError("FSRS numeric field is invalid")
+            return card
         except (json.JSONDecodeError, KeyError, OverflowError, TypeError, ValueError) as error:
             raise StorageError("stored card schedule is invalid") from error
 
 
-class DeckStatus(RdfModel):
+class DeckStatus(FrozenModel):
     available: int
     suspended: int
     new: int
@@ -89,7 +106,7 @@ class DeckStatus(RdfModel):
     future: int
 
 
-class CardStatus(RdfModel):
+class CardStatus(FrozenModel):
     """Card-level schedule details used by the full status view."""
 
     card_id: str
@@ -116,7 +133,7 @@ class CardStatus(RdfModel):
         )
 
 
-class SuspensionUpdate(RdfModel):
+class SuspensionUpdate(FrozenModel):
     """Validated current suspension metadata for one deck membership."""
 
     reason: str | None = Field(default=None, max_length=MAX_SUSPENSION_REASON_LENGTH)
@@ -127,34 +144,48 @@ class SuspensionUpdate(RdfModel):
         return normalize_suspension_reason(value)
 
 
-class ReviewPayload(RdfModel):
+class ReviewPayload(FrozenModel):
     """Validated immutable data stored in one review JSON document."""
 
-    model_config = RdfModel.model_config | ConfigDict(
+    model_config = FrozenModel.model_config | ConfigDict(
         populate_by_name=True,
         serialize_by_alias=True,
     )
 
-    fsrs_card_id: int = Field(alias="card_id")
+    fsrs_card_id: StrictInt = Field(alias="card_id")
     rating: Rating
     reviewed_at: datetime = Field(alias="review_datetime")
-    review_duration: int | None = Field(default=None, ge=0)
-    previous_interval_seconds: float | None = Field(
+    review_duration: StrictInt | None = Field(default=None, ge=0)
+    previous_interval_seconds: StrictFloat | None = Field(
         default=None,
         gt=0,
         allow_inf_nan=False,
     )
-    scheduled_interval_seconds: float | None = Field(
+    scheduled_interval_seconds: StrictFloat | None = Field(
         default=None,
         gt=0,
         allow_inf_nan=False,
     )
-    retrievability: float | None = Field(
+    retrievability: StrictFloat | None = Field(
         default=None,
         ge=0,
         le=1,
         allow_inf_nan=False,
     )
+
+    @field_validator("rating", mode="before")
+    @classmethod
+    def require_strict_rating(cls, value: object) -> object:
+        if isinstance(value, (str, bool)):
+            raise ValueError("rating must be an integer")
+        return value
+
+    @field_validator("reviewed_at", mode="before")
+    @classmethod
+    def require_datetime_value(cls, value: object) -> object:
+        if isinstance(value, (bool, int, float)):
+            raise ValueError("review_datetime must be a timestamp string")
+        return value
 
     @field_validator("reviewed_at")
     @classmethod
@@ -169,7 +200,7 @@ class ReviewPayload(RdfModel):
         )
 
 
-class ReviewRecord(RdfModel):
+class ReviewRecord(FrozenModel):
     """One immutable review event decoded and checked against its SQL mirrors."""
 
     review_id: int = Field(gt=0)
@@ -186,16 +217,24 @@ class Repository:
     """Own the schema and transactional persistence operations."""
 
     def __init__(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise StorageError(
+                f"could not prepare state database directory {path.parent}"
+            ) from error
         self.path = path
-        self.connection = sqlite3.connect(path)
+        try:
+            self.connection = sqlite3.connect(path)
+        except sqlite3.Error as error:
+            raise StorageError(f"could not open state database {path}") from error
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         try:
             self._initialize_schema()
-        except Exception:
+        except sqlite3.Error as error:
             self.connection.close()
-            raise
+            raise StorageError("state database schema is corrupt") from error
 
     def __enter__(self) -> Repository:
         return self
@@ -208,7 +247,7 @@ class Repository:
 
     def _initialize_schema(self) -> None:
         current = self.connection.execute("PRAGMA user_version").fetchone()[0]
-        if current not in (0, 3, SCHEMA_VERSION):
+        if current not in (0, SCHEMA_VERSION):
             raise StorageError(
                 f"unsupported state schema version {current}; move or delete the database "
                 "and recreate state"
@@ -218,7 +257,7 @@ class Repository:
                 """
                 CREATE TABLE cards (
                     card_id TEXT PRIMARY KEY,
-                    target_kind TEXT NOT NULL CHECK (target_kind IN ('triple', 'entity')),
+                    target_kind TEXT NOT NULL CHECK (target_kind = 'entity'),
                     identity_json TEXT NOT NULL,
                     card_json TEXT NOT NULL,
                     due_at TEXT NOT NULL,
@@ -254,12 +293,9 @@ class Repository:
                     review_json TEXT NOT NULL
                 );
                 CREATE INDEX reviews_card_idx ON reviews(card_id, reviewed_at);
-                PRAGMA user_version = 4;
+                PRAGMA user_version = 5;
                 """
             )
-        elif current == 3:
-            self._migrate_v3()
-            return
         try:
             with self.connection:
                 self.connection.execute(
@@ -276,47 +312,6 @@ class Repository:
                 )
         except sqlite3.Error as error:
             raise StorageError("state schema is incomplete or corrupt") from error
-
-    def _migrate_v3(self) -> None:
-        """Add per-membership suspension without rewriting schedules or reviews."""
-
-        try:
-            self.connection.execute("BEGIN IMMEDIATE")
-            self.connection.execute(
-                """
-                ALTER TABLE deck_cards ADD COLUMN
-                suspended INTEGER NOT NULL DEFAULT 0
-                CHECK (suspended IN (0, 1))
-                """
-            )
-            self.connection.execute(
-                """
-                ALTER TABLE deck_cards ADD COLUMN
-                suspension_reason TEXT CHECK (
-                    suspension_reason IS NULL OR (
-                        length(suspension_reason) BETWEEN 1 AND 500
-                        AND suspension_reason = trim(suspension_reason)
-                    )
-                )
-                """
-            )
-            self.connection.execute(
-                """
-                CREATE INDEX deck_cards_queue_idx
-                ON deck_cards(deck_name, active, suspended, card_id)
-                """
-            )
-            self.connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS reviews_deck_time_idx
-                ON reviews(deck_name, reviewed_at, id)
-                """
-            )
-            self.connection.execute("PRAGMA user_version = 4")
-            self.connection.commit()
-        except sqlite3.Error as error:
-            self.connection.rollback()
-            raise StorageError("could not migrate state schema from version 3 to 4") from error
 
     def sync_deck(
         self, deck_name: str, cards: dict[str, SemanticCard], now: datetime
@@ -336,12 +331,22 @@ class Repository:
                 card_key = semantic_card.card_key
                 if card_id != card_key.digest:
                     raise StorageError(f"card key {card_id} does not match its card identity hash")
+                if card_key.deck_id != deck_name:
+                    raise StorageError(f"card key {card_id} does not belong to deck {deck_name!r}")
                 identity_json = json.dumps(
-                    card_key.n3_terms, ensure_ascii=False, separators=(",", ":")
+                    dict(
+                        zip(
+                            ("deck_id", "generator_id", "entity_id"),
+                            card_key.identity_parts,
+                            strict=True,
+                        )
+                    ),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
                 )
                 existing = self.connection.execute(
                     """
-                    SELECT target_kind, identity_json
+                    SELECT card_id, target_kind, identity_json, card_json, due_at
                     FROM cards WHERE card_id = ?
                     """,
                     (card_id,),
@@ -357,7 +362,7 @@ class Repository:
                         """,
                         (
                             card_id,
-                            card_key.target_kind.value,
+                            "entity",
                             identity_json,
                             card.to_json(),
                             # due_at mirrors the value inside card_json so SQLite
@@ -369,12 +374,12 @@ class Repository:
                     )
                     created += 1
                 else:
-                    stored_key = self._decode_identity(
-                        existing["target_kind"], existing["identity_json"]
-                    )
+                    stored = self._stored_card(existing)
+                    stored_key = stored.card_key
                     if stored_key != card_key or stored_key.digest != card_id:
                         raise StorageError(
-                            f"stored identity for card hash {card_id} does not match query results"
+                            f"stored identity for card hash {card_id} does not match "
+                            "generated exercises"
                         )
                 self.connection.execute(
                     """
@@ -489,22 +494,33 @@ class Repository:
         )
 
     @staticmethod
-    def _decode_identity(target_kind: object, identity_json: object) -> CardKey:
-        """Rebuild and validate the discriminated identity stored beside card_id."""
+    def _decode_identity(identity_json: object) -> CardKey:
+        """Rebuild and validate the scoped identity stored beside card_id."""
 
-        try:
-            target = TargetKind(target_kind)
-        except (TypeError, ValueError) as error:
-            raise StorageError(f"stored card has unknown target kind {target_kind!r}") from error
         if not isinstance(identity_json, str):
             raise StorageError("stored card identity is not JSON text")
         try:
-            values = json.loads(identity_json)
-        except (json.JSONDecodeError, TypeError) as error:
+            values = json.loads(identity_json, object_pairs_hook=_unique_json_object)
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
             raise StorageError("stored card identity is invalid JSON") from error
-        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
-            raise StorageError("stored card identity must be a JSON array of N3 strings")
-        return CardKey.from_n3(target, tuple(values))
+        if not isinstance(values, dict):
+            raise StorageError("stored exercise identity must be a JSON object")
+        required = {"deck_id", "generator_id", "entity_id"}
+        if set(values) != required:
+            raise StorageError("stored exercise identity has invalid fields")
+        deck_id, generator_id, entity_id = (
+            values["deck_id"],
+            values["generator_id"],
+            values["entity_id"],
+        )
+        if not all(
+            isinstance(value, str) and value.strip() for value in (deck_id, generator_id, entity_id)
+        ):
+            raise StorageError("stored exercise identity has invalid scope IDs")
+        try:
+            return CardKey.exercise(deck_id, generator_id, entity_id)
+        except ValidationError as error:
+            raise StorageError("stored exercise identity is invalid") from error
 
     def due_cards(self, deck_name: str, now: datetime, limit: int | None) -> list[StoredCard]:
         self._validate_active_due_mirrors(deck_name)
@@ -551,7 +567,9 @@ class Repository:
     ) -> list[StoredCard]:
         """Return available cards failed since a timestamp, newest failure first."""
 
-        self._validate_active_memberships(deck_name)
+        # Validate every active identity and due mirror before the review predicate can
+        # silently omit a corrupt card that has no matching Again review.
+        self.active_cards(deck_name)
         parameters: list[object] = [deck_name, datetime_to_text(since)]
         limit_sql = ""
         if limit is not None:
@@ -622,7 +640,9 @@ class Repository:
         return self._stored_card(row) if row is not None else None
 
     def _stored_card(self, row: sqlite3.Row) -> StoredCard:
-        card_key = self._decode_identity(row["target_kind"], row["identity_json"])
+        if row["target_kind"] != "entity":
+            raise StorageError("stored card has an invalid exercise kind")
+        card_key = self._decode_identity(row["identity_json"])
         if row["card_id"] != card_key.digest:
             raise StorageError(
                 f"stored card identity does not match its card hash {row['card_id']}"
@@ -643,7 +663,7 @@ class Repository:
     def _validate_active_due_mirrors(self, deck_name: str) -> None:
         """Validate all active mirrors before an indexed filter can omit corruption."""
 
-        self.active_cards(deck_name)
+        self._validate_active_memberships(deck_name)
 
     def _validate_active_memberships(self, deck_name: str) -> None:
         """Validate availability state before indexed predicates can omit corruption."""
@@ -662,6 +682,20 @@ class Repository:
                 row["suspended"],
                 row["suspension_reason"],
             )
+        self._validate_all_active_card_mirrors(deck_name)
+
+    def _validate_all_active_card_mirrors(self, deck_name: str) -> None:
+        rows = self.connection.execute(
+            """
+            SELECT c.card_id, c.target_kind, c.identity_json, c.card_json, c.due_at
+            FROM cards AS c
+            JOIN deck_cards AS dc ON dc.card_id = c.card_id
+            WHERE dc.deck_name = ? AND dc.active = 1
+            """,
+            (deck_name,),
+        ).fetchall()
+        for row in rows:
+            self._stored_card(row)
 
     def save_review(
         self,
@@ -752,8 +786,9 @@ class Repository:
         if not isinstance(review_json, str):
             raise StorageError("stored review log is not JSON text")
         try:
-            payload = ReviewPayload.model_validate_json(review_json)
-        except ValidationError as error:
+            payload_data = json.loads(review_json, object_pairs_hook=_unique_json_object)
+            payload = ReviewPayload.model_validate(payload_data)
+        except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as error:
             raise StorageError("stored review log is invalid") from error
         reviewed_at = _datetime_from_text(row["reviewed_at"])
         try:
@@ -792,6 +827,7 @@ class Repository:
 
     def status(self, deck_name: str, now: datetime) -> DeckStatus:
         self._validate_active_due_mirrors(deck_name)
+        self._validate_review_logs(deck_name)
         timestamp = datetime_to_text(now)
         row = self.connection.execute(
             """
@@ -825,6 +861,7 @@ class Repository:
         """Return active deck members in the same due-time order used for study."""
 
         self._validate_active_memberships(deck_name)
+        self._validate_review_logs(deck_name)
         rows = self.connection.execute(
             """
             SELECT
@@ -906,3 +943,14 @@ class Repository:
                 )
             )
         return tuple(statuses)
+
+    def _validate_review_logs(self, deck_name: str) -> None:
+        rows = self.connection.execute(
+            """
+            SELECT id, card_id, deck_name, rating, reviewed_at, review_json
+            FROM reviews WHERE deck_name = ?
+            """,
+            (deck_name,),
+        ).fetchall()
+        for row in rows:
+            self._review_record(row)

@@ -5,12 +5,14 @@ from __future__ import annotations
 import tomllib
 from datetime import timedelta
 from pathlib import Path
+from stat import S_ISDIR, S_ISREG
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo
 
 from fsrs import Scheduler
 from pydantic import (
     BeforeValidator,
+    ConfigDict,
     Field,
     StrictBool,
     ValidationError,
@@ -19,7 +21,7 @@ from pydantic import (
     model_validator,
 )
 
-from graphcards.decks import DeckDefinition
+from graphcards.decks import Deck
 from graphcards.errors import ConfigError
 from graphcards.models import FrozenModel, resolve_config_path
 
@@ -63,10 +65,10 @@ def _resolve_path(value: object, info: ValidationInfo) -> Path:
 
 
 class AppConfig(FrozenModel):
+    model_config = FrozenModel.model_config | ConfigDict(arbitrary_types_allowed=True)
     state_path: Path = Path(".graphcards/state.sqlite3")
     display_timezone: ZoneInfo = Field(default_factory=lambda: ZoneInfo("UTC"))
-    sources: tuple[Path, ...] = ()
-    decks: tuple[DeckDefinition, ...] = ()
+    decks: tuple[Deck, ...] = ()
     fsrs: FsrsSettings = Field(default_factory=FsrsSettings)
 
     @field_validator("state_path", mode="before")
@@ -74,20 +76,30 @@ class AppConfig(FrozenModel):
     def resolve_single_path(cls, value: object, info: ValidationInfo) -> Path:
         return _resolve_path(value, info)
 
-    @field_validator("sources", mode="before")
-    @classmethod
-    def resolve_sources(cls, value: object, info: ValidationInfo) -> object:
-        if not isinstance(value, (list, tuple)):
-            return value
-        return tuple(_resolve_path(source, info) for source in value)
-
     @field_validator("decks", mode="before")
     @classmethod
     def resolve_decks(cls, value: object, info: ValidationInfo) -> object:
         if not isinstance(value, (list, tuple)):
-            return value
-        context = info.context if isinstance(info.context, dict) else None
-        return tuple(DeckDefinition.from_config(deck, context=context) for deck in value)
+            raise ValueError("decks must be a list of deck files")
+        context = info.context if isinstance(info.context, dict) else {}
+        base = context.get("base")
+        resolved: list[Deck] = []
+        for deck_file in value:
+            if not isinstance(deck_file, (str, Path)) or not str(deck_file).strip():
+                raise ValueError("each deck entry must be a non-empty deck file path")
+            path = Path(deck_file).expanduser()
+            if not path.is_absolute() and isinstance(base, Path):
+                path = base / path
+            try:
+                mode = path.stat().st_mode
+            except OSError as error:
+                raise ValueError(f"could not access deck file {path}: {error}") from error
+            if S_ISDIR(mode):
+                raise ValueError(f"each deck entry must be a deck file, not a directory: {path}")
+            if not S_ISREG(mode):
+                raise ValueError(f"each deck entry must be a regular deck file: {path}")
+            resolved.append(Deck.load(path))
+        return tuple(resolved)
 
     @model_validator(mode="after")
     def unique_deck_names(self) -> AppConfig:
@@ -97,7 +109,7 @@ class AppConfig(FrozenModel):
             raise ValueError(f"duplicate deck name: {duplicates[0]!r}")
         return self
 
-    def deck(self, name: str) -> DeckDefinition:
+    def deck(self, name: str) -> Deck:
         for deck in self.decks:
             if deck.name == name:
                 return deck
@@ -116,6 +128,8 @@ def load_config(path: str | Path = "graphcards.toml") -> AppConfig:
         raise ConfigError(f"configuration file not found: {config_path}") from error
     except tomllib.TOMLDecodeError as error:
         raise ConfigError(f"invalid TOML in {config_path}: {error}") from error
+    except (OSError, UnicodeError) as error:
+        raise ConfigError(f"could not read configuration {config_path}: {error}") from error
 
     try:
         config = AppConfig.model_validate(

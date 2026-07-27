@@ -1,7 +1,7 @@
 [project]
 name = "graphcards"
 version = "0.1.0"
-description = "Learn RDF triples and entities with SPARQL-driven cards and FSRS scheduling"
+description = "Learn entity-backed exercises with FSRS scheduling"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -9,7 +9,6 @@ dependencies = [
     "fsrs>=6.3,<7",
     "jinja2>=3.1,<4",
     "pydantic>=2.12,<3",
-    "rdflib>=7.6,<8",
 ]
 
 [project.scripts]

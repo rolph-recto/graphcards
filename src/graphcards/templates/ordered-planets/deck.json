@@ -1,0 +1,13 @@
+{
+  "name": "Planets",
+  "entities": [
+    {"id": "solar-system", "label": "Solar system"},
+    {"id": "mercury", "label": "Mercury"},
+    {"id": "venus", "label": "Venus"},
+    {"id": "earth", "label": "Earth"},
+    {"id": "mars", "label": "Mars"}
+  ],
+  "exercises": [
+    {"id": "planet-order", "type": "ordered_list", "window_size": 3, "groups": {"solar-system": ["mercury", "venus", "earth", "mars"]}}
+  ]
+}

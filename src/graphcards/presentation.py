@@ -1,36 +1,28 @@
-"""RDF loading plus semantic card generation."""
+"""Semantic exercise generation and Jinja rendering at the presentation boundary."""
 
 from __future__ import annotations
 
 import random
-from pathlib import Path
 
-from rdflib import Graph
-
-from graphcards.decks import DeckDefinition
-from graphcards.errors import PresentationError
-from graphcards.models import Card, CardKey
-
-
-def load_graph(sources: tuple[Path, ...]) -> Graph:
-    graph = Graph()
-    for source in sources:
-        if not source.is_file():
-            raise PresentationError(f"RDF source not found: {source}")
-        try:
-            graph.parse(source)
-        except Exception as error:
-            raise PresentationError(f"could not parse RDF source {source}: {error}") from error
-    return graph
+from graphcards.decks import Deck
+from graphcards.models import Card, CardKey, CardView
 
 
 def execute_cards(
-    graph: Graph,
-    deck: DeckDefinition,
+    deck: Deck,
     card_key: CardKey | None = None,
     *,
     rng: random.Random | None = None,
 ) -> dict[str, Card]:
-    """Generate semantic cards, including random choices, from one query."""
+    """Generate semantic exercises without rereading the source JSON."""
 
-    return deck.execute_cards(graph, card_key, rng=rng or random.Random())
+    if card_key is None:
+        return deck.generate_all(rng=rng)
+    exercise = deck.generate(card_key, rng=rng)
+    return {exercise.card_key.digest: exercise}
+
+
+def render_card(deck: Deck, card: Card) -> CardView:
+    """Render a validated semantic exercise through its owning deck."""
+
+    return deck.render(card)  # type: ignore[arg-type]

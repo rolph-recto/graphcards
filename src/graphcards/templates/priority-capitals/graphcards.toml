@@ -1,9 +1,2 @@
 state_path = ".graphcards/state.sqlite3"
-sources = ["data/knowledge.ttl"]
-
-[[decks]]
-name = "priority-capitals"
-target = "entity"
-kind = "multiple_choice"
-query = "queries/priority-capitals.rq"
-max_choices = 4
+decks = ["deck.json"]

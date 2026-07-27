@@ -1,49 +1,63 @@
-"""Shared configured card-generation and rendering definitions."""
+"""Shared JSON deck aggregates and exercise-generator infrastructure."""
 
 from __future__ import annotations
 
+import json
 import random
-import re
+import unicodedata
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from functools import lru_cache
-from inspect import isabstract
 from pathlib import Path
-from typing import Annotated, ClassVar
+from stat import S_ISREG
+from types import MappingProxyType
+from typing import Annotated, ClassVar, cast
 
-from jinja2 import Environment, StrictUndefined, Template
+from jinja2 import StrictUndefined, Template, TemplateError, meta
+from jinja2.sandbox import SandboxedEnvironment
 from pydantic import (
-    AfterValidator,
     ConfigDict,
-    Field,
+    StrictStr,
     StringConstraints,
-    ValidationInfo,
+    ValidationError,
     field_validator,
-)
-from rdflib import Graph, Literal
-from rdflib.namespace import XSD
-from rdflib.term import Identifier
-
-from graphcards.errors import PresentationError
-from graphcards.models import (
-    Card,
-    CardKey,
-    CardView,
-    FrozenModel,
-    TargetKind,
-    resolve_config_path,
+    model_validator,
 )
 
-DEFAULT_MAX_CHOICES = 4
-DEFAULT_WINDOW_SIZE = 5
+from graphcards.errors import ConfigError, PresentationError
+from graphcards.models import Card, CardKey, CardView, Exercise, FrozenModel
 
-IDENTITY_VARIABLES = {
-    TargetKind.TRIPLE: {"subject", "predicate", "object"},
-    TargetKind.ENTITY: {"entity"},
-}
+JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
+
+MAX_TEMPLATE_LENGTH = 100_000
+MAX_RENDERED_LENGTH = 1_000_000
+TemplateSource = Annotated[StrictStr, StringConstraints(strip_whitespace=False)]
 
 
-_TEMPLATE_ENVIRONMENT = Environment(
+class _SafeTemplateEnvironment(SandboxedEnvironment):
+    intercepted_binops = frozenset({"*", "**"})
+
+    def call_binop(self, context: object, operator: str, left: object, right: object) -> object:
+        if operator == "*":
+            if (
+                isinstance(left, int)
+                and isinstance(right, (str, bytes, list, tuple))
+                and abs(left) * len(right) > MAX_RENDERED_LENGTH
+            ):
+                raise ValueError(f"template multiplication exceeds {MAX_RENDERED_LENGTH}")
+            if (
+                isinstance(right, int)
+                and isinstance(left, (str, bytes, list, tuple))
+                and abs(right) * len(left) > MAX_RENDERED_LENGTH
+            ):
+                raise ValueError(f"template multiplication exceeds {MAX_RENDERED_LENGTH}")
+        elif operator == "**" and isinstance(right, int) and abs(right) > 10_000:
+            raise ValueError("template exponent is too large")
+        return super().call_binop(context, operator, left, right)
+
+
+_TEMPLATE_ENVIRONMENT = _SafeTemplateEnvironment(
     autoescape=False,
     keep_trailing_newline=True,
     trim_blocks=False,
@@ -52,305 +66,370 @@ _TEMPLATE_ENVIRONMENT = Environment(
 )
 
 
-@lru_cache
+@lru_cache(maxsize=256)
 def _template(source: str) -> Template:
     return _TEMPLATE_ENVIRONMENT.from_string(source)
 
 
-def _validate_template_source(source: str) -> str:
-    if not source.strip():
-        raise ValueError("must be a non-blank Jinja template")
+def _render_template(source: str, context: Mapping[str, object]) -> str:
     try:
-        _template(source)
+        chunks: list[str] = []
+        length = 0
+        for chunk in _template(source).generate(**context):
+            length += len(chunk)
+            if length > MAX_RENDERED_LENGTH:
+                raise ValueError(f"rendered output exceeds {MAX_RENDERED_LENGTH} characters")
+            chunks.append(chunk)
+        return "".join(chunks)
     except Exception as error:
-        raise ValueError(f"must be a valid Jinja template: {error}") from error
-    return source
+        raise PresentationError(f"could not render card template: {error}") from error
 
 
-TemplateSource = Annotated[
-    str,
-    StringConstraints(strict=True, strip_whitespace=False),
-    AfterValidator(_validate_template_source),
-]
+def _nonblank(value: object) -> object:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("must be a non-blank string")
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for character in value
+    ):
+        raise ValueError("must not contain control characters")
+    return value
 
 
-class DeckDefinition(FrozenModel, ABC):
-    """Configured deck behavior selected by a stable TOML kind name."""
+def _template_nonblank(value: object) -> object:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("must be a non-blank string")
+    return value
 
-    model_config = FrozenModel.model_config | ConfigDict(
-        validate_by_alias=True,
-        validate_by_name=True,
-    )
 
-    config_name: ClassVar[str]
-    required_variables: ClassVar[frozenset[str]]
-    card_type: ClassVar[type[Card]]
-    uses_card_bindings: ClassVar[bool] = True
-    exact_projection: ClassVar[tuple[str, ...] | None] = None
-    _registry: ClassVar[dict[str, type[DeckDefinition]]] = {}
+def _json_value(value: object, path: str = "data", depth: int = 0) -> None:
+    if depth > 100:
+        raise ValueError(f"{path} is nested too deeply")
+    if value is None or isinstance(value, (bool, int, str)):
+        return
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ValueError(f"{path} must contain JSON-compatible finite numbers")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _json_value(item, f"{path}[{index}]", depth + 1)
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{path} object keys must be strings")
+            _json_value(item, f"{path}.{key}", depth + 1)
+        return
+    raise ValueError(f"{path} must contain only JSON-compatible values")
 
-    name: Annotated[str, Field(min_length=1)]
-    target: TargetKind
-    query_path: Path = Field(validation_alias="query")
-    front_template: TemplateSource
-    back_template: TemplateSource
 
-    @field_validator("query_path", mode="before")
+def _freeze_json(value: object) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON field {key!r}")
+        result[key] = value
+    return result
+
+
+class Entity(FrozenModel):
+    """One entity with a stable ID and arbitrary JSON-compatible metadata."""
+
+    model_config = FrozenModel.model_config | ConfigDict(extra="allow")
+    id: StrictStr
+
+    @field_validator("id")
     @classmethod
-    def resolve_query_path(cls, value: object, info: ValidationInfo) -> Path:
-        return resolve_config_path(value, info)
+    def require_id(cls, value: str) -> str:
+        return cast(str, _nonblank(value))
 
+    @model_validator(mode="after")
+    def validate_extra_data(self) -> Entity:
+        _json_value(self.__pydantic_extra__ or {})
+        return self
+
+    @property
+    def model_extra(self) -> Mapping[str, object] | None:
+        extra = self.__pydantic_extra__
+        return cast(Mapping[str, object], _freeze_json(extra or {}))
+
+    @property
+    def data(self) -> Mapping[str, JsonValue]:
+        values = self.model_dump(exclude={"id"}, mode="python")
+        return cast(Mapping[str, JsonValue], _freeze_json(values))
+
+
+@dataclass(frozen=True, slots=True)
+class ExerciseGeneratorContext:
+    """Immutable per-operation context supplied to an exercise generator."""
+
+    deck_id: str
+    entities: Mapping[str, Entity]
+    rng: random.Random
+
+
+class ExerciseGenerator(FrozenModel, ABC):
+    """Validated deck configuration and behavior for one exercise generator."""
+
+    id: StrictStr
+    type: StrictStr
+    front_template: TemplateSource | None = None
+    back_template: TemplateSource | None = None
+    template_context_names: ClassVar[frozenset[str]] = frozenset()
+    type_name: ClassVar[str]
+    _registry: ClassVar[dict[str, type[ExerciseGenerator]]] = {}
+
+    @field_validator("id", "type")
     @classmethod
-    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
-        """Register concrete definitions that declare a configuration name."""
+    def require_nonblank(cls, value: str) -> str:
+        return cast(str, _nonblank(value))
 
-        super().__pydantic_init_subclass__(**kwargs)
-        if "config_name" not in cls.__dict__ or isabstract(cls):
-            return
-        cls.validate_definition_class(cls)
-        existing = cls._registry.get(cls.config_name)
-        if existing is not None and existing is not cls:
-            raise TypeError(
-                f"deck kind name {cls.config_name!r} is already registered by {existing.__name__}"
-            )
-        cls._registry[cls.config_name] = cls
-
+    @field_validator("front_template", "back_template")
     @classmethod
-    def validate_definition_class(cls, definition: object) -> type[DeckDefinition]:
-        """Validate a programmatically supplied definition class."""
+    def validate_template_source(cls, value: str | None) -> str | None:
+        if value is not None:
+            _template_nonblank(value)
+            if len(value) > MAX_TEMPLATE_LENGTH:
+                raise ValueError(f"must not exceed {MAX_TEMPLATE_LENGTH} characters")
+        return value
 
-        if not isinstance(definition, type) or not issubclass(definition, cls):
-            raise ValueError("deck definition must be a DeckDefinition subclass")
-        if isabstract(definition):
-            raise ValueError("deck definition must be concrete")
-        config_name = getattr(definition, "config_name", None)
-        if not isinstance(config_name, str) or not config_name:
-            raise ValueError("deck definition must define a non-empty config_name")
-        required = getattr(definition, "required_variables", None)
-        if (
-            not isinstance(required, frozenset)
-            or not required
-            or not all(isinstance(variable, str) and variable for variable in required)
-        ):
-            raise ValueError("deck definition must define required_variables as non-empty strings")
-        card_type = getattr(definition, "card_type", None)
-        if not isinstance(card_type, type) or not issubclass(card_type, Card):
-            raise ValueError("deck definition must define a Card subclass as card_type")
-        for name in ("front_template", "back_template"):
-            field = definition.model_fields.get(name)
-            contract = DeckDefinition.model_fields[name]
-            if (
-                field is None
-                or field.annotation != contract.annotation
-                or field.metadata != contract.metadata
-            ):
-                raise ValueError(
-                    f"deck definition must declare {name} with the TemplateSource type"
+    @model_validator(mode="after")
+    def validate_templates(self) -> ExerciseGenerator:
+        for field_name in ("front_template", "back_template"):
+            source = getattr(self, field_name)
+            if source is None:
+                continue
+            try:
+                _template(source)
+                unknown = (
+                    meta.find_undeclared_variables(_TEMPLATE_ENVIRONMENT.parse(source))
+                    - self.template_context_names
                 )
-            if not field.is_required() and field.default_factory is None:
-                try:
-                    if not isinstance(field.default, str):
-                        raise ValueError("must be a string")
-                    _validate_template_source(field.default)
-                except ValueError as error:
-                    raise ValueError(
-                        f"deck definition has an invalid {name} default: {error}"
-                    ) from error
-        return definition
+                if unknown:
+                    names = ", ".join(sorted(unknown))
+                    raise ValueError(f"uses unknown template variable(s): {names}")
+            except TemplateError as error:
+                raise ValueError(f"{field_name} is not valid Jinja: {error}") from error
+        return self
+
+    def validate_references(self, known_entity_ids: set[str]) -> None:
+        """Validate references after the complete entity set is available."""
+
+    @property
+    @abstractmethod
+    def target_ids(self) -> tuple[str, ...]:
+        """The scheduled target IDs in declared generator order."""
 
     @classmethod
-    def from_name(cls, name: str) -> type[DeckDefinition]:
-        """Resolve the registered definition for a stable TOML kind name."""
+    def register(cls, generator_type: type[ExerciseGenerator]) -> type[ExerciseGenerator]:
+        cls._registry[generator_type.type_name] = generator_type
+        return generator_type
 
-        try:
-            return cls._registry[name]
-        except KeyError as error:
-            available = ", ".join(repr(value) for value in sorted(cls._registry))
-            raise ValueError(f"kind must be {available}") from error
-
-    @classmethod
-    def from_config(
-        cls,
-        value: object,
-        *,
-        context: dict[str, object] | None = None,
-    ) -> DeckDefinition:
-        """Dispatch one raw TOML deck table to its registered definition."""
-
-        if isinstance(value, cls):
-            return value
-        if not isinstance(value, Mapping):
-            raise ValueError("each deck must be a table")
-        raw_kind = value.get("kind")
-        if not isinstance(raw_kind, str):
-            raise ValueError("deck kind must be a string")
-        definition = cls.from_name(raw_kind.strip())
-        data = dict(value)
-        del data["kind"]
-        return definition.model_validate(data, context=context)
-
-    def _read_query(self) -> str:
-        try:
-            return self.query_path.read_text(encoding="utf-8")
-        except FileNotFoundError as error:
+    def _key(self, entity_id: str, deck_id: str) -> CardKey:
+        if entity_id not in self.target_ids:
             raise PresentationError(
-                f"query file for deck {self.name!r} not found: {self.query_path}"
-            ) from error
-        except OSError as error:
-            raise PresentationError(
-                f"could not read query file for deck {self.name!r}: {error}"
-            ) from error
-
-    def execute_cards(
-        self,
-        graph: Graph,
-        card_key: CardKey | None = None,
-        *,
-        rng: random.Random,
-    ) -> dict[str, Card]:
-        """Run this deck's query and generate current semantic cards."""
-
-        if card_key is not None and card_key.target_kind != self.target:
-            raise PresentationError(
-                f"deck {self.name!r} targets {self.target} cards but received a "
-                f"{card_key.target_kind} card"
+                f"generator {self.id!r} does not generate an exercise for entity {entity_id!r}"
             )
-        bindings = (
-            card_key.query_bindings if card_key is not None and self.uses_card_bindings else None
-        )
-        try:
-            result = graph.query(self._read_query(), initBindings=bindings)
-        except Exception as error:
-            raise PresentationError(
-                f"SPARQL query for deck {self.name!r} failed: {error}"
-            ) from error
-        if result.type != "SELECT":
-            raise PresentationError(f"deck {self.name!r} must use a SELECT query")
-
-        expected = IDENTITY_VARIABLES[self.target] | self.required_variables
-        selected = {str(variable) for variable in result.vars or ()}
-        if self.exact_projection is not None and selected != set(self.exact_projection):
-            variables = ", ".join(f"?{name}" for name in self.exact_projection[:-1])
-            variables += f", and ?{self.exact_projection[-1]}"
-            label = self.config_name.replace("_", "-")
-            raise PresentationError(
-                f"deck {self.name!r} {label} queries must SELECT exactly {variables}"
-            )
-        missing = sorted(expected - selected)
-        if missing:
-            joined = ", ".join(f"?{name}" for name in missing)
-            raise PresentationError(
-                f"deck {self.name!r} does not SELECT required variables: {joined}"
-            )
-
-        cards = self.group(result, expected=expected, card_key=card_key, rng=rng)
-        if card_key is not None:
-            unexpected = [item.card_key for item in cards.values() if item.card_key != card_key]
-            if unexpected:
-                raise PresentationError(
-                    f"deck {self.name!r} ignored the supplied card bindings while generating"
-                )
-        return cards
-
-    def render_context(self, card: Card) -> Mapping[str, object]:
-        """Return the curated semantic data exposed to this deck's templates."""
-
-        return card.model_dump(exclude={"card_key"})
-
-    def render(self, card: Card) -> CardView:
-        """Render one compatible semantic card through this configured deck."""
-
-        if not isinstance(card, self.card_type):
-            raise PresentationError(
-                f"deck {self.name!r} renders {self.card_type.__name__}, not {type(card).__name__}"
-            )
-        try:
-            context = self.render_context(card)
-            front = _template(self.front_template).render(**context)
-            back = _template(self.back_template).render(**context)
-        except PresentationError:
-            raise
-        except Exception as error:
-            raise PresentationError(
-                f"deck {self.name!r} could not render its card: {error}"
-            ) from error
-        return CardView(card_key=card.card_key, front=front, back=back)
+        return CardKey.exercise(deck_id, self.id, entity_id)
 
     @abstractmethod
-    def group(
-        self,
-        result: object,
-        *,
-        expected: set[str],
-        card_key: CardKey | None = None,
-        rng: random.Random,
-    ) -> dict[str, Card]:
-        """Convert validated SPARQL rows into semantic cards keyed by card ID."""
+    def generate(self, entity_id: str, context: ExerciseGeneratorContext) -> Exercise:
+        """Generate one semantic exercise for a target entity."""
 
-    @staticmethod
-    def _row_values(row: object) -> dict[str, Identifier]:
-        return {str(key): value for key, value in row.asdict().items()}  # type: ignore[attr-defined]
+    @abstractmethod
+    def render(self, exercise: Exercise, context: ExerciseGeneratorContext) -> CardView:
+        """Render one semantic exercise using the supplied entity registry."""
 
-    def _require_bound(
-        self,
-        values: dict[str, Identifier],
-        expected: set[str],
-        row_number: int,
-    ) -> None:
-        missing = sorted(name for name in expected if values.get(name) is None)
-        if missing:
-            joined = ", ".join(f"?{name}" for name in missing)
-            raise PresentationError(
-                f"deck {self.name!r} row {row_number} has unbound required variables: {joined}"
-            )
+    def validation_exercises(self, context: ExerciseGeneratorContext) -> tuple[Exercise, ...]:
+        """Return deterministic exercises covering this generator for render preflight."""
 
-    def _card_key(self, values: dict[str, Identifier], row_number: int) -> CardKey:
+        context = ExerciseGeneratorContext(context.deck_id, context.entities, random.Random(0))
+        return tuple(self.generate(target_id, context) for target_id in self.target_ids)
+
+
+class DeckDocument(FrozenModel):
+    """The complete study-content document loaded from ``deck.json``."""
+
+    name: StrictStr | None = None
+    entities: tuple[Entity, ...]
+    exercises: tuple[ExerciseGenerator, ...]
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str | None) -> str | None:
+        if value is not None:
+            _nonblank(value)
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def dispatch_generators(cls, value: object) -> object:
+        """Dispatch generator envelopes before validating the complete document."""
+
+        if not isinstance(value, Mapping):
+            return value
+        raw_exercises = value.get("exercises")
+        if not isinstance(raw_exercises, (list, tuple)):
+            return value
+        dispatched: list[object] = []
+        for item in raw_exercises:
+            if not isinstance(item, Mapping):
+                dispatched.append(item)
+                continue
+            kind = item.get("type")
+            runtime_class = ExerciseGenerator._registry.get(kind) if isinstance(kind, str) else None
+            if runtime_class is None:
+                raise ValueError(f"unknown exercise generator type {kind!r}")
+            dispatched.append(runtime_class.model_validate(item))
+        result = dict(value)
+        result["exercises"] = dispatched
+        return result
+
+    @model_validator(mode="after")
+    def validate_registry(self) -> DeckDocument:
+        entity_ids = tuple(entity.id for entity in self.entities)
+        if len(set(entity_ids)) != len(entity_ids):
+            duplicate = next(item for item in entity_ids if entity_ids.count(item) > 1)
+            raise ValueError(f"duplicate entity ID: {duplicate!r}")
+        generator_ids = tuple(generator.id for generator in self.exercises)
+        if len(set(generator_ids)) != len(generator_ids):
+            duplicate = next(item for item in generator_ids if generator_ids.count(item) > 1)
+            raise ValueError(f"duplicate generator ID: {duplicate!r}")
+        known = set(entity_ids)
+        for generator in self.exercises:
+            generator.validate_references(known)
+        return self
+
+
+def _require_refs(generator_id: str, refs: Sequence[str], known: set[str], label: str) -> None:
+    for ref in refs:
+        if ref not in known:
+            raise ValueError(f"generator {generator_id!r} references unknown {label} {ref!r}")
+
+
+@dataclass(frozen=True)
+class Deck:
+    """Immutable runtime aggregate containing all content and generators for one deck."""
+
+    name: str
+    path: Path
+    document: DeckDocument
+    entities: Mapping[str, Entity]
+    generators: tuple[ExerciseGenerator, ...]
+
+    @property
+    def display_name(self) -> str:
+        return self.document.name or self.name
+
+    @classmethod
+    def from_document(cls, document: DeckDocument, *, name: str, path: Path) -> Deck:
+        entities = MappingProxyType({entity.id: entity for entity in document.entities})
+        generators = document.exercises
+        return cls(name, path, document, entities, generators)
+
+    @classmethod
+    def load(cls, value: str | Path) -> Deck:
         try:
-            return CardKey.from_bindings(self.target, values)
-        except PresentationError as error:
-            raise PresentationError(f"deck {self.name!r} row {row_number}: {error}") from error
+            path = Path(value).expanduser().resolve()
+        except (OSError, RuntimeError) as error:
+            raise ConfigError(f"could not resolve deck path {value}: {error}") from error
+        try:
+            mode = path.stat().st_mode
+        except OSError as error:
+            raise ConfigError(f"could not access deck file {path}: {error}") from error
+        if not S_ISREG(mode):
+            raise ConfigError(f"deck path is not a file: {path}")
+        try:
+            raw = json.loads(
+                path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object
+            )
+            document = DeckDocument.model_validate(raw)
+            # A deck's path is its stable identity source. The JSON display name is not.
+            name = path.parent.name
+            _nonblank(name)
+            deck = cls.from_document(document, name=name, path=path)
+            try:
+                deck._validate_rendering()
+            except PresentationError as error:
+                raise ConfigError(f"invalid deck {path}: {error}") from error
+            return deck
+        except ConfigError:
+            raise
+        except (OSError, UnicodeError) as error:
+            raise ConfigError(f"could not read deck file {path}: {error}") from error
+        except (
+            json.JSONDecodeError,
+            RecursionError,
+            ValidationError,
+            TypeError,
+            ValueError,
+        ) as error:
+            message = _validation_message(error)
+            raise ConfigError(f"invalid deck {path}: {message}") from error
 
-    def _rdf_integer(
-        self,
-        value: Identifier,
-        *,
-        variable: str,
-        minimum: int,
-        minimum_description: str,
-        row_number: int,
-    ) -> int:
-        """Validate an RDF integer without accepting RDFLib coercions."""
+    def _validate_rendering(self) -> None:
+        """Preflight generated views so template errors fail before synchronization."""
 
-        if not isinstance(value, Literal) or value.datatype != XSD.integer:
-            raise PresentationError(
-                f"deck {self.name!r} row {row_number} ?{variable} must be an xsd:integer literal"
-            )
-        if re.fullmatch(r"[+-]?[0-9]+", str(value)) is None:
-            raise PresentationError(
-                f"deck {self.name!r} row {row_number} has an invalid xsd:integer "
-                f"lexical value for ?{variable}"
-            )
-        converted = value.toPython()
-        if isinstance(converted, bool) or not isinstance(converted, int):
-            raise PresentationError(
-                f"deck {self.name!r} row {row_number} has an invalid xsd:integer "
-                f"value for ?{variable}"
-            )
-        if converted < minimum:
-            raise PresentationError(
-                f"deck {self.name!r} row {row_number} ?{variable} must be {minimum_description}"
-            )
-        return converted
+        context = ExerciseGeneratorContext(self.name, self.entities, random.Random(0))
+        for generator in self.generators:
+            for exercise in generator.validation_exercises(context):
+                self.render(exercise, rng=random.Random(0))
 
-    @staticmethod
-    def _by_digest(cards: list[Card]) -> dict[str, Card]:
-        # Comparing identities as well as hashes prevents a collision from
-        # silently merging two distinct RDF cards.
-        by_digest: dict[str, Card] = {}
-        for card in cards:
-            card_id = card.card_key.digest
-            existing = by_digest.get(card_id)
-            if existing is not None and existing.card_key != card.card_key:
-                raise PresentationError("SHA-256 collision between two different card identities")
-            by_digest[card_id] = card
-        return by_digest
+    def generate_all(self, *, rng: random.Random | None = None) -> dict[str, Card]:
+        random_source = rng or random.Random()
+        context = ExerciseGeneratorContext(self.name, self.entities, random_source)
+        generated: dict[str, Card] = {}
+        for generator in self.generators:
+            for target_id in generator.target_ids:
+                exercise = generator.generate(target_id, context)
+                card_id = exercise.card_key.digest
+                existing = generated.get(card_id)
+                if existing is not None and existing.card_key != exercise.card_key:
+                    raise PresentationError("SHA-256 collision between generated exercises")
+                generated[card_id] = exercise
+        return generated
+
+    def generate(self, card_key: CardKey, *, rng: random.Random | None = None) -> Exercise:
+        if card_key.deck_id != self.name or card_key.generator_id is None:
+            raise PresentationError(f"card {card_key.digest} does not belong to deck {self.name!r}")
+        context = ExerciseGeneratorContext(self.name, self.entities, rng or random.Random())
+        for generator in self.generators:
+            if generator.id == card_key.generator_id:
+                return generator.generate(cast(str, card_key.entity_id), context)
+        raise PresentationError(
+            f"deck {self.name!r} no longer has generator {card_key.generator_id!r}"
+        )
+
+    def render(self, exercise: Exercise, *, rng: random.Random | None = None) -> CardView:
+        if exercise.card_key.deck_id != self.name:
+            raise PresentationError(f"exercise does not belong to deck {self.name!r}")
+        context = ExerciseGeneratorContext(self.name, self.entities, rng or random.Random())
+        for generator in self.generators:
+            if generator.id == exercise.generator_id:
+                return generator.render(exercise, context)
+        raise PresentationError(
+            f"deck {self.name!r} no longer has generator {exercise.generator_id!r}"
+        )
+
+
+def _validation_message(error: Exception) -> str:
+    if isinstance(error, ValidationError):
+        return str(error.errors(include_url=False)[0]["msg"]).removeprefix("Value error, ")
+    return str(error)
+
+
+__all__ = [
+    "Deck",
+    "DeckDocument",
+    "Entity",
+    "ExerciseGenerator",
+    "ExerciseGeneratorContext",
+]

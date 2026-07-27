@@ -41,7 +41,7 @@ from graphcards.web.study import RequestFailure, StudyMode, StudySession, comple
 # A valid 500-character reason can occupy 6,000 bytes once UTF-8 is percent-encoded.
 MAX_FORM_BYTES = 8192
 CONTROLLER_EXTENSION = "graphcards_controller"
-EXPECTED_HOST_CONFIG = "RDFCARDS_EXPECTED_HOST"
+EXPECTED_HOST_CONFIG = "GRAPHCARDS_EXPECTED_HOST"
 _MAX_FIELDS = 32
 _ASCII_HEX_DIGITS = frozenset(b"0123456789abcdefABCDEF")
 

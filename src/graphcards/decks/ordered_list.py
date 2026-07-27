@@ -1,221 +1,154 @@
-"""Ordered-list completion cards, generation, and rendering."""
+"""Ordered-list entity-backed exercise generator."""
 
 from __future__ import annotations
 
-import random
-from collections import defaultdict
-from collections.abc import Mapping
-from typing import Annotated
-from typing import Literal as TypingLiteral
+from typing import ClassVar, Literal
 
-from pydantic import Field, ValidationError, field_validator, model_validator
-from rdflib import URIRef
-from rdflib.term import Identifier
+from pydantic import StrictInt, StrictStr, model_validator
 
 from graphcards.decks.base import (
-    DEFAULT_WINDOW_SIZE,
-    DeckDefinition,
-    TemplateSource,
+    ExerciseGenerator,
+    ExerciseGeneratorContext,
+    _render_template,
+    _require_refs,
 )
 from graphcards.errors import PresentationError
-from graphcards.models import Card, CardKey, RdfModel, TargetKind, validation_message
+from graphcards.models import CardView, Exercise
+
+DEFAULT_WINDOW_SIZE = 5
+FRONT_TEMPLATE = (
+    "{% if omitted_before %}…\n{% endif %}"
+    "{% for row in rows %}{{ row.position }}. "
+    "{% if row.is_target %}?{% else %}"
+    "{{ row.entity.data.get('label', row.entity.data.get('back', "
+    "row.entity.data.get('answer', row.entity.id))) }}"
+    "{% endif %}"
+    "{% if not loop.last or omitted_after %}\n{% endif %}"
+    "{% endfor %}{% if omitted_after %}…{% endif %}"
+)
+BACK_TEMPLATE = (
+    "{{ target.data.get('label', target.data.get('back', target.data.get('answer', target.id))) }}"
+)
 
 
-class OrderedListRow(RdfModel):
-    """One validated row in an ordered-list query result."""
-
-    entity: URIRef
-    group: Identifier
-    position: Annotated[int, Field(strict=True, ge=1)]
-    label: Identifier
-
-
-class OrderedListCard(Card):
-    """Semantic rows and hidden position for one ordered-list card."""
-
-    ordered_rows: tuple[OrderedListRow, ...]
-    hidden_position: Annotated[int, Field(strict=True, ge=1)]
-
-    @classmethod
-    def from_rows(
-        cls,
-        *,
-        card_key: CardKey,
-        rows: list[OrderedListRow],
-        hidden: OrderedListRow,
-    ) -> OrderedListCard:
-        """Build one semantic card from a complete validated list."""
-
-        ordered_rows = tuple(sorted(rows, key=lambda row: row.position))
-        return cls(
-            card_key=card_key,
-            ordered_rows=ordered_rows,
-            hidden_position=hidden.position,
-        )
+@ExerciseGenerator.register
+class OrderedListExerciseGenerator(ExerciseGenerator):
+    type: Literal["ordered_list"] = "ordered_list"
+    type_name = "ordered_list"
+    groups: dict[StrictStr, tuple[StrictStr, ...]]
+    window_size: StrictInt = DEFAULT_WINDOW_SIZE
+    template_context_names: ClassVar[frozenset[str]] = frozenset(
+        {"target", "ordered_entities", "rows", "omitted_before", "omitted_after"}
+    )
 
     @model_validator(mode="after")
-    def validate_ordered_list(self) -> OrderedListCard:
-        if len(self.ordered_rows) < 2:
-            raise ValueError("must contain at least two rows")
-        positions = [row.position for row in self.ordered_rows]
-        expected_positions = list(range(1, len(self.ordered_rows) + 1))
-        if positions != expected_positions:
-            reason = "unique" if len(set(positions)) != len(positions) else "contiguous 1-based"
-            raise ValueError(f"must have {reason} positions")
-        groups = {row.group for row in self.ordered_rows}
-        if len(groups) != 1:
-            raise ValueError("rows must belong to one group")
-        if self.hidden_position > len(self.ordered_rows):
-            raise ValueError("hidden position must identify an ordered-list row")
+    def validate_group_ids(self) -> OrderedListExerciseGenerator:
+        for group_id, members in self.groups.items():
+            if not group_id.strip():
+                raise ValueError("ordered-list group IDs must be non-blank strings")
+            for member in members:
+                if not member.strip():
+                    raise ValueError("ordered-list members must be non-blank strings")
+        return self
 
-        hidden = self.ordered_rows[self.hidden_position - 1]
-        if self.card_key != CardKey.entity(hidden.entity):
-            raise ValueError("hidden row must match the card identity")
+    @model_validator(mode="after")
+    def validate_window_size(self) -> OrderedListExerciseGenerator:
+        if self.window_size < 0:
+            raise ValueError("ordered-list window_size must be zero or greater")
+        return self
+
+    def validate_references(self, known_entity_ids: set[str]) -> None:
+        if not self.groups:
+            raise ValueError(f"generator {self.id!r} must define groups")
+        members: set[str] = set()
+        for group_id, group_members in self.groups.items():
+            _require_refs(self.id, (group_id,), known_entity_ids, "group")
+            _require_refs(self.id, group_members, known_entity_ids, "group member")
+            if len(group_members) < 2:
+                raise ValueError(
+                    f"generator {self.id!r} group {group_id!r} needs at least two members"
+                )
+            if len(group_members) != len(set(group_members)):
+                raise ValueError(f"generator {self.id!r} group {group_id!r} has duplicate members")
+            overlap = members.intersection(group_members)
+            if overlap:
+                raise ValueError(
+                    f"generator {self.id!r} member {sorted(overlap)[0]!r} belongs to multiple "
+                    "groups"
+                )
+            members.update(group_members)
+
+    @property
+    def target_ids(self) -> tuple[str, ...]:
+        return tuple(member for members in self.groups.values() for member in members)
+
+    def generate(self, entity_id: str, context: ExerciseGeneratorContext) -> Exercise:
+        key = self._key(entity_id, context.deck_id)
+        for group_id, members in self.groups.items():
+            if entity_id in members:
+                return OrderedListExercise(
+                    card_key=key,
+                    generator_id=self.id,
+                    target_id=entity_id,
+                    group_id=group_id,
+                    ordered_ids=members,
+                )
+        raise PresentationError(f"generator {self.id!r} has no group for entity {entity_id!r}")
+
+    def render(self, exercise: Exercise, context: ExerciseGeneratorContext) -> CardView:
+        if not isinstance(exercise, OrderedListExercise):
+            raise PresentationError(f"generator {self.id!r} cannot render this exercise type")
+        try:
+            target_index = exercise.ordered_ids.index(exercise.target_id)
+            if self.window_size == 0 or self.window_size >= len(exercise.ordered_ids):
+                visible_start = 0
+                visible_end = len(exercise.ordered_ids)
+            else:
+                visible_start = max(0, target_index - self.window_size // 2)
+                visible_start = min(
+                    visible_start,
+                    len(exercise.ordered_ids) - self.window_size,
+                )
+                visible_end = visible_start + self.window_size
+            visible_ids = exercise.ordered_ids[visible_start:visible_end]
+            render_context = {
+                "target": context.entities[exercise.target_id],
+                "ordered_entities": tuple(
+                    context.entities[member] for member in exercise.ordered_ids
+                ),
+                "rows": tuple(
+                    {
+                        "position": index + visible_start + 1,
+                        "entity": context.entities[member],
+                        "is_target": member == exercise.target_id,
+                    }
+                    for index, member in enumerate(visible_ids)
+                ),
+                "omitted_before": visible_start > 0,
+                "omitted_after": visible_end < len(exercise.ordered_ids),
+            }
+            return CardView(
+                card_key=exercise.card_key,
+                front=_render_template(self.front_template or FRONT_TEMPLATE, render_context),
+                back=_render_template(self.back_template or BACK_TEMPLATE, render_context),
+            )
+        except (KeyError, TypeError) as error:
+            raise PresentationError(
+                f"generator {self.id!r} exercise references an unknown entity"
+            ) from error
+
+
+class OrderedListExercise(Exercise):
+    group_id: StrictStr
+    ordered_ids: tuple[StrictStr, ...]
+
+    @model_validator(mode="after")
+    def validate_ordered_list(self) -> OrderedListExercise:
+        if self.target_id not in self.ordered_ids:
+            raise ValueError("ordered-list target must be one of its members")
+        if len(self.ordered_ids) < 2 or len(set(self.ordered_ids)) != len(self.ordered_ids):
+            raise ValueError("ordered-list members must be unique and contain at least two items")
         return self
 
 
-class OrderedListDeck(DeckDefinition):
-    """Configured ordered-list generation and rendering behavior."""
-
-    config_name = "ordered_list"
-    required_variables = frozenset({"group", "position", "label"})
-    uses_card_bindings = False
-    exact_projection = ("entity", "group", "position", "label")
-    card_type = OrderedListCard
-    front_template: TemplateSource = (
-        "{% if omitted_before %}…\n{% endif %}"
-        "{% for row in rows %}{{ row.position }}. {{ row.value }}"
-        "{% if not loop.last or omitted_after %}\n{% endif %}"
-        "{% endfor %}{% if omitted_after %}…{% endif %}"
-    )
-    back_template: TemplateSource = "{{ answer }}"
-
-    target: TypingLiteral[TargetKind.ENTITY]
-    window_size: Annotated[int, Field(strict=True, ge=0)] = DEFAULT_WINDOW_SIZE
-
-    def render_context(
-        self,
-        card: Card,
-    ) -> Mapping[str, object]:
-        if not isinstance(card, OrderedListCard):
-            return {}
-        window_size = self.window_size
-        if window_size == 0 or window_size >= len(card.ordered_rows):
-            visible = card.ordered_rows
-            omitted_before = omitted_after = False
-        else:
-            target_index = card.hidden_position - 1
-            start = max(0, target_index - window_size // 2)
-            start = min(start, len(card.ordered_rows) - window_size)
-            end = start + window_size
-            visible = card.ordered_rows[start:end]
-            omitted_before = start > 0
-            omitted_after = end < len(card.ordered_rows)
-        hidden = card.ordered_rows[card.hidden_position - 1]
-        return {
-            "rows": tuple(
-                {
-                    "position": row.position,
-                    "value": "?" if row.position == card.hidden_position else str(row.label),
-                }
-                for row in visible
-            ),
-            "omitted_before": omitted_before,
-            "omitted_after": omitted_after,
-            "answer": str(hidden.label),
-        }
-
-    @field_validator("target", mode="before")
-    @classmethod
-    def require_entity_target(cls, value: object) -> object:
-        if value not in (TargetKind.ENTITY, TargetKind.ENTITY.value):
-            raise ValueError("ordered_list decks must target entity cards")
-        return value
-
-    def _position(self, value: Identifier, row_number: int) -> int:
-        return self._rdf_integer(
-            value,
-            variable="position",
-            minimum=1,
-            minimum_description="at least 1",
-            row_number=row_number,
-        )
-
-    def _row(
-        self,
-        values: dict[str, Identifier],
-        *,
-        row_number: int,
-    ) -> OrderedListRow:
-        try:
-            return OrderedListRow(
-                entity=values["entity"],
-                group=values["group"],
-                position=self._position(values["position"], row_number),
-                label=values["label"],
-            )
-        except PresentationError:
-            raise
-        except ValidationError as error:
-            raise PresentationError(
-                f"deck {self.name!r} row {row_number} has an invalid ordered-list row: "
-                f"{validation_message(error)}"
-            ) from error
-
-    def group(
-        self,
-        result: object,
-        *,
-        expected: set[str],
-        card_key: CardKey | None = None,
-        rng: random.Random,
-    ) -> dict[str, Card]:
-        del rng
-        rows_by_group: dict[Identifier, list[OrderedListRow]] = defaultdict(list)
-        entity_groups: dict[URIRef, Identifier] = {}
-        entity_keys: dict[URIRef, CardKey] = {}
-        for row_number, row in enumerate(result, start=1):  # type: ignore[arg-type]
-            values = self._row_values(row)
-            self._require_bound(values, expected, row_number)
-            key = self._card_key(values, row_number)
-            parsed = self._row(values, row_number=row_number)
-            existing_group = entity_groups.get(parsed.entity)
-            if existing_group is not None:
-                if existing_group != parsed.group:
-                    raise PresentationError(
-                        f"deck {self.name!r} entity {parsed.entity.n3()} belongs to multiple "
-                        "ordered-list groups"
-                    )
-                raise PresentationError(
-                    f"deck {self.name!r} returns duplicate ordered-list rows for "
-                    f"entity {parsed.entity.n3()}"
-                )
-            entity_groups[parsed.entity] = parsed.group
-            entity_keys[parsed.entity] = key
-            rows_by_group[parsed.group].append(parsed)
-
-        cards: list[Card] = []
-        for group, group_rows in rows_by_group.items():
-            try:
-                group_cards = [
-                    OrderedListCard.from_rows(
-                        card_key=entity_keys[row.entity],
-                        rows=group_rows,
-                        hidden=row,
-                    )
-                    for row in sorted(group_rows, key=lambda item: item.position)
-                ]
-            except ValidationError as error:
-                raise PresentationError(
-                    f"deck {self.name!r} ordered-list group {group.n3()} "
-                    f"{validation_message(error)}"
-                ) from error
-            cards.extend(
-                card for card in group_cards if card_key is None or card.card_key == card_key
-            )
-
-        if card_key is not None and not cards:
-            raise PresentationError(
-                f"deck {self.name!r} ordered-list query does not contain card {card_key.digest}"
-            )
-        return self._by_digest(cards)
+__all__ = ["OrderedListExercise", "OrderedListExerciseGenerator"]

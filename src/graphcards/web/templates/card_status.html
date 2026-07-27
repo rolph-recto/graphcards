@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% set main_class = "status-main" %}
-{% block title %}{{ deck.name }} card status{% endblock %}
-{% block masthead %}<p class="deck-name">{{ deck.name }}</p>{% endblock %}
+{% block title %}{{ deck.display_name }} card status{% endblock %}
+{% block masthead %}<p class="deck-name">{{ deck.display_name }}</p>{% endblock %}
 {% block content %}
   <nav class="study-nav"><a href="{{ url_for('index') }}">← All decks</a></nav>
   <header class="status-header">
     <div>
-      <h1>{{ deck.name }}</h1>
+      <h1>{{ deck.display_name }}</h1>
       <p class="muted">Review activity and FSRS memory metrics.</p>
     </div>
     <p class="muted">

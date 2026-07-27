@@ -1,4 +1,4 @@
-"""Study-session orchestration across RDFLib, SQLite, and FSRS."""
+"""Study-session orchestration across JSON decks, SQLite, and FSRS."""
 
 from __future__ import annotations
 
@@ -6,12 +6,11 @@ import random
 from datetime import datetime
 
 from fsrs import Rating, Scheduler
-from rdflib import Graph
 
-from graphcards.decks import DeckDefinition
+from graphcards.decks import Deck
 from graphcards.errors import PresentationError
 from graphcards.models import Card, CardView
-from graphcards.presentation import execute_cards
+from graphcards.presentation import execute_cards, render_card
 from graphcards.storage import Repository, StoredCard, datetime_as_utc, utc_now
 
 
@@ -20,47 +19,42 @@ class StudyService:
 
     def __init__(
         self,
-        graph: Graph,
         repository: Repository,
         scheduler: Scheduler,
         rng: random.Random | None = None,
     ) -> None:
-        self.graph = graph
         self.repository = repository
         self.scheduler = scheduler
         self.rng = rng or random.Random()
 
-    def sync(self, deck: DeckDefinition, now: datetime | None = None) -> tuple[int, int]:
+    def sync(self, deck: Deck, now: datetime | None = None) -> tuple[int, int]:
         cards = self.generate_all(deck)
         return self.repository.sync_deck(deck.name, cards, now or utc_now())
 
-    def generate_all(self, deck: DeckDefinition) -> dict[str, Card]:
-        """Generate every current semantic card for a deck in one query."""
+    def generate_all(self, deck: Deck) -> dict[str, Card]:
+        """Generate every current semantic exercise from one validated deck."""
 
-        return execute_cards(self.graph, deck, rng=self.rng)
+        return execute_cards(deck, rng=self.rng)
 
-    def render_all(self, deck: DeckDefinition) -> dict[str, CardView]:
+    def render_all(self, deck: Deck) -> dict[str, CardView]:
         """Generate and render all current cards at the application boundary."""
 
-        return {card_id: deck.render(card) for card_id, card in self.generate_all(deck).items()}
+        return {
+            card_id: render_card(deck, card) for card_id, card in self.generate_all(deck).items()
+        }
 
-    def render(self, deck: DeckDefinition, stored_card: StoredCard) -> CardView:
-        cards = execute_cards(
-            self.graph,
-            deck,
-            stored_card.card_key,
-            rng=self.rng,
-        )
+    def render(self, deck: Deck, stored_card: StoredCard) -> CardView:
+        cards = execute_cards(deck, stored_card.card_key, rng=self.rng)
         card = cards.get(stored_card.card_id)
         if card is None:
             raise PresentationError(
                 f"deck {deck.name!r} no longer generates card {stored_card.card_id}"
             )
-        return deck.render(card)
+        return render_card(deck, card)
 
     def suspend(
         self,
-        deck: DeckDefinition,
+        deck: Deck,
         card_id: str,
         reason: str | None = None,
     ) -> None:
@@ -68,23 +62,20 @@ class StudyService:
 
         self.repository.suspend_card(deck.name, card_id, reason)
 
-    def resume(self, deck: DeckDefinition, card_id: str) -> None:
+    def resume(self, deck: Deck, card_id: str) -> None:
         """Resume one membership at its existing global FSRS schedule."""
 
         self.repository.resume_card(deck.name, card_id)
 
     def review(
         self,
-        deck: DeckDefinition,
+        deck: Deck,
         card: StoredCard,
         rating: Rating,
         now: datetime | None = None,
     ) -> StoredCard:
-        if card.card_key.target_kind != deck.target:
-            raise PresentationError(
-                f"deck {deck.name!r} targets {deck.target} cards but received a "
-                f"{card.card_key.target_kind} card"
-            )
+        if card.card_key.deck_id != deck.name:
+            raise PresentationError(f"card {card.card_id} does not belong to deck {deck.name!r}")
         review_time = datetime_as_utc(now or utc_now())
         source_card = card.card()
         previous_interval_seconds = (

@@ -14,9 +14,9 @@ from typing import TextIO
 
 from graphcards.app import StudyService
 from graphcards.config import AppConfig, load_config
-from graphcards.decks import DeckDefinition
+from graphcards.decks import Deck
 from graphcards.errors import GraphCardsError
-from graphcards.presentation import execute_cards, load_graph
+from graphcards.presentation import execute_cards
 from graphcards.scaffold import available_templates, initialize_workspace
 from graphcards.storage import CardStatus, Repository, datetime_to_text, utc_now
 from graphcards.web import run_server
@@ -30,7 +30,7 @@ def _card_id(value: str) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="graphcards", description="Learn RDF triples and entities with SPARQL-driven cards"
+        prog="graphcards", description="Learn entity-backed exercises with FSRS scheduling"
     )
     parser.add_argument(
         "-c", "--config", default="graphcards.toml", help="project TOML file (default: %(default)s)"
@@ -44,8 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("templates", help="list bundled workspace templates")
 
     for command, help_text in (
-        ("validate", "validate RDF sources and presentation queries"),
-        ("sync", "synchronize query results into study state"),
+        ("validate", "validate deck.json study content"),
+        ("sync", "synchronize generated exercises into study state"),
         ("status", "show card counts"),
     ):
         command_parser = subparsers.add_parser(command, help=help_text)
@@ -72,24 +72,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _selected_decks(config: AppConfig, name: str | None) -> tuple[DeckDefinition, ...]:
+def _selected_decks(config: AppConfig, name: str | None) -> tuple[Deck, ...]:
     return (config.deck(name),) if name else config.decks
 
 
 def _run_validate(config: AppConfig, deck_name: str | None, output: TextIO) -> None:
-    graph = load_graph(config.sources)
     for deck in _selected_decks(config, deck_name):
-        count = len(execute_cards(graph, deck))
-        print(f"{deck.name}: valid ({count} cards)", file=output)
+        count = len(execute_cards(deck))
+        print(f"{deck.display_name}: valid ({count} cards)", file=output)
 
 
 def _run_sync(config: AppConfig, deck_name: str | None, output: TextIO) -> None:
-    graph = load_graph(config.sources)
     with Repository(config.state_path) as repository:
-        app = StudyService(graph, repository, config.fsrs.create_scheduler())
+        app = StudyService(repository, config.fsrs.create_scheduler())
         for deck in _selected_decks(config, deck_name):
             active, created = app.sync(deck)
-            print(f"{deck.name}: {active} current, {created} new", file=output)
+            print(f"{deck.display_name}: {active} current, {created} new", file=output)
 
 
 def _status_label(card: CardStatus, now: datetime) -> str:
@@ -115,13 +113,13 @@ def _print_status_table(cards: tuple[CardStatus, ...], now: datetime, output: Te
     rows = [
         (
             card.card_id,
-            card.card_key.target_kind.value,
+            "entity",
             _status_label(card, now),
             card.fsrs_state,
             str(card.review_count),
             datetime_to_text(card.due_at),
             card.suspension_reason or "",
-            " ".join(card.card_key.n3_terms),
+            " / ".join(card.card_key.identity_parts),
         )
         for card in cards
     ]
@@ -144,12 +142,15 @@ def _run_status(config: AppConfig, deck_name: str | None, full: bool, output: Te
     now = utc_now()
     with Repository(config.state_path) as repository:
         decks = _selected_decks(config, deck_name)
+        service = StudyService(repository, config.fsrs.create_scheduler())
+        for deck in decks:
+            service.sync(deck, now)
         for index, deck in enumerate(decks):
             if full and index:
                 print(file=output)
             status = repository.status(deck.name, now)
             print(
-                f"{deck.name}: {status.available} available, "
+                f"{deck.display_name}: {status.available} available, "
                 f"{status.suspended} suspended, {status.new} new, "
                 f"{status.due} due, {status.future} future",
                 file=output,
@@ -168,7 +169,7 @@ def _run_suspend(
     deck = config.deck(deck_name)
     with Repository(config.state_path) as repository:
         repository.suspend_card(deck.name, card_id, reason)
-    print(f"{deck.name}: suspended {card_id}", file=output)
+    print(f"{deck.display_name}: suspended {card_id}", file=output)
 
 
 def _run_resume(
@@ -180,7 +181,7 @@ def _run_resume(
     deck = config.deck(deck_name)
     with Repository(config.state_path) as repository:
         repository.resume_card(deck.name, card_id)
-    print(f"{deck.name}: resumed {card_id}", file=output)
+    print(f"{deck.display_name}: resumed {card_id}", file=output)
 
 
 def main(

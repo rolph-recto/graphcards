@@ -12,7 +12,6 @@ from flask import Flask
 from werkzeug.serving import BaseWSGIServer, WSGIRequestHandler, make_server
 
 from graphcards.config import AppConfig
-from graphcards.presentation import load_graph
 from graphcards.storage import Repository
 from graphcards.web.app import EXPECTED_HOST_CONFIG, create_flask_app
 from graphcards.web.controller import StudyController
@@ -86,10 +85,9 @@ def create_web_server(
 ) -> LocalStudyServer:
     """Synchronize all decks and bind the Flask deck hub."""
 
-    graph = load_graph(config.sources)
     repository = Repository(config.state_path)
     try:
-        controller = StudyController(config, graph, repository, rng or random.Random())
+        controller = StudyController(config, repository, rng or random.Random())
         flask_app = create_flask_app(controller)
         return LocalStudyServer(flask_app, controller)
     except Exception:

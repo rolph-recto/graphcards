@@ -14,7 +14,6 @@ from zoneinfo import ZoneInfo
 from fsrs import Rating
 from pydantic import BaseModel, ConfigDict, Field
 
-from graphcards.models import TargetKind
 from graphcards.storage import CardStatus, ReviewRecord, datetime_as_utc, datetime_to_text
 
 CARD_PAGE_SIZE = 100
@@ -242,9 +241,7 @@ def status_row(
         badges.append("New")
     badges.extend(("Due" if status.due_at <= now else "Future", status.fsrs_state.title()))
     step = f" · step {status.fsrs_step}" if status.fsrs_step is not None else ""
-    identity = " ".join(status.card_key.n3_terms)
-    if status.card_key.target_kind is TargetKind.TRIPLE:
-        identity += " ."
+    identity = " / ".join(status.card_key.identity_parts)
     return StatusRow(
         status=status,
         badges=tuple(badges),
