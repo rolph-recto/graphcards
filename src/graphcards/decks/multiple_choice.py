@@ -18,16 +18,12 @@ from graphcards.models import CardView, Exercise
 
 DEFAULT_MAX_CHOICES = 4
 FRONT_TEMPLATE = (
-    "{{ target.data.get('front', target.data.get('prompt', "
-    "target.data.get('question', target.id))) }}"
+    "{{ target.front|default(target.prompt)|default(target.question)|default(target.id) }}"
     "{% for choice in choice_entities %}\n  {{ loop.index }}. "
-    "{{ choice.data.get('label', choice.data.get('back', "
-    "choice.data.get('answer', choice.id))) }}"
+    "{{ choice.label|default(choice.back)|default(choice.answer)|default(choice.id) }}"
     "{% endfor %}"
 )
-BACK_TEMPLATE = (
-    "{{ target.data.get('label', target.data.get('back', target.data.get('answer', target.id))) }}"
-)
+BACK_TEMPLATE = "{{ target.label|default(target.back)|default(target.answer)|default(target.id) }}"
 
 
 @ExerciseGenerator.register

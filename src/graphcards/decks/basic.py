@@ -16,10 +16,9 @@ from graphcards.errors import PresentationError
 from graphcards.models import CardView, Exercise
 
 FRONT_TEMPLATE = (
-    "{{ entity.data.get('front', entity.data.get('prompt', "
-    "entity.data.get('question', entity.id))) }}"
+    "{{ entity.front|default(entity.prompt)|default(entity.question)|default(entity.id) }}"
 )
-BACK_TEMPLATE = "{{ entity.data.get('back', entity.data.get('answer', entity.id)) }}"
+BACK_TEMPLATE = "{{ entity.back|default(entity.answer)|default(entity.id) }}"
 
 
 @ExerciseGenerator.register
@@ -60,7 +59,7 @@ class BasicExerciseGenerator(ExerciseGenerator):
 
 
 class BasicExercise(Exercise):
-    """Basic exercise identifying the entity whose data is rendered."""
+    """Basic exercise identifying the entity whose fields are rendered."""
 
 
 __all__ = ["BasicExercise", "BasicExerciseGenerator"]

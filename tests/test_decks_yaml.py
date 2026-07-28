@@ -125,8 +125,8 @@ exercises:
   - id: basic
     type: basic
     entities: [target]
-    front_template: '{{ entity.data.get("label") }}'
-    back_template: '{{ entity.data.get("metadata").get("details").get("unicode") }}'
+    front_template: '{{ entity.label }}'
+    back_template: '{{ entity.metadata.details.unicode }}'
 """,
     )
     card = next(iter(Deck.load(path).generate_all().values()))

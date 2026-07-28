@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from stat import S_ISREG
 from types import MappingProxyType
-from typing import Annotated, ClassVar, cast
+from typing import Annotated, Any, ClassVar, Literal, cast
 
 from jinja2 import StrictUndefined, Template, TemplateError, meta
 from jinja2.sandbox import SandboxedEnvironment
@@ -35,15 +35,82 @@ from yaml.nodes import MappingNode
 from graphcards.errors import ConfigError, PresentationError
 from graphcards.models import Card, CardKey, CardView, Exercise, FrozenModel
 
-JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
-
 MAX_TEMPLATE_LENGTH = 100_000
 MAX_RENDERED_LENGTH = 1_000_000
 TemplateSource = Annotated[StrictStr, StringConstraints(strip_whitespace=False)]
+_UNSAFE_TEMPLATE_ATTRIBUTES = frozenset(
+    {
+        "construct",
+        "copy",
+        "dict",
+        "from_orm",
+        "json",
+        "model_copy",
+        "model_computed_fields",
+        "model_config",
+        "model_construct",
+        "model_dump",
+        "model_dump_json",
+        "model_extra",
+        "model_fields",
+        "model_fields_set",
+        "model_json_schema",
+        "model_parametrized_name",
+        "model_post_init",
+        "model_rebuild",
+        "model_validate",
+        "model_validate_json",
+        "model_validate_strings",
+        "parse_file",
+        "parse_obj",
+        "parse_raw",
+        "schema",
+        "schema_json",
+        "update_forward_refs",
+        "validate",
+    }
+)
+_RESERVED_ENTITY_FIELDS = frozenset(
+    {
+        "construct",
+        "copy",
+        "dict",
+        "from_orm",
+        "json",
+        "model_computed_fields",
+        "model_config",
+        "model_construct",
+        "model_copy",
+        "model_dump",
+        "model_dump_json",
+        "model_extra",
+        "model_fields",
+        "model_fields_set",
+        "model_json_schema",
+        "model_parametrized_name",
+        "model_post_init",
+        "model_rebuild",
+        "model_validate",
+        "model_validate_json",
+        "model_validate_strings",
+        "parse_file",
+        "parse_obj",
+        "parse_raw",
+        "schema",
+        "schema_json",
+        "update_forward_refs",
+        "validate",
+    }
+)
 
 
 class _SafeTemplateEnvironment(SandboxedEnvironment):
     intercepted_binops = frozenset({"*", "**"})
+
+    def is_safe_attribute(self, obj: object, attr: str, value: object) -> bool:
+        if attr in _UNSAFE_TEMPLATE_ATTRIBUTES:
+            return False
+        return super().is_safe_attribute(obj, attr, value)
 
     def call_binop(self, context: object, operator: str, left: object, right: object) -> object:
         if operator == "*":
@@ -108,7 +175,7 @@ def _template_nonblank(value: object) -> object:
     return value
 
 
-def _json_value(value: object, path: str = "data", depth: int = 0) -> None:
+def _json_value(value: object, path: str = "entity", depth: int = 0) -> None:
     if depth > 100:
         raise ValueError(f"{path} is nested too deeply")
     if value is None or isinstance(value, (bool, int, str)):
@@ -131,10 +198,20 @@ def _json_value(value: object, path: str = "data", depth: int = 0) -> None:
 
 
 def _freeze_json(value: object) -> object:
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def _copy_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _copy_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_json(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_json(item) for item in value)
     return value
 
 
@@ -257,31 +334,148 @@ def _yaml_error_message(error: YAMLError) -> str:
     return str(error)
 
 
+def _model_validate_unique_json(
+    cls: type[FrozenModel],
+    json_data: str | bytes | bytearray,
+    *,
+    strict: bool | None,
+    extra: Literal["allow", "ignore", "forbid"] | None,
+    context: Any | None,
+    by_alias: bool | None,
+    by_name: bool | None,
+) -> Any:
+    try:
+        value = json.loads(json_data, object_pairs_hook=_unique_json_object)
+    except (RecursionError, TypeError, ValueError) as error:
+        raise ValidationError.from_exception_data(
+            cls.__name__,
+            [
+                {
+                    "type": "value_error",
+                    "loc": (),
+                    "input": json_data,
+                    "ctx": {"error": str(error)},
+                }
+            ],
+        ) from error
+    return cls.model_validate(
+        value,
+        strict=strict,
+        extra=extra,
+        context=context,
+        by_alias=by_alias,
+        by_name=by_name,
+    )
+
+
 class Entity(FrozenModel):
-    """One entity with a stable ID and arbitrary JSON-compatible metadata."""
+    """One entity with a stable ID and arbitrary immutable JSON-compatible fields."""
 
     model_config = FrozenModel.model_config | ConfigDict(extra="allow")
     id: StrictStr
 
     @field_validator("id")
     @classmethod
-    def require_id(cls, value: str) -> str:
+    def _validate_id(cls, value: str) -> str:
         return cast(str, _nonblank(value))
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_reserved_fields(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        forbidden = sorted(
+            key
+            for key in value
+            if isinstance(key, str) and (key.startswith("_") or key in _RESERVED_ENTITY_FIELDS)
+        )
+        if forbidden:
+            raise ValueError(f"reserved entity field: {forbidden[0]!r}")
+        return value
+
     @model_validator(mode="after")
-    def validate_extra_data(self) -> Entity:
-        _json_value(self.__pydantic_extra__ or {})
+    def _validate_extra_data(self) -> Entity:
+        extra = self.__pydantic_extra__ or {}
+        _json_value(extra)
+        object.__setattr__(self, "__pydantic_extra__", _copy_json(extra))
         return self
 
     @property
-    def model_extra(self) -> Mapping[str, object] | None:
-        extra = self.__pydantic_extra__
-        return cast(Mapping[str, object], _freeze_json(extra or {}))
+    def model_extra(self) -> None:
+        raise AttributeError("Entity model extras are private")
 
-    @property
-    def data(self) -> Mapping[str, JsonValue]:
-        values = self.model_dump(exclude={"id"}, mode="python")
-        return cast(Mapping[str, JsonValue], _freeze_json(values))
+    def model_copy(
+        self, *, update: Mapping[str, object] | None = None, deep: bool = False
+    ) -> Entity:
+        if update is None:
+            return cast(Entity, super().model_copy(deep=deep))
+        values = self.model_dump(mode="python")
+        values.update(update)
+        return type(self).model_validate(values)
+
+    @classmethod
+    def model_construct(cls, _fields_set: set[str] | None = None, **values: Any) -> Entity:
+        return cls.model_validate(values)
+
+    @classmethod
+    def construct(cls, _fields_set: set[str] | None = None, **values: Any) -> Entity:
+        return cls.model_validate(values)
+
+    def copy(
+        self,
+        *,
+        include: Any = None,
+        exclude: Any = None,
+        update: Mapping[str, object] | None = None,
+        deep: bool = False,
+    ) -> Entity:
+        values = self.model_dump(mode="python", include=include, exclude=exclude)
+        if update is not None:
+            values.update(update)
+        return type(self).model_validate(values)
+
+    @classmethod
+    def parse_raw(cls, b: str | bytes | bytearray, *args: Any, **kwargs: Any) -> Entity:
+        return cls.model_validate_json(b)
+
+    @classmethod
+    def parse_file(cls, path: str | Path, *args: Any, **kwargs: Any) -> Entity:
+        return cls.model_validate_json(Path(path).read_bytes())
+
+    @classmethod
+    def model_validate_json(
+        cls,
+        json_data: str | bytes | bytearray,
+        *,
+        strict: bool | None = None,
+        extra: Literal["allow", "ignore", "forbid"] | None = None,
+        context: Any | None = None,
+        by_alias: bool | None = None,
+        by_name: bool | None = None,
+    ) -> Entity:
+        return cast(
+            Entity,
+            _model_validate_unique_json(
+                cls,
+                json_data,
+                strict=strict,
+                extra=extra,
+                context=context,
+                by_alias=by_alias,
+                by_name=by_name,
+            ),
+        )
+
+    def __getattr__(self, name: str) -> object:
+        """Expose validated extra fields as immutable direct attributes."""
+
+        try:
+            extra = object.__getattribute__(self, "__pydantic_extra__")
+        except AttributeError:
+            extra = None
+        if extra is not None and name in extra:
+            return _freeze_json(extra[name])
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,6 +572,38 @@ class DeckDocument(FrozenModel):
     name: StrictStr | None = None
     entities: tuple[Entity, ...]
     exercises: tuple[ExerciseGenerator, ...]
+
+    @classmethod
+    def parse_raw(cls, b: str | bytes | bytearray, *args: Any, **kwargs: Any) -> DeckDocument:
+        return cls.model_validate_json(b)
+
+    @classmethod
+    def parse_file(cls, path: str | Path, *args: Any, **kwargs: Any) -> DeckDocument:
+        return cls.model_validate_json(Path(path).read_bytes())
+
+    @classmethod
+    def model_validate_json(
+        cls,
+        json_data: str | bytes | bytearray,
+        *,
+        strict: bool | None = None,
+        extra: Literal["allow", "ignore", "forbid"] | None = None,
+        context: Any | None = None,
+        by_alias: bool | None = None,
+        by_name: bool | None = None,
+    ) -> DeckDocument:
+        return cast(
+            DeckDocument,
+            _model_validate_unique_json(
+                cls,
+                json_data,
+                strict=strict,
+                extra=extra,
+                context=context,
+                by_alias=by_alias,
+                by_name=by_name,
+            ),
+        )
 
     @field_validator("name")
     @classmethod

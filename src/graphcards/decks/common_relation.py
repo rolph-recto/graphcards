@@ -19,14 +19,12 @@ from graphcards.models import CardView, Exercise
 
 FRONT_TEMPLATE = (
     "{% for related_entity in related_entities %}"
-    "{{ related_entity.data.get('label', related_entity.data.get('back', "
-    "related_entity.data.get('answer', related_entity.id))) }} — ?"
+    "{{ related_entity.label|default(related_entity.back)|"
+    "default(related_entity.answer)|default(related_entity.id) }} — ?"
     "{% if not loop.last %}\n{% endif %}"
     "{% endfor %}"
 )
-BACK_TEMPLATE = (
-    "{{ target.data.get('label', target.data.get('back', target.data.get('answer', target.id))) }}"
-)
+BACK_TEMPLATE = "{{ target.label|default(target.back)|default(target.answer)|default(target.id) }}"
 
 
 @ExerciseGenerator.register

@@ -16,17 +16,12 @@ from graphcards.errors import PresentationError
 from graphcards.models import CardView, Exercise
 
 FRONT_TEMPLATE = (
-    "{{ source.data.get('front', source.data.get('prompt', "
-    "source.data.get('question', source.id))) }}"
-    " is to {{ source.data.get('back', source.data.get('answer', "
-    "source.data.get('label', source.id))) }}"
-    " as {{ target.data.get('front', target.data.get('prompt', "
-    "target.data.get('question', target.id))) }}"
+    "{{ source.front|default(source.prompt)|default(source.question)|default(source.id) }}"
+    " is to {{ source.back|default(source.answer)|default(source.label)|default(source.id) }}"
+    " as {{ target.front|default(target.prompt)|default(target.question)|default(target.id) }}"
     " is to ?"
 )
-BACK_TEMPLATE = (
-    "{{ target.data.get('back', target.data.get('answer', target.data.get('label', target.id))) }}"
-)
+BACK_TEMPLATE = "{{ target.back|default(target.answer)|default(target.label)|default(target.id) }}"
 
 
 @ExerciseGenerator.register

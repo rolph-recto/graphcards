@@ -29,7 +29,7 @@ def test_loads_typed_generators_and_nested_entity_data(deck: Deck) -> None:
         "MultipleChoiceExerciseGenerator",
         "OrderedListExerciseGenerator",
     )
-    assert deck.entities["france"].data["front"] == "France"
+    assert deck.entities["france"].front == "France"
     assert deck.entities["france"].id == "france"
 
 
@@ -132,6 +132,92 @@ def test_common_relation_labels_use_all_fallbacks_and_payload_is_semantic(
     assert "Target answer" not in card.model_dump_json()
     assert deck.render(card).front == "Related label — ?\nrelated-id — ?"
     assert deck.render(card).back == "Target answer"
+
+
+def test_builtin_templates_use_direct_attribute_fallbacks(tmp_path: Path, write_deck) -> None:
+    deck = Deck.load(
+        write_deck(
+            tmp_path / "direct-fallbacks" / "deck.json",
+            {
+                "entities": [
+                    {"id": "basic-target"},
+                    {"id": "multiple-target", "prompt": "Choose", "answer": "Correct"},
+                    {"id": "multiple-choice", "label": "Distractor"},
+                    {"id": "ordered-one"},
+                    {"id": "ordered-two", "back": "Second"},
+                    {"id": "ordered-group"},
+                    {
+                        "id": "analogy-source",
+                        "question": "Source question",
+                        "label": "Source label",
+                    },
+                    {
+                        "id": "analogy-target",
+                        "front": "Target front",
+                        "answer": "Target answer",
+                    },
+                    {"id": "relation-target", "label": "Relation answer"},
+                    {"id": "relation-related", "answer": "Related answer"},
+                ],
+                "exercises": [
+                    {"id": "basic", "type": "basic", "entities": ["basic-target"]},
+                    {
+                        "id": "multiple",
+                        "type": "multiple_choice",
+                        "choices": {"multiple-target": ["multiple-choice"]},
+                    },
+                    {
+                        "id": "ordered",
+                        "type": "ordered_list",
+                        "groups": {"ordered-group": ["ordered-one", "ordered-two"]},
+                    },
+                    {
+                        "id": "analogy",
+                        "type": "analogy",
+                        "sources": {"analogy-target": ["analogy-source"]},
+                    },
+                    {
+                        "id": "relation",
+                        "type": "common_relation",
+                        "relations": {"relation-target": ["relation-related", "basic-target"]},
+                    },
+                ],
+            },
+        )
+    )
+    cards = deck.generate_all(rng=random.Random(0))
+    views = {
+        "basic": deck.render(next(card for card in cards.values() if card.generator_id == "basic")),
+        "multiple": deck.render(
+            next(card for card in cards.values() if card.generator_id == "multiple")
+        ),
+        "ordered": deck.render(
+            next(
+                card
+                for card in cards.values()
+                if card.generator_id == "ordered" and card.target_id == "ordered-one"
+            )
+        ),
+        "analogy": deck.render(
+            next(card for card in cards.values() if card.generator_id == "analogy")
+        ),
+        "relation": deck.render(
+            next(card for card in cards.values() if card.generator_id == "relation")
+        ),
+    }
+
+    assert (views["basic"].front, views["basic"].back) == ("basic-target", "basic-target")
+    assert views["multiple"].front.startswith("Choose\n")
+    assert {
+        line.split(". ", maxsplit=1)[1] for line in views["multiple"].front.splitlines()[1:]
+    } == {"Correct", "Distractor"}
+    assert views["multiple"].back == "Correct"
+    assert views["ordered"].front == "1. ?\n2. Second"
+    assert views["ordered"].back == "ordered-one"
+    assert views["analogy"].front == "Source question is to Source label as Target front is to ?"
+    assert views["analogy"].back == "Target answer"
+    assert views["relation"].front == "Related answer — ?\nbasic-target — ?"
+    assert views["relation"].back == "Relation answer"
 
 
 def test_common_relation_label_precedence_covers_each_entity_role(
@@ -287,7 +373,7 @@ def test_common_relation_preflight_covers_every_related_entity_under_cap(
                     "relations": {"target": ["good-a", "good-b", "bad-c"]},
                     "front_template": (
                         "{% for related_entity in related_entities %}"
-                        "{{ related_entity.data.get('answer').value }}{% endfor %}"
+                        "{{ related_entity.answer.value }}{% endfor %}"
                     ),
                 }
             ],
@@ -488,7 +574,7 @@ def test_common_relation_runtime_payload_failures_are_presentation_errors(
 
 def test_entity_accepts_arbitrary_nested_json_data() -> None:
     entity = Entity(id="nested", metadata={"items": [1, {"enabled": True}]})
-    metadata = entity.data["metadata"]
+    metadata = entity.metadata
     assert metadata["items"][0] == 1  # type: ignore[index]
     assert metadata["items"][1]["enabled"] is True  # type: ignore[index]
     with pytest.raises(ValidationError, match="JSON-compatible"):
@@ -615,19 +701,19 @@ def test_generator_templates_are_configurable_in_deck_json(tmp_path: Path, write
                     "id": "basic",
                     "type": "basic",
                     "entities": ["target"],
-                    "front_template": "\n  BASIC: {{ entity.data.get('front') }}  \n",
-                    "back_template": "{{ entity.data.get('back') }}!",
+                    "front_template": "\n  BASIC: {{ entity.front }}  \n",
+                    "back_template": "{{ entity.back }}!",
                 },
                 {
                     "id": "choice",
                     "type": "multiple_choice",
                     "choices": {"target": ["distractor"]},
                     "front_template": (
-                        "MC: {{ target.data.get('front') }} / "
-                        "{% for choice in choice_entities %}{{ choice.data.get('back') }}"
+                        "MC: {{ target.front }} / "
+                        "{% for choice in choice_entities %}{{ choice.back }}"
                         "{% if not loop.last %}, {% endif %}{% endfor %}"
                     ),
-                    "back_template": "MC ANSWER: {{ target.data.get('back') }}",
+                    "back_template": "MC ANSWER: {{ target.back }}",
                 },
                 {
                     "id": "ordered",
@@ -635,19 +721,17 @@ def test_generator_templates_are_configurable_in_deck_json(tmp_path: Path, write
                     "groups": {"source": ["source", "target"]},
                     "front_template": (
                         "ORDER: {% for row in rows %}{% if row.is_target %}?{% else %}"
-                        "{{ row.entity.data.get('back') }}{% endif %}"
+                        "{{ row.entity.back }}{% endif %}"
                         "{% if not loop.last %} > {% endif %}{% endfor %}"
                     ),
-                    "back_template": "ORDER ANSWER: {{ target.data.get('back') }}",
+                    "back_template": "ORDER ANSWER: {{ target.back }}",
                 },
                 {
                     "id": "analogy",
                     "type": "analogy",
                     "sources": {"target": ["source"]},
-                    "front_template": (
-                        "ANALOGY: {{ source.data.get('front') }} -> {{ target.data.get('front') }}"
-                    ),
-                    "back_template": "ANALOGY ANSWER: {{ target.data.get('back') }}",
+                    "front_template": ("ANALOGY: {{ source.front }} -> {{ target.front }}"),
+                    "back_template": "ANALOGY ANSWER: {{ target.back }}",
                 },
             ],
         },
@@ -711,13 +795,77 @@ def test_nested_template_data_errors_are_config_errors(tmp_path: Path, write_dec
                     "id": "basic",
                     "type": "basic",
                     "entities": ["target"],
-                    "front_template": "{{ entity.data.get('missing').value }}",
+                    "front_template": "{{ entity.missing.value }}",
                 }
             ],
         },
     )
     with pytest.raises(ConfigError, match="could not render card template"):
         Deck.load(path)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "entity.model_extra.get('front')",
+        "entity.model_computed_fields",
+        "entity.model_config",
+        "entity.model_dump().get('front')",
+        "entity.model_dump_json()",
+        "entity.model_copy().front",
+        "entity.model_construct(id='forged').front",
+        "entity.model_fields",
+        "entity.model_parametrized_name",
+        "entity.model_post_init",
+        "entity.model_validate",
+        "entity.model_validate_json",
+        "entity.construct(id='forged')",
+        "entity.copy(update={'id': 'forged'})",
+        "entity.dict()",
+        "entity.json()",
+    ],
+)
+def test_template_cannot_access_entity_serialization_helpers(
+    expression: str, tmp_path: Path, write_deck
+) -> None:
+    path = tmp_path / f"private-entity-api-{len(expression)}" / "deck.json"
+    write_deck(
+        path,
+        {
+            "entities": [{"id": "target", "front": "Target"}],
+            "exercises": [
+                {
+                    "id": "basic",
+                    "type": "basic",
+                    "entities": ["target"],
+                    "front_template": f"{{{{ {expression} }}}}",
+                }
+            ],
+        },
+    )
+    with pytest.raises(ConfigError, match="could not render card template"):
+        Deck.load(path)
+
+
+def test_template_can_access_an_ordinary_data_field_directly(tmp_path: Path, write_deck) -> None:
+    path = tmp_path / "ordinary-data-field" / "deck.json"
+    write_deck(
+        path,
+        {
+            "entities": [{"id": "target", "data": {"answer": "Nested answer"}}],
+            "exercises": [
+                {
+                    "id": "basic",
+                    "type": "basic",
+                    "entities": ["target"],
+                    "front_template": "{{ entity.data.answer }}",
+                }
+            ],
+        },
+    )
+    deck = Deck.load(path)
+    card = next(iter(deck.generate_all().values()))
+    assert deck.render(card).front == "Nested answer"
 
 
 def test_template_arithmetic_is_bounded(tmp_path: Path, write_deck) -> None:
@@ -769,11 +917,13 @@ def test_multiple_choice_choices_are_generated_and_rendered_from_the_exercise(
     ]
     expected_choices = [
         str(
-            deck.entities[choice_id].data.get(
-                "label",
-                deck.entities[choice_id].data.get(
-                    "back", deck.entities[choice_id].data.get("answer", choice_id)
+            next(
+                (
+                    getattr(deck.entities[choice_id], field_name)
+                    for field_name in ("label", "back", "answer")
+                    if hasattr(deck.entities[choice_id], field_name)
                 ),
+                choice_id,
             )
         )
         for choice_id in first.choices

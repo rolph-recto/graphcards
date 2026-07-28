@@ -30,8 +30,8 @@ def test_multiple_choice_rendering_preserves_generated_choice_order(
                     "type": "multiple_choice",
                     "choices": {"target": ["one", "two", "three"]},
                     "front_template": (
-                        "{% for choice in choice_entities %}{{ choice.data.get('label', "
-                        "choice.data.get('back', choice.data.get('answer', choice.id))) }}"
+                        "{% for choice in choice_entities %}{{ choice.label|default(choice.back)|"
+                        "default(choice.answer)|default(choice.id) }}"
                         "{% if not loop.last %}|{% endif %}{% endfor %}"
                     ),
                 }
@@ -44,8 +44,19 @@ def test_multiple_choice_rendering_preserves_generated_choice_order(
     assert isinstance(exercise, MultipleChoiceExercise)
     expected = []
     for choice_id in exercise.choices:
-        data = deck.entities[choice_id].data
-        expected.append(str(data.get("label", data.get("back", data.get("answer", choice_id)))))
+        entity = deck.entities[choice_id]
+        expected.append(
+            str(
+                next(
+                    (
+                        getattr(entity, field_name)
+                        for field_name in ("label", "back", "answer")
+                        if hasattr(entity, field_name)
+                    ),
+                    choice_id,
+                )
+            )
+        )
     assert deck.render(exercise).front == "|".join(expected)
 
 

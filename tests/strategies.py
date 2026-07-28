@@ -8,6 +8,7 @@ from typing import Any
 from hypothesis import HealthCheck, settings
 from hypothesis import strategies as st
 
+from graphcards.decks.base import _RESERVED_ENTITY_FIELDS
 from graphcards.models import CardKey
 from graphcards.web.status import (
     AvailabilityFilter,
@@ -67,8 +68,11 @@ json_values = st.recursive(
     ),
     max_leaves=20,
 )
+_ENTITY_DATA_KEYS = json_keys.filter(
+    lambda key: key != "id" and not key.startswith("_") and key not in _RESERVED_ENTITY_FIELDS
+)
 entity_data = st.dictionaries(
-    json_keys.filter(lambda key: key != "id"),
+    _ENTITY_DATA_KEYS,
     json_values,
     max_size=4,
 )

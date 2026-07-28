@@ -20,15 +20,13 @@ FRONT_TEMPLATE = (
     "{% if omitted_before %}…\n{% endif %}"
     "{% for row in rows %}{{ row.position }}. "
     "{% if row.is_target %}?{% else %}"
-    "{{ row.entity.data.get('label', row.entity.data.get('back', "
-    "row.entity.data.get('answer', row.entity.id))) }}"
+    "{{ row.entity.label|default(row.entity.back)|"
+    "default(row.entity.answer)|default(row.entity.id) }}"
     "{% endif %}"
     "{% if not loop.last or omitted_after %}\n{% endif %}"
     "{% endfor %}{% if omitted_after %}…{% endif %}"
 )
-BACK_TEMPLATE = (
-    "{{ target.data.get('label', target.data.get('back', target.data.get('answer', target.id))) }}"
-)
+BACK_TEMPLATE = "{{ target.label|default(target.back)|default(target.answer)|default(target.id) }}"
 
 
 @ExerciseGenerator.register

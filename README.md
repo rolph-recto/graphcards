@@ -33,8 +33,8 @@ workspace configuration file.
       "type": "multiple_choice",
       "max_choices": 3,
       "choices": {"germany": ["france", "italy"]},
-      "front_template": "{{ target.data.get('front') }} — {% for choice in choice_entities %}{{ choice.data.get('label') }}{% if not loop.last %} / {% endif %}{% endfor %}",
-      "back_template": "Answer: {{ target.data.get('back') }}"
+      "front_template": "{{ target.front|default(target.prompt)|default(target.question)|default(target.id) }} — {% for choice in choice_entities %}{{ choice.label|default(choice.back)|default(choice.answer)|default(choice.id) }}{% if not loop.last %} / {% endif %}{% endfor %}",
+      "back_template": "Answer: {{ target.back|default(target.answer)|default(target.id) }}"
     }
   ]
 }
@@ -56,8 +56,10 @@ nested data and structural information only: basic (`entity: Entity`), multiple-
 (`target: Entity`, `choice_entities: tuple[Entity, ...]`), ordered-list (`target: Entity`,
 `ordered_entities: tuple[Entity, ...]`, `rows: tuple[dict[str, object], ...]` with `position`,
 `entity`, and `is_target`, plus `omitted_before: bool` and `omitted_after: bool`), and analogy
-(`source: Entity`, `target: Entity`). Entity references expose `.id` and `.data`; templates choose
-which fields to render and how to fall back when data is missing. Templates are sandboxed, compiled,
+(`source: Entity`, `target: Entity`). Entity references expose `.id` and every ordinary top-level
+record field directly, including a source field named `data` when present; `data` is never an
+aggregate mapping. Templates choose which fields to render and use Jinja `default`/`is defined`
+semantics to fall back when optional fields are missing. Templates are sandboxed, compiled,
 and checked for unknown variables while loading the complete deck; whitespace in template sources
 and rendered views is preserved.
 Generated multiple-choice exercises record the selected and ordered entity IDs in `choices`;

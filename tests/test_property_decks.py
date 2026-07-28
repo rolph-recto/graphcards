@@ -8,11 +8,14 @@ from pathlib import Path
 import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
+from pydantic import ValidationError
 
 from graphcards.decks import (
     AnalogyExercise,
     CommonRelationExercise,
     Deck,
+    DeckDocument,
+    Entity,
     MultipleChoiceExercise,
     OrderedListExercise,
 )
@@ -55,15 +58,15 @@ def test_generated_decks_load_generate_and_render_all_targets(
         target = deck.entities[card.target_id]
         generator = next(item for item in deck.generators if item.id == card.generator_id)
         if generator.type == "basic":
-            expected_answer = target.data.get("back", target.data.get("answer", target.id))
+            fields = ("back", "answer")
         elif generator.type == "analogy":
-            expected_answer = target.data.get(
-                "back", target.data.get("answer", target.data.get("label", target.id))
-            )
+            fields = ("back", "answer", "label")
         else:
-            expected_answer = target.data.get(
-                "label", target.data.get("back", target.data.get("answer", target.id))
-            )
+            fields = ("label", "back", "answer")
+        expected_answer = next(
+            (getattr(target, field_name) for field_name in fields if hasattr(target, field_name)),
+            target.id,
+        )
         assert view.back == str(expected_answer)
 
 
@@ -299,7 +302,7 @@ def test_analogy_preflight_checks_every_declared_source(tmp_path: Path, write_de
                     "id": "analogy",
                     "type": "analogy",
                     "sources": {"target": ["good", "bad"]},
-                    "front_template": "{{ source.data.get('answer').value }}",
+                    "front_template": "{{ source.answer.value }}",
                 }
             ],
         },
@@ -308,25 +311,53 @@ def test_analogy_preflight_checks_every_declared_source(tmp_path: Path, write_de
         Deck.load(path)
 
 
-def test_deck_documents_reject_duplicate_json_fields(tmp_path: Path, write_deck) -> None:
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"entities":[{"id":"e0"}],"entities":[{"id":"e1"}],"exercises":[]}',
+        '{"entities":[{"id":"e0","front":"one","front":"two"}],"exercises":[]}',
+        '{"entities":[{"id":"e0","facts":{"one":1},"facts":{"two":2}}],"exercises":[]}',
+    ],
+)
+def test_deck_documents_reject_duplicate_json_fields(tmp_path: Path, raw: str, write_deck) -> None:
     # Property: duplicate JSON object fields are surfaced as repository-facing configuration errors.
     path = tmp_path / "invalid" / "deck.json"
     path.parent.mkdir()
-    path.write_text(
-        '{"entities":[{"id":"e0"}],"entities":[{"id":"e1"}],"exercises":[]}',
-        encoding="utf-8",
-    )
+    path.write_text(raw, encoding="utf-8")
     with pytest.raises(ConfigError, match="duplicate JSON field"):
         Deck.load(path)
+
+
+def test_deck_document_json_validation_rejects_duplicate_entity_fields() -> None:
+    with pytest.raises(ValidationError, match="duplicate JSON field 'data'"):
+        DeckDocument.model_validate_json(
+            '{"entities":[{"id":"e0","data":1,"data":2}],"exercises":[]}'
+        )
+
+
+@pytest.mark.parametrize("method", ["parse_raw", "parse_file"])
+def test_deck_document_legacy_json_apis_reject_duplicate_entity_fields(
+    method: str, tmp_path: Path
+) -> None:
+    raw = '{"entities":[{"id":"e0","data":1,"data":2}],"exercises":[]}'
+    with pytest.raises(ValidationError, match="duplicate JSON field 'data'"):
+        if method == "parse_raw":
+            DeckDocument.parse_raw(raw)
+        else:
+            path = tmp_path / "duplicate.json"
+            path.write_text(raw, encoding="utf-8")
+            DeckDocument.parse_file(path)
 
 
 def test_generated_document_is_json_round_trippable(tmp_path: Path, write_deck) -> None:
     # Property: JSON serialization preserves the meaning of a generated deck document.
     document = {
-        "entities": [{"id": "e0", "data": {"items": [1, True]}}],
+        "entities": [{"id": "e0", "facts": {"items": [1, True]}}],
         "exercises": [],
     }
     raw = json.loads(json.dumps(document))
-    assert (
-        Deck.load(write_deck(tmp_path / "round-trip" / "deck.json", raw)).entities["e0"].id == "e0"
-    )
+    entity = Deck.load(write_deck(tmp_path / "round-trip" / "deck.json", raw)).entities["e0"]
+    restored = Entity.model_validate_json(entity.model_dump_json())
+    assert entity.id == restored.id == "e0"
+    assert entity.facts == restored.facts
+    assert entity.facts["items"] == (1, True)  # type: ignore[index]
