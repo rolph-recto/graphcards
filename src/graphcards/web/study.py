@@ -11,7 +11,7 @@ from fsrs import Rating
 
 from graphcards.app import StudyService
 from graphcards.decks import Deck
-from graphcards.errors import PresentationError, StaleReviewError
+from graphcards.errors import PresentationError, StaleReviewError, StorageError
 from graphcards.models import CardView
 from graphcards.storage import StoredCard, utc_now
 
@@ -170,6 +170,14 @@ class StudySession:
             raise RequestFailure(
                 HTTPStatus.CONFLICT,
                 message,
+            ) from error
+        except StorageError as error:
+            if not str(error).startswith("cannot review unavailable card"):
+                raise
+            self.refresh_availability()
+            raise RequestFailure(
+                HTTPStatus.CONFLICT,
+                "This card is no longer available. Continue with the next card.",
             ) from error
         self._advance()
 

@@ -31,7 +31,16 @@ jobs:
         version: "0.11.32"
     - name: Sync dependencies
       run: |
-        uv sync
+        uv sync --locked
+    - name: Lint
+      run: |
+        uv run ruff check .
+    - name: Check formatting
+      run: |
+        uv run ruff format --check .
+    - name: Build package
+      run: |
+        uv build
     - name: Test with pytest
       run: |
         uv run pytest -W error \

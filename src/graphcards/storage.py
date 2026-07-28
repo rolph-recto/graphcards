@@ -405,7 +405,7 @@ class Repository:
                 """
                 UPDATE deck_cards
                 SET suspended = 1, suspension_reason = ?
-                WHERE deck_name = ? AND card_id = ?
+                WHERE deck_name = ? AND card_id = ? AND active = 1
                 """,
                 (update.reason, deck_name, card_id),
             )
@@ -420,7 +420,7 @@ class Repository:
                 """
                 UPDATE deck_cards
                 SET suspended = 0, suspension_reason = NULL
-                WHERE deck_name = ? AND card_id = ?
+                WHERE deck_name = ? AND card_id = ? AND active = 1
                 """,
                 (deck_name, card_id),
             )
@@ -570,6 +570,7 @@ class Repository:
         # Validate every active identity and due mirror before the review predicate can
         # silently omit a corrupt card that has no matching Again review.
         self.active_cards(deck_name)
+        self._validate_review_logs(deck_name)
         parameters: list[object] = [deck_name, datetime_to_text(since)]
         limit_sql = ""
         if limit is not None:
@@ -823,7 +824,11 @@ class Repository:
             """,
             (deck_name, datetime_to_text(through)),
         ).fetchall()
-        return tuple(self._review_record(row) for row in rows)
+        records: list[ReviewRecord] = []
+        for row in rows:
+            self._validate_review_membership(row["deck_name"], row["card_id"])
+            records.append(self._review_record(row))
+        return tuple(records)
 
     def status(self, deck_name: str, now: datetime) -> DeckStatus:
         self._validate_active_due_mirrors(deck_name)
@@ -948,9 +953,25 @@ class Repository:
         rows = self.connection.execute(
             """
             SELECT id, card_id, deck_name, rating, reviewed_at, review_json
-            FROM reviews WHERE deck_name = ?
+            FROM reviews
+            WHERE deck_name = ? OR card_id IN (
+                SELECT card_id FROM deck_cards WHERE deck_name = ?
+            )
             """,
-            (deck_name,),
+            (deck_name, deck_name),
         ).fetchall()
         for row in rows:
+            if row["deck_name"] != deck_name:
+                raise StorageError("stored review has a mismatched deck membership")
+            self._validate_review_membership(row["deck_name"], row["card_id"])
             self._review_record(row)
+
+    def _validate_review_membership(self, deck_name: object, card_id: object) -> None:
+        if not isinstance(deck_name, str) or not isinstance(card_id, str):
+            raise StorageError("stored review has invalid deck or card identity")
+        exists = self.connection.execute(
+            "SELECT 1 FROM deck_cards WHERE deck_name = ? AND card_id = ?",
+            (deck_name, card_id),
+        ).fetchone()
+        if exists is None:
+            raise StorageError("stored review has no matching deck membership")

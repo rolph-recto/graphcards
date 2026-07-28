@@ -40,6 +40,7 @@ from graphcards.web.study import RequestFailure, StudyMode, StudySession, comple
 
 # A valid 500-character reason can occupy 6,000 bytes once UTF-8 is percent-encoded.
 MAX_FORM_BYTES = 8192
+MAX_SESSION_LIMIT = 1000
 CONTROLLER_EXTENSION = "graphcards_controller"
 EXPECTED_HOST_CONFIG = "GRAPHCARDS_EXPECTED_HOST"
 _MAX_FIELDS = 32
@@ -53,7 +54,7 @@ class _SessionStartSubmission(BaseModel):
     deck_name: str = Field(min_length=1)
     mode: StudyMode
     days: int = Field(default=1, ge=1, le=365)
-    limit: int = Field(default=20, ge=0)
+    limit: int = Field(default=20, ge=0, le=MAX_SESSION_LIMIT)
 
 
 class _RevealSubmission(BaseModel):
@@ -156,6 +157,8 @@ def _form_data() -> dict[str, object]:
 
 
 def _query_data() -> dict[str, object]:
+    if len(request.query_string) > MAX_FORM_BYTES:
+        raise RequestFailure(HTTPStatus.BAD_REQUEST, "The card-status filters are too large.")
     return _parse_urlencoded(
         request.query_string,
         "The card-status filters are malformed.",
@@ -230,7 +233,7 @@ def create_flask_app(controller: StudyController) -> Flask:
     def handle_application_failure(error: GraphCardsError) -> tuple[str, int]:
         return _render_error(
             HTTPStatus.INTERNAL_SERVER_ERROR,
-            f"Could not complete this request: {error}",
+            "Could not complete this request.",
         )
 
     app.register_error_handler(GraphCardsError, handle_application_failure)

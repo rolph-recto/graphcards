@@ -92,7 +92,10 @@ class StudyController:
             deck = self.config.deck(deck_name)
         except ConfigError as error:
             raise RequestFailure(HTTPStatus.NOT_FOUND, "That deck does not exist.") from error
-        if not self.repository.has_membership(deck.name, card_id):
+        if not self.repository.has_membership(deck.name, card_id) or not (
+            self.repository.card_available(deck.name, card_id)
+            or self.repository.card_suspended(deck.name, card_id)
+        ):
             raise RequestFailure(
                 HTTPStatus.NOT_FOUND,
                 "That card is not known in this deck.",
@@ -118,7 +121,7 @@ class StudyController:
         try:
             deck = self.config.deck(deck_name)
         except ConfigError as error:
-            raise RequestFailure(HTTPStatus.BAD_REQUEST, str(error)) from error
+            raise RequestFailure(HTTPStatus.BAD_REQUEST, "That deck is not available.") from error
 
         now = utc_now()
         limit = None if requested_limit == 0 else requested_limit
