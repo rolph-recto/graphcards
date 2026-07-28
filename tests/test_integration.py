@@ -16,7 +16,7 @@ from graphcards.models import Card, CardKey
 from graphcards.storage import Repository
 
 
-def test_sync_is_idempotent_and_preserves_generator_union(deck: Deck, tmp_path: Path) -> None:
+def test_sync_is_idempotent_and_counts_each_target_entity_once(deck: Deck, tmp_path: Path) -> None:
     expected = deck.generate_all(rng=random.Random(0))
     with Repository(tmp_path / "state.sqlite3") as repository:
         service = StudyService(repository, FsrsSettings().create_scheduler(), random.Random(0))
@@ -24,8 +24,8 @@ def test_sync_is_idempotent_and_preserves_generator_union(deck: Deck, tmp_path: 
         second = service.sync(deck, datetime(2026, 1, 1, tzinfo=UTC))
         active = repository.active_cards(deck.name)
 
-    assert first == (4, 4)
-    assert second == (4, 0)
+    assert first == (3, 3)
+    assert second == (3, 0)
     assert {card.card_id for card in active} == set(expected)
 
 

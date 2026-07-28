@@ -35,7 +35,7 @@ def deck_path(tmp_path: Path) -> Path:
                     {
                         "id": "choices",
                         "type": "multiple_choice",
-                        "choices": {"france": ["italy", "spain"]},
+                        "choices": {"italy": ["france", "spain"]},
                     },
                     {
                         "id": "order",

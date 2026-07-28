@@ -12,8 +12,8 @@
       "id": "capitals-choice",
       "type": "multiple_choice",
       "choices": {
-        "capital-france": ["capital-italy", "capital-spain"],
-        "capital-germany": ["capital-italy", "capital-spain"]
+        "capital-italy": ["capital-france", "capital-germany"],
+        "capital-spain": ["capital-france", "capital-germany"]
       }
     }
   ]

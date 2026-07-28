@@ -31,7 +31,7 @@ anymore.
       "id": "choice",
       "type": "multiple_choice",
       "max_choices": 3,
-      "choices": {"france": ["germany", "italy"]},
+      "choices": {"germany": ["france", "italy"]},
       "front_template": "{{ target.data.get('front') }} — {% for choice in choice_entities %}{{ choice.data.get('label') }}{% if not loop.last %} / {% endif %}{% endfor %}",
       "back_template": "Answer: {{ target.data.get('back') }}"
     }
@@ -63,8 +63,10 @@ Generated multiple-choice exercises record the selected and ordered entity IDs i
 rendering only resolves those references into entity objects and never reselects them.
 
 All entities, generators, IDs, and references are validated before a deck can be synchronized.
-Exercise IDs are deterministic from the deck directory identity, generator ID, and target entity
-ID, so generator order and intentional overlap across generators do not change schedules.
+Each targeted entity produces one scheduled exercise. If multiple generators target the same entity,
+the generator with the lexicographically smallest ID owns that entity's exercise; this keeps the
+count entity-based and makes the selected type independent of JSON declaration order. Exercise IDs
+remain deterministic from the deck directory identity, selected generator ID, and target entity ID.
 
 ## Commands
 

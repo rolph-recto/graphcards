@@ -329,6 +329,26 @@ class Deck:
     def display_name(self) -> str:
         return self.document.name or self.name
 
+    def _generators_by_entity(self) -> dict[str, ExerciseGenerator]:
+        """Choose one stable exercise generator for every targeted entity.
+
+        A deck schedules entities, not generator/entity pairs.  Sorting by generator ID makes
+        the selected exercise type independent of JSON declaration order when configurations
+        overlap intentionally.
+        """
+
+        selected: dict[str, ExerciseGenerator] = {}
+        for generator in sorted(self.generators, key=lambda item: item.id):
+            for entity_id in generator.target_ids:
+                selected.setdefault(entity_id, generator)
+        return selected
+
+    @property
+    def target_entity_ids(self) -> tuple[str, ...]:
+        """The unique entities represented by the deck's scheduled exercises."""
+
+        return tuple(self._generators_by_entity())
+
     @classmethod
     def from_document(cls, document: DeckDocument, *, name: str, path: Path) -> Deck:
         entities = MappingProxyType({entity.id: entity for entity in document.entities})
@@ -387,20 +407,24 @@ class Deck:
         random_source = rng or random.Random()
         context = ExerciseGeneratorContext(self.name, self.entities, random_source)
         generated: dict[str, Card] = {}
-        for generator in self.generators:
-            for target_id in generator.target_ids:
-                exercise = generator.generate(target_id, context)
-                card_id = exercise.card_key.digest
-                existing = generated.get(card_id)
-                if existing is not None and existing.card_key != exercise.card_key:
-                    raise PresentationError("SHA-256 collision between generated exercises")
-                generated[card_id] = exercise
+        for target_id, generator in self._generators_by_entity().items():
+            exercise = generator.generate(target_id, context)
+            card_id = exercise.card_key.digest
+            existing = generated.get(card_id)
+            if existing is not None and existing.card_key != exercise.card_key:
+                raise PresentationError("SHA-256 collision between generated exercises")
+            generated[card_id] = exercise
         return generated
 
     def generate(self, card_key: CardKey, *, rng: random.Random | None = None) -> Exercise:
         if card_key.deck_id != self.name or card_key.generator_id is None:
             raise PresentationError(f"card {card_key.digest} does not belong to deck {self.name!r}")
         context = ExerciseGeneratorContext(self.name, self.entities, rng or random.Random())
+        selected = self._generators_by_entity().get(card_key.entity_id)
+        if selected is None or selected.id != card_key.generator_id:
+            raise PresentationError(
+                f"deck {self.name!r} no longer generates card {card_key.digest}"
+            )
         for generator in self.generators:
             if generator.id == card_key.generator_id:
                 return generator.generate(cast(str, card_key.entity_id), context)

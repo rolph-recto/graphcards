@@ -24,10 +24,10 @@ def test_config_and_cli_validate_sync_and_status(
 
     output = StringIO()
     assert main(["--config", str(config_path), "validate"], output=output) == 0
-    assert "Capital study: valid (4 cards)" in output.getvalue()
+    assert "Capital study: valid (3 cards)" in output.getvalue()
     output = StringIO()
     assert main(["--config", str(config_path), "sync"], output=output) == 0
-    assert "Capital study: 4 current, 4 new" in output.getvalue()
+    assert "Capital study: 3 current, 3 new" in output.getvalue()
 
 
 def test_config_rejects_deck_directories(deck_path: Path, tmp_path: Path, write_config) -> None:
@@ -36,14 +36,14 @@ def test_config_rejects_deck_directories(deck_path: Path, tmp_path: Path, write_
         load_config(config_path)
 
 
-def test_sync_is_union_of_generators_and_review_path_preserves_identity(
+def test_sync_counts_each_target_entity_once_and_review_path_preserves_identity(
     deck_path: Path, tmp_path: Path
 ) -> None:
     deck = __import__("graphcards.decks", fromlist=["Deck"]).Deck.load(deck_path)
     with Repository(tmp_path / "state.sqlite3") as repository:
         service = StudyService(repository, FsrsSettings().create_scheduler(), random.Random(0))
         active, created = service.sync(deck, datetime(2026, 1, 1, tzinfo=UTC))
-        assert (active, created) == (4, 4)
+        assert (active, created) == (3, 3)
         card = repository.active_cards(deck.name)[0]
         assert card.card_key.deck_id == deck.name
         assert card.card_key.generator_id is not None

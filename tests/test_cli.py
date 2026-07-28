@@ -42,7 +42,7 @@ def test_validate_sync_and_full_status_use_json_deck(
     output = StringIO()
 
     assert main(["--config", str(config_path), "validate"], output=output) == 0
-    assert "Capital study: valid (4 cards)" in output.getvalue()
+    assert "Capital study: valid (3 cards)" in output.getvalue()
     assert main(["--config", str(config_path), "sync"], output=StringIO()) == 0
     output = StringIO()
     assert main(["--config", str(config_path), "status", "--full"], output=output) == 0

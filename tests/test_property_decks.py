@@ -16,17 +16,17 @@ from graphcards.errors import ConfigError
 
 def test_multiple_choice_invariants_hold_across_random_generations(deck: Deck) -> None:
     generator = next(item for item in deck.generators if item.type == "multiple_choice")
-    distractors = generator.choices["france"]
+    distractors = generator.choices["italy"]
     maximum = generator.max_choices
 
     for seed in range(25):
         exercise = generator.generate(
-            "france", ExerciseGeneratorContext(deck.name, deck.entities, random.Random(seed))
+            "italy", ExerciseGeneratorContext(deck.name, deck.entities, random.Random(seed))
         )
         assert isinstance(exercise, MultipleChoiceExercise)
         assert exercise.target_id in exercise.choices
         assert len(exercise.choices) <= maximum
-        assert set(exercise.choices) <= {"france", *distractors}
+        assert set(exercise.choices) <= {"italy", *distractors}
         assert len(exercise.choices) == len(set(exercise.choices))
         assert all(choice_id in deck.entities for choice_id in exercise.choices)
 

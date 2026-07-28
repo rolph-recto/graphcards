@@ -78,7 +78,7 @@ def test_generators_produce_semantic_exercises(deck: Deck) -> None:
     assert not hasattr(basic, "front")
     assert not hasattr(basic, "back")
     choice = next(card for card in cards if isinstance(card, MultipleChoiceExercise))
-    assert choice.target_id == "france"
+    assert choice.target_id == "italy"
     assert choice.target_id in choice.choices
     assert len(choice.choices) == 3
     assert not hasattr(choice, "correct_id")
@@ -87,10 +87,11 @@ def test_generators_produce_semantic_exercises(deck: Deck) -> None:
     assert ordered.group_id == "europe"
     assert ordered.ordered_ids == ("france", "germany")
     rendered_choice = deck.render(choice)
-    assert rendered_choice.back == "Paris"
-    assert "France" in rendered_choice.front
-    assert "Rome" in rendered_choice.front
+    assert rendered_choice.back == "Rome"
+    assert "italy" in rendered_choice.front
+    assert "Paris" in rendered_choice.front
     assert "Madrid" in rendered_choice.front
+    assert len(cards) == len(deck.target_entity_ids) == 3
 
 
 def test_analogy_generator_uses_entity_source_and_target_data(tmp_path: Path, write_deck) -> None:
@@ -209,7 +210,16 @@ def test_generator_templates_are_configurable_in_deck_json(tmp_path: Path, write
         },
     )
     deck = Deck.load(path)
-    rendered = {card.generator_id: deck.render(card) for card in deck.generate_all().values()}
+    context = ExerciseGeneratorContext(deck.name, deck.entities, random.Random(0))
+    rendered = {
+        generator.id: deck.render(
+            generator.generate(
+                "target" if generator.id == "ordered" else generator.target_ids[0],
+                context,
+            )
+        )
+        for generator in deck.generators
+    }
     assert rendered["basic"].front == "\n  BASIC: Target  \n"
     assert rendered["basic"].back == "Target answer!"
     assert rendered["choice"].front in {
@@ -300,10 +310,10 @@ def test_multiple_choice_choices_are_generated_and_rendered_from_the_exercise(
 ) -> None:
     generator = next(item for item in deck.generators if item.type == "multiple_choice")
     first = generator.generate(
-        "france", ExerciseGeneratorContext(deck.name, deck.entities, random.Random(1))
+        "italy", ExerciseGeneratorContext(deck.name, deck.entities, random.Random(1))
     )
     second = generator.generate(
-        "france", ExerciseGeneratorContext(deck.name, deck.entities, random.Random(2))
+        "italy", ExerciseGeneratorContext(deck.name, deck.entities, random.Random(2))
     )
     assert isinstance(first, MultipleChoiceExercise)
     assert isinstance(second, MultipleChoiceExercise)
@@ -464,11 +474,12 @@ def test_identity_is_stable_across_order_and_random_choices(
     assert set(cards_first) == set(cards_second)
 
 
-def test_same_target_in_two_generators_has_distinct_identity(deck: Deck) -> None:
+def test_same_target_in_two_generators_has_one_stable_exercise(deck: Deck) -> None:
     cards = deck.generate_all()
     target_cards = [card for card in cards.values() if card.card_key.entity_id == "france"]
-    assert len(target_cards) == 3
-    assert len({card.card_key.digest for card in target_cards}) == 3
+    assert len(target_cards) == 1
+    assert target_cards[0].generator_id == "basics"
+    assert len(cards) == len(deck.target_entity_ids)
 
 
 def test_old_query_configuration_is_rejected(tmp_path: Path) -> None:
