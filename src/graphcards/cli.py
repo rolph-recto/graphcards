@@ -44,11 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("templates", help="list bundled workspace templates")
 
     for command, help_text in (
-        ("validate", "validate deck.json study content"),
+        ("validate", "validate JSON/TOML deck study content"),
         ("sync", "synchronize generated exercises into study state"),
         ("status", "show card counts"),
     ):
-        command_parser = subparsers.add_parser(command, help=help_text)
+        command_parser = subparsers.add_parser(command, help=help_text, description=help_text)
         command_parser.add_argument("--deck", help="operate on one configured deck")
         if command == "status":
             command_parser.add_argument(
@@ -195,8 +195,7 @@ def main(
     args = parser.parse_args(argv)
     try:
         if args.command == "init":
-            initialize_workspace(Path(args.directory), args.template)
-            directory = Path(args.directory).resolve()
+            directory = initialize_workspace(Path(args.directory), args.template)
             if args.template:
                 print(
                     f"Created GraphCards workspace from template {args.template!r} in {directory}",

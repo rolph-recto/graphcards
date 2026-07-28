@@ -42,14 +42,17 @@ def resolve_config_path(value: object, info: ValidationInfo) -> Path:
 
     if not isinstance(value, (str, Path)) or not str(value).strip():
         raise ValueError("must be a non-empty file path")
-    path = Path(value).expanduser()
+    try:
+        path = Path(value).expanduser()
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise ValueError(f"could not resolve path: {error}") from error
     context = info.context if isinstance(info.context, dict) else {}
     base = context.get("base")
     if not path.is_absolute() and isinstance(base, Path):
         path = base / path
     try:
         return path.resolve()
-    except (OSError, RuntimeError) as error:
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
         raise ValueError(f"could not resolve path: {error}") from error
 
 

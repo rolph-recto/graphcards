@@ -1,9 +1,10 @@
-"""Shared JSON deck aggregates and exercise-generator infrastructure."""
+"""Shared JSON/TOML deck aggregates and exercise-generator infrastructure."""
 
 from __future__ import annotations
 
 import json
 import random
+import tomllib
 import unicodedata
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
@@ -256,7 +257,7 @@ class ExerciseGenerator(FrozenModel, ABC):
 
 
 class DeckDocument(FrozenModel):
-    """The complete study-content document loaded from ``deck.json``."""
+    """The complete study-content document loaded from a JSON or TOML deck file."""
 
     name: StrictStr | None = None
     entities: tuple[Entity, ...]
@@ -333,7 +334,7 @@ class Deck:
         """Choose one stable exercise generator for every targeted entity.
 
         A deck schedules entities, not generator/entity pairs.  Sorting by generator ID makes
-        the selected exercise type independent of JSON declaration order when configurations
+        the selected exercise type independent of deck declaration order when configurations
         overlap intentionally.
         """
 
@@ -357,9 +358,10 @@ class Deck:
 
     @classmethod
     def load(cls, value: str | Path) -> Deck:
+        """Load a JSON or TOML deck and translate file/configuration failures."""
         try:
             path = Path(value).expanduser().resolve()
-        except (OSError, RuntimeError) as error:
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
             raise ConfigError(f"could not resolve deck path {value}: {error}") from error
         try:
             mode = path.stat().st_mode
@@ -367,12 +369,24 @@ class Deck:
             raise ConfigError(f"could not access deck file {path}: {error}") from error
         if not S_ISREG(mode):
             raise ConfigError(f"deck path is not a file: {path}")
-        try:
-            raw = json.loads(
-                path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object
+        extension = path.suffix.lower()
+        if extension not in {".json", ".toml"}:
+            raise ConfigError(
+                f"unsupported deck file extension for {path}: {path.suffix or '(none)'}; "
+                "expected .json or .toml"
             )
+        try:
+            if extension == ".json":
+                raw = json.loads(
+                    path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object
+                )
+            else:
+                with path.open("rb") as deck_file:
+                    raw = tomllib.load(deck_file)
+            if not isinstance(raw, Mapping):
+                raise TypeError("deck document must be an object")
             document = DeckDocument.model_validate(raw)
-            # A deck's path is its stable identity source. The JSON display name is not.
+            # A deck's path is its stable identity source. The display name is not.
             name = path.parent.name
             _nonblank(name)
             deck = cls.from_document(document, name=name, path=path)
@@ -383,6 +397,8 @@ class Deck:
             return deck
         except ConfigError:
             raise
+        except tomllib.TOMLDecodeError as error:
+            raise ConfigError(f"invalid TOML deck {path}: {error}") from error
         except (OSError, UnicodeError) as error:
             raise ConfigError(f"could not read deck file {path}: {error}") from error
         except (

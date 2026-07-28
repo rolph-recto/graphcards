@@ -14,7 +14,7 @@ def execute_cards(
     *,
     rng: random.Random | None = None,
 ) -> dict[str, Card]:
-    """Generate semantic exercises without rereading the source JSON."""
+    """Generate semantic exercises without rereading the deck source file."""
 
     if card_key is None:
         return deck.generate_all(rng=rng)

@@ -18,10 +18,10 @@ from graphcards.errors import PresentationError
 from graphcards.models import CardView, Exercise
 
 FRONT_TEMPLATE = (
-    "What do these have common?\n"
     "{% for related_entity in related_entities %}"
-    "- {{ related_entity.data.get('label', related_entity.data.get('back', "
-    "related_entity.data.get('answer', related_entity.id))) }}\n"
+    "{{ related_entity.data.get('label', related_entity.data.get('back', "
+    "related_entity.data.get('answer', related_entity.id))) }} — ?"
+    "{% if not loop.last %}\n{% endif %}"
     "{% endfor %}"
 )
 BACK_TEMPLATE = (

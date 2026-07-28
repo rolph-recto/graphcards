@@ -87,7 +87,12 @@ class AppConfig(FrozenModel):
         for deck_file in value:
             if not isinstance(deck_file, (str, Path)) or not str(deck_file).strip():
                 raise ValueError("each deck entry must be a non-empty deck file path")
-            path = Path(deck_file).expanduser()
+            try:
+                path = Path(deck_file).expanduser()
+            except (OSError, RuntimeError, TypeError, ValueError) as error:
+                raise ValueError(
+                    f"could not resolve deck file path {deck_file}: {error}"
+                ) from error
             if not path.is_absolute() and isinstance(base, Path):
                 path = base / path
             try:
@@ -120,13 +125,18 @@ class AppConfig(FrozenModel):
 def load_config(path: str | Path = "graphcards.toml") -> AppConfig:
     """Load and validate one workspace configuration."""
 
-    config_path = Path(path).expanduser().resolve()
+    try:
+        config_path = Path(path).expanduser().resolve()
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise ConfigError(f"could not resolve configuration path {path}: {error}") from error
     try:
         with config_path.open("rb") as config_file:
             data: dict[str, Any] = tomllib.load(config_file)
     except FileNotFoundError as error:
         raise ConfigError(f"configuration file not found: {config_path}") from error
     except tomllib.TOMLDecodeError as error:
+        raise ConfigError(f"invalid TOML in {config_path}: {error}") from error
+    except RecursionError as error:
         raise ConfigError(f"invalid TOML in {config_path}: {error}") from error
     except (OSError, UnicodeError) as error:
         raise ConfigError(f"could not read configuration {config_path}: {error}") from error

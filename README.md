@@ -1,19 +1,20 @@
 # GraphCards
 
-GraphCards is a local flashcard program backed by FSRS. Each configured deck is one complete
-`deck.json` file; `graphcards.toml` contains runtime settings and the list of deck files to load.
+GraphCards is a local flashcard program backed by FSRS. Each configured deck is one complete JSON
+or TOML file; `graphcards.toml` contains runtime settings and the list of deck files to load.
 
 ## Workspace configuration
 
 ```toml
 state_path = ".graphcards/state.sqlite3"
 display_timezone = "UTC"
-decks = ["decks/capitals/deck.json", "decks/planets/deck.json"]
+decks = ["decks/capitals/deck.toml", "decks/planets/deck.json"]
 ```
 
-The directory name is the stable deck identity. The optional `name` in `deck.json` is display
+The directory name is the stable deck identity. The optional `name` in a deck file is display
 metadata only. RDF sources, SPARQL queries, and per-deck kinds are not configuration fields
-anymore.
+anymore. JSON and TOML decks can be mixed in one workspace, and paths are relative to the
+workspace configuration file.
 
 ## Deck content
 
@@ -49,7 +50,7 @@ only one group in a generator. Ordered-list `window_size` is the total number of
 centered around the target; `0` shows the complete ordered group.
 Analogy generators map each target entity to a list of source entities. The default template renders
 the selected source and target `front`/`back` values as an “A is to B as C is to ?” exercise.
-Each generator may override its type’s `front_template` and `back_template` in `deck.json`; omitted
+Each generator may override its type’s `front_template` and `back_template` in either deck format; omitted
 templates use the built-in renderer defaults. Templates receive entity references with arbitrary
 nested data and structural information only: basic (`entity: Entity`), multiple-choice
 (`target: Entity`, `choice_entities: tuple[Entity, ...]`), ordered-list (`target: Entity`,
@@ -95,8 +96,42 @@ Custom templates receive only `target` and `related_entities`; the default front
 All entities, generators, IDs, and references are validated before a deck can be synchronized.
 Each targeted entity produces one scheduled exercise. If multiple generators target the same entity,
 the generator with the lexicographically smallest ID owns that entity's exercise; this keeps the
-count entity-based and makes the selected type independent of JSON declaration order. Exercise IDs
+count entity-based and makes the selected type independent of declaration order. Exercise IDs
 remain deterministic from the deck directory identity, selected generator ID, and target entity ID.
+
+### TOML authoring
+
+TOML decks use `[[entities]]` and `[[exercises]]` arrays of tables. Generator maps such as
+`choices`, `groups`, `sources`, and `relations` are nested TOML tables:
+
+```toml
+name = "Capital study"
+
+[[entities]]
+id = "france"
+front = "France"
+back = "Paris"
+
+[[entities]]
+id = "germany"
+front = "Germany"
+back = "Berlin"
+
+[[exercises]]
+id = "basics"
+type = "basic"
+entities = ["france", "germany"]
+```
+
+A mixed workspace can list both formats:
+
+```toml
+decks = ["decks/capitals/deck.toml", "decks/planets/deck.json"]
+```
+
+Deck metadata must remain JSON-compatible. TOML native dates and times are rejected so JSON and
+TOML documents validate the same domain model. File suffixes choose the parser; unsupported
+extensions are rejected without inspecting their contents.
 
 ## Commands
 
