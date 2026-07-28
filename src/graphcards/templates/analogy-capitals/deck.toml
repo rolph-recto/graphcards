@@ -1,0 +1,24 @@
+name = "Capital recall"
+
+[[entities]]
+id = "france"
+front = "France"
+back = "Paris"
+
+[[entities]]
+id = "germany"
+front = "Germany"
+back = "Berlin"
+
+[[entities]]
+id = "italy"
+front = "Italy"
+back = "Rome"
+
+[[exercises]]
+id = "capital-analogy"
+type = "analogy"
+
+[exercises.sources]
+germany = ["france"]
+italy = ["france"]

@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("templates", help="list bundled workspace templates")
 
     for command, help_text in (
-        ("validate", "validate JSON/TOML deck study content"),
+        ("validate", "validate JSON/TOML/YAML deck study content"),
         ("sync", "synchronize generated exercises into study state"),
         ("status", "show card counts"),
     ):

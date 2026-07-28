@@ -1,4 +1,4 @@
-"""Shared JSON/TOML deck aggregates and exercise-generator infrastructure."""
+"""Shared JSON/TOML/YAML deck aggregates and exercise-generator infrastructure."""
 
 from __future__ import annotations
 
@@ -25,6 +25,12 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from yaml import SafeLoader, YAMLError
+from yaml import load as yaml_load
+from yaml.composer import ComposerError
+from yaml.constructor import ConstructorError
+from yaml.events import AliasEvent, NodeEvent
+from yaml.nodes import MappingNode
 
 from graphcards.errors import ConfigError, PresentationError
 from graphcards.models import Card, CardKey, CardView, Exercise, FrozenModel
@@ -139,6 +145,116 @@ def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
             raise ValueError(f"duplicate JSON field {key!r}")
         result[key] = value
     return result
+
+
+class _DeckYamlLoader(SafeLoader):
+    """Safe YAML loader with a deliberately small deck data language.
+
+    Anchors and aliases are rejected instead of expanded. This keeps the decoded document a
+    simple JSON-compatible tree and makes cyclic or resource-amplifying alias graphs impossible.
+    Merge keys are rejected for the same reason; a quoted ``"<<"`` remains an ordinary key.
+    """
+
+    def compose_node(self, parent: object, index: object) -> object:
+        event = self.peek_event()
+        if isinstance(event, AliasEvent):
+            event = self.get_event()
+            raise ComposerError(
+                None,
+                None,
+                "YAML aliases are not supported in deck files",
+                event.start_mark,
+            )
+        if isinstance(event, NodeEvent) and event.anchor is not None:
+            event = self.get_event()
+            raise ComposerError(
+                None,
+                None,
+                "YAML anchors are not supported in deck files",
+                event.start_mark,
+            )
+        return super().compose_node(parent, index)
+
+    def construct_mapping(self, node: object, deep: bool = False) -> dict[str, object]:
+        if not isinstance(node, MappingNode):
+            raise ConstructorError(
+                None,
+                None,
+                "expected a YAML mapping",
+                getattr(node, "start_mark", None),
+            )
+        mapping: dict[str, object] = {}
+        for key_node, value_node in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                raise ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "YAML merge keys are not supported in deck files",
+                    key_node.start_mark,
+                )
+            key = self.construct_object(key_node, deep=deep)
+            if not isinstance(key, str):
+                raise ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "deck mapping keys must be strings",
+                    key_node.start_mark,
+                )
+            if key in mapping:
+                raise ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"duplicate mapping key {key!r}",
+                    key_node.start_mark,
+                )
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
+
+
+def _yaml_json_value(
+    value: object,
+    path: str = "data",
+    depth: int = 0,
+    active: set[int] | None = None,
+) -> None:
+    """Validate decoded YAML as an acyclic, finite JSON-compatible value tree."""
+
+    if depth > 100:
+        raise ValueError(f"{path} is nested too deeply")
+    if value is None or isinstance(value, (bool, int, str)):
+        return
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ValueError(f"{path} must contain JSON-compatible finite numbers")
+        return
+    if active is None:
+        active = set()
+    value_id = id(value)
+    if value_id in active:
+        raise ValueError(f"{path} must not contain cyclic YAML aliases")
+    active.add(value_id)
+    try:
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                _yaml_json_value(item, f"{path}[{index}]", depth + 1, active)
+            return
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    raise ValueError(f"{path} object keys must be strings")
+                _yaml_json_value(item, f"{path}.{key}", depth + 1, active)
+            return
+    finally:
+        active.remove(value_id)
+    raise ValueError(f"{path} must contain only JSON-compatible values")
+
+
+def _yaml_error_message(error: YAMLError) -> str:
+    mark = getattr(error, "problem_mark", None)
+    problem = getattr(error, "problem", None)
+    if mark is not None and problem:
+        return f"{problem} at line {mark.line + 1}, column {mark.column + 1}"
+    return str(error)
 
 
 class Entity(FrozenModel):
@@ -257,7 +373,7 @@ class ExerciseGenerator(FrozenModel, ABC):
 
 
 class DeckDocument(FrozenModel):
-    """The complete study-content document loaded from a JSON or TOML deck file."""
+    """The complete study-content document loaded from a JSON, TOML, or YAML deck file."""
 
     name: StrictStr | None = None
     entities: tuple[Entity, ...]
@@ -358,7 +474,7 @@ class Deck:
 
     @classmethod
     def load(cls, value: str | Path) -> Deck:
-        """Load a JSON or TOML deck and translate file/configuration failures."""
+        """Load a JSON, TOML, or YAML deck and translate file/configuration failures."""
         try:
             path = Path(value).expanduser().resolve()
         except (OSError, RuntimeError, TypeError, ValueError) as error:
@@ -370,19 +486,22 @@ class Deck:
         if not S_ISREG(mode):
             raise ConfigError(f"deck path is not a file: {path}")
         extension = path.suffix.lower()
-        if extension not in {".json", ".toml"}:
+        if extension not in {".json", ".toml", ".yaml", ".yml"}:
             raise ConfigError(
                 f"unsupported deck file extension for {path}: {path.suffix or '(none)'}; "
-                "expected .json or .toml"
+                "expected .json, .toml, .yaml, or .yml"
             )
         try:
             if extension == ".json":
                 raw = json.loads(
                     path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object
                 )
-            else:
+            elif extension == ".toml":
                 with path.open("rb") as deck_file:
                     raw = tomllib.load(deck_file)
+            else:
+                raw = yaml_load(path.read_text(encoding="utf-8"), Loader=_DeckYamlLoader)
+                _yaml_json_value(raw)
             if not isinstance(raw, Mapping):
                 raise TypeError("deck document must be an object")
             document = DeckDocument.model_validate(raw)
@@ -397,6 +516,8 @@ class Deck:
             return deck
         except ConfigError:
             raise
+        except YAMLError as error:
+            raise ConfigError(f"invalid YAML deck {path}: {_yaml_error_message(error)}") from error
         except tomllib.TOMLDecodeError as error:
             raise ConfigError(f"invalid TOML deck {path}: {error}") from error
         except (OSError, UnicodeError) as error:

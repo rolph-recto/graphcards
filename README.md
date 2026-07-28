@@ -1,7 +1,7 @@
 # GraphCards
 
-GraphCards is a local flashcard program backed by FSRS. Each configured deck is one complete JSON
-or TOML file; `graphcards.toml` contains runtime settings and the list of deck files to load.
+GraphCards is a local flashcard program backed by FSRS. Each configured deck is one complete JSON,
+TOML, or YAML file; `graphcards.toml` contains runtime settings and the list of deck files to load.
 
 ## Workspace configuration
 
@@ -13,7 +13,7 @@ decks = ["decks/capitals/deck.toml", "decks/planets/deck.json"]
 
 The directory name is the stable deck identity. The optional `name` in a deck file is display
 metadata only. RDF sources, SPARQL queries, and per-deck kinds are not configuration fields
-anymore. JSON and TOML decks can be mixed in one workspace, and paths are relative to the
+anymore. JSON, TOML, and YAML decks can be mixed in one workspace, and paths are relative to the
 workspace configuration file.
 
 ## Deck content
@@ -123,15 +123,41 @@ type = "basic"
 entities = ["france", "germany"]
 ```
 
-A mixed workspace can list both formats:
+A mixed workspace can list all supported formats:
 
 ```toml
-decks = ["decks/capitals/deck.toml", "decks/planets/deck.json"]
+decks = ["decks/capitals/deck.toml", "decks/planets/deck.json", "decks/languages/deck.yaml"]
 ```
 
 Deck metadata must remain JSON-compatible. TOML native dates and times are rejected so JSON and
 TOML documents validate the same domain model. File suffixes choose the parser; unsupported
 extensions are rejected without inspecting their contents.
+
+### YAML authoring
+
+YAML decks use sequences for repeated `entities` and `exercises`, and mappings for generator data
+such as `choices`, `groups`, `sources`, and `relations`:
+
+```yaml
+name: Capital study
+entities:
+  - id: france
+    front: France
+    back: Paris
+  - id: germany
+    front: Germany
+    back: Berlin
+exercises:
+  - id: basics
+    type: basic
+    entities: [france, germany]
+```
+
+YAML loading uses a safe parser. Mapping keys must be unique strings, exactly one document is
+allowed, and custom tags, merge keys, anchors, and aliases are rejected. YAML dates, sets, binary
+values, non-finite numbers, and other non-JSON-native values are rejected; use quoted strings when
+you need to preserve a value such as a date as text. The `.yaml` and `.yml` suffixes are
+case-insensitive, and suffixes select the parser without content sniffing.
 
 ## Commands
 

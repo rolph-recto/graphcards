@@ -1,0 +1,19 @@
+name: Capital choices
+entities:
+  - id: france
+    front: France
+    back: Paris
+  - id: germany
+    front: Germany
+    back: Berlin
+  - id: italy
+    label: Rome
+  - id: spain
+    label: Madrid
+exercises:
+  - id: priority-choice
+    type: multiple_choice
+    max_choices: 3
+    choices:
+      france: [italy, spain]
+      germany: [italy, spain]

@@ -1,0 +1,17 @@
+name: Capital recall
+entities:
+  - id: france
+    front: France
+    back: Paris
+  - id: germany
+    front: Germany
+    back: Berlin
+  - id: italy
+    front: Italy
+    back: Rome
+exercises:
+  - id: capital-analogy
+    type: analogy
+    sources:
+      germany: [france]
+      italy: [france]

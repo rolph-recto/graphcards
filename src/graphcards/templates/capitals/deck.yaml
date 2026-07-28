@@ -1,0 +1,23 @@
+name: Capitals
+entities:
+  - id: capital-france
+    front: Capital of France?
+    back: Paris
+  - id: capital-germany
+    front: Capital of Germany?
+    back: Berlin
+  - id: capital-italy
+    front: Capital of Italy?
+    back: Rome
+  - id: capital-spain
+    front: Capital of Spain?
+    back: Madrid
+exercises:
+  - id: capitals-basic
+    type: basic
+    entities: [capital-france, capital-germany]
+  - id: capitals-choice
+    type: multiple_choice
+    choices:
+      capital-italy: [capital-france, capital-germany]
+      capital-spain: [capital-france, capital-germany]

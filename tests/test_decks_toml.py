@@ -261,11 +261,11 @@ def test_toml_config_paths_can_mix_decks_and_cli_validate_sync(tmp_path: Path) -
         assert len(repository.active_cards("mixed-toml")) == 4
 
 
-def test_validate_help_mentions_both_deck_formats(capsys: pytest.CaptureFixture[str]) -> None:
+def test_validate_help_mentions_supported_deck_formats(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         build_parser().parse_args(["validate", "--help"])
 
-    assert "validate JSON/TOML deck study content" in capsys.readouterr().out
+    assert "validate JSON/TOML/YAML deck study content" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("loader", [Deck.load, load_config])

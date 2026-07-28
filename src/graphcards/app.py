@@ -1,4 +1,4 @@
-"""Study-session orchestration across JSON/TOML decks, SQLite, and FSRS."""
+"""Study-session orchestration across JSON/TOML/YAML decks, SQLite, and FSRS."""
 
 from __future__ import annotations
 

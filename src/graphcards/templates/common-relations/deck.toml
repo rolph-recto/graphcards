@@ -1,0 +1,35 @@
+name = "Common relations"
+
+[[entities]]
+id = "france"
+label = "France"
+
+[[entities]]
+id = "germany"
+label = "Germany"
+
+[[entities]]
+id = "italy"
+label = "Italy"
+
+[[entities]]
+id = "europe"
+label = "Europe"
+
+[[entities]]
+id = "spain"
+label = "Spain"
+
+[[exercises]]
+id = "common-locations"
+type = "common_relation"
+
+[exercises.relations]
+europe = ["france", "germany", "italy"]
+
+[[exercises]]
+id = "common-borders"
+type = "common_relation"
+
+[exercises.relations]
+france = ["germany", "italy", "spain"]

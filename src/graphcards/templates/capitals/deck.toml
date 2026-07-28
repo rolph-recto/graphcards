@@ -1,0 +1,34 @@
+name = "Capitals"
+
+[[entities]]
+id = "capital-france"
+front = "Capital of France?"
+back = "Paris"
+
+[[entities]]
+id = "capital-germany"
+front = "Capital of Germany?"
+back = "Berlin"
+
+[[entities]]
+id = "capital-italy"
+front = "Capital of Italy?"
+back = "Rome"
+
+[[entities]]
+id = "capital-spain"
+front = "Capital of Spain?"
+back = "Madrid"
+
+[[exercises]]
+id = "capitals-basic"
+type = "basic"
+entities = ["capital-france", "capital-germany"]
+
+[[exercises]]
+id = "capitals-choice"
+type = "multiple_choice"
+
+[exercises.choices]
+"capital-italy" = ["capital-france", "capital-germany"]
+"capital-spain" = ["capital-france", "capital-germany"]

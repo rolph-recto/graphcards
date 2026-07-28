@@ -1,0 +1,28 @@
+name = "Capital choices"
+
+[[entities]]
+id = "france"
+front = "France"
+back = "Paris"
+
+[[entities]]
+id = "germany"
+front = "Germany"
+back = "Berlin"
+
+[[entities]]
+id = "italy"
+label = "Rome"
+
+[[entities]]
+id = "spain"
+label = "Madrid"
+
+[[exercises]]
+id = "priority-choice"
+type = "multiple_choice"
+max_choices = 3
+
+[exercises.choices]
+france = ["italy", "spain"]
+germany = ["italy", "spain"]

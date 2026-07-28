@@ -1,11 +1,11 @@
 ---
 # graphcards-nfo5
 title: Load deck content from YAML
-status: todo
+status: completed
 type: feature
 priority: normal
 created_at: 2026-07-28T04:19:50Z
-updated_at: 2026-07-28T04:19:50Z
+updated_at: 2026-07-28T16:16:07Z
 blocked_by:
     - graphcards-npyi
 ---
@@ -29,14 +29,14 @@ Deck content is format-independent after parsing, but `Deck.load` does not accep
 
 ## Acceptance criteria
 
-- [ ] `Deck.load` successfully loads valid `.yaml` and `.yml` decks containing entities and every supported generator type.
-- [ ] `load_config` accepts relative YAML deck paths and can load JSON, TOML, and YAML decks side by side.
-- [ ] A YAML deck produces the same validated document, deterministic generated card identities and payloads, and rendered views as equivalent JSON and TOML decks.
-- [ ] The YAML loader is safe, rejects duplicate keys, rejects unsupported custom tags, and does not allow YAML-native scalar types or cyclic structures to escape the deck’s JSON-compatible domain.
-- [ ] Malformed YAML, multiple documents, empty documents, non-mapping roots, unsupported extensions, missing/non-file paths, unknown generators, invalid references, and invalid nested generator data surface as path-qualified `ConfigError`.
-- [ ] Existing JSON and TOML loading remains covered and unchanged.
-- [ ] CLI validation and sync work with YAML-backed decks, and bundled documentation includes a minimal YAML deck example.
-- [ ] Focused parser, parity, config, CLI, safety, and error-translation tests pass together with all required repository checks.
+- [x] `Deck.load` successfully loads valid `.yaml` and `.yml` decks containing entities and every supported generator type.
+- [x] `load_config` accepts relative YAML deck paths and can load JSON, TOML, and YAML decks side by side.
+- [x] A YAML deck produces the same validated document, deterministic generated card identities and payloads, and rendered views as equivalent JSON and TOML decks.
+- [x] The YAML loader is safe, rejects duplicate keys, rejects unsupported custom tags, and does not allow YAML-native scalar types or cyclic structures to escape the deck’s JSON-compatible domain.
+- [x] Malformed YAML, multiple documents, empty documents, non-mapping roots, unsupported extensions, missing/non-file paths, unknown generators, invalid references, and invalid nested generator data surface as path-qualified `ConfigError`.
+- [x] Existing JSON and TOML loading remains covered and unchanged.
+- [x] CLI validation and sync work with YAML-backed decks, and bundled documentation includes a minimal YAML deck example.
+- [x] Focused parser, parity, config, CLI, safety, and error-translation tests pass together with all required repository checks.
 
 ## Non-goals
 
@@ -90,3 +90,9 @@ Deck content is format-independent after parsing, but `Deck.load` does not accep
 - Parser boundary: malformed, empty, multi-document, duplicate keys, custom tags, aliases/cycles, merge policy, unsupported suffix, Unicode, missing/directory/non-regular paths.
 - Schema boundary: non-mapping root, missing fields, non-string keys, YAML-native scalar objects, bad generator envelopes, bad nested fields, duplicate IDs, and broken references.
 - Invariants: stable parent-directory identity, unchanged display-name behavior, equal card identities and rendered views, and unchanged JSON/TOML/scaffold behavior.
+
+## Summary of Changes
+
+Added safe YAML deck loading for case-insensitive `.yaml` and `.yml` files using PyYAML SafeLoader with recursive duplicate-key rejection, explicit rejection of anchors, aliases, merge keys, custom tags, and non-JSON-native values. Preserved shared DeckDocument validation and JSON/TOML behavior, added mixed-workspace CLI/config support, updated README and CLI documentation, and added parity, safety, schema, path, and integration tests. All four independent review passes completed with no actionable findings after fixes.
+
+Verified with 213 tests, `uv run pytest -W error`, `uv run ruff check .`, `uv run ruff format --check .`, `uv build`, and `git diff --check`.
