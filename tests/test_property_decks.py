@@ -99,7 +99,6 @@ def test_generated_generator_invariants_hold(
             assert card.source_id in generator.sources[card.target_id]
         elif isinstance(card, CommonRelationExercise):
             generator = next(item for item in deck.generators if item.id == card.generator_id)
-            assert card.direction == generator.direction
             related = generator.relations[card.target_id]
             assert len(card.related_ids) == len(set(card.related_ids))
             assert len(card.related_ids) >= generator.min_examples
@@ -209,7 +208,6 @@ def test_generated_invalid_references_are_config_errors(
         generator = {
             "id": "generator",
             "type": kind,
-            "direction": "object",
             "relations": {"e0": ["e2", unknown]},
         }
     document = {
@@ -241,7 +239,6 @@ def test_generated_common_relation_invalid_bounds_are_config_errors(
             {
                 "id": "generator",
                 "type": "common_relation",
-                "direction": "object",
                 "min_examples": min_examples,
                 "max_related": max_related,
                 "relations": {"target": related},

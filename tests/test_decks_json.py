@@ -57,7 +57,6 @@ def test_common_relation_is_dispatched_and_exported() -> None:
                 {
                     "id": "common",
                     "type": "common_relation",
-                    "direction": "object",
                     "relations": {"target": ["related-1", "related-2"]},
                 }
             ],
@@ -69,39 +68,29 @@ def test_common_relation_is_dispatched_and_exported() -> None:
     assert generator.target_ids == ("target",)
 
 
-@pytest.mark.parametrize(
-    ("direction", "expected_front"),
-    [
-        ("object", "France — ?\nGermany — ?"),
-        ("subject", "? — Germany\n? — Italy"),
-    ],
-)
-def test_common_relation_defaults_render_both_directions(
-    direction: str, expected_front: str, tmp_path: Path, write_deck
-) -> None:
-    target_id = "europe" if direction == "object" else "france"
-    related_ids = ["france", "germany"] if direction == "object" else ["germany", "italy"]
+def test_common_relation_defaults_render_related_entities(tmp_path: Path, write_deck) -> None:
+    target_id = "europe"
+    related_ids = ["france", "germany"]
     entities = [
-        {"id": target_id, "label": "Europe" if direction == "object" else "France"},
+        {"id": target_id, "label": "Europe"},
         *[
             {"id": related_id, "label": name}
             for related_id, name in zip(
                 related_ids,
-                ["France", "Germany"] if direction == "object" else ["Germany", "Italy"],
+                ["France", "Germany"],
                 strict=True,
             )
         ],
     ]
     deck = Deck.load(
         write_deck(
-            tmp_path / direction / "deck.json",
+            tmp_path / "default" / "deck.json",
             {
                 "entities": entities,
                 "exercises": [
                     {
                         "id": "common",
                         "type": "common_relation",
-                        "direction": direction,
                         "relations": {target_id: related_ids},
                     }
                 ],
@@ -111,8 +100,8 @@ def test_common_relation_defaults_render_both_directions(
     card = next(iter(deck.generate_all(rng=random.Random(0)).values()))
     assert isinstance(card, CommonRelationExercise)
     view = deck.render(card)
-    assert view.front == expected_front
-    assert view.back == ("Europe" if direction == "object" else "France")
+    assert view.front == "France — ?\nGermany — ?"
+    assert view.back == "Europe"
 
 
 def test_common_relation_labels_use_all_fallbacks_and_payload_is_semantic(
@@ -131,7 +120,6 @@ def test_common_relation_labels_use_all_fallbacks_and_payload_is_semantic(
                     {
                         "id": "common",
                         "type": "common_relation",
-                        "direction": "object",
                         "relations": {"target": ["related-label", "related-id"]},
                     }
                 ],
@@ -179,7 +167,6 @@ def test_common_relation_label_precedence_covers_each_entity_role(
                     {
                         "id": "common",
                         "type": "common_relation",
-                        "direction": "object",
                         "relations": relations,
                     }
                 ],
@@ -206,7 +193,6 @@ def test_common_relation_cap_is_exact_ordered_and_identity_stable(
                     {
                         "id": "common",
                         "type": "common_relation",
-                        "direction": "object",
                         "max_related": 2,
                         "relations": {"target": ["a", "b", "c", "d"]},
                     }
@@ -238,7 +224,6 @@ def test_common_relation_cap_covering_group_does_not_consume_rng(
                     {
                         "id": "common",
                         "type": "common_relation",
-                        "direction": "object",
                         "max_related": 4,
                         "relations": {"target": ["a", "b"]},
                     }
@@ -266,10 +251,10 @@ def test_common_relation_custom_templates_receive_only_semantic_context(
                     {
                         "id": "common",
                         "type": "common_relation",
-                        "direction": "subject",
                         "relations": {"target": ["a", "b"]},
                         "front_template": (
-                            "{{ target.id }}|{{ related_entities[0].id }}|{{ direction }}"
+                            "{{ target.id }}|{{ related_entities[0].id }}|"
+                            "{{ related_entities[1].id }}"
                         ),
                         "back_template": "{{ related_entities[1].id }}|{{ target.id }}",
                     }
@@ -278,7 +263,7 @@ def test_common_relation_custom_templates_receive_only_semantic_context(
         )
     )
     card = next(iter(deck.generate_all().values()))
-    assert deck.render(card, rng=random.Random(99)).front == "target|a|subject"
+    assert deck.render(card, rng=random.Random(99)).front == "target|a|b"
     assert deck.render(card, rng=random.Random(99)).back == "b|target"
 
 
@@ -298,7 +283,6 @@ def test_common_relation_preflight_covers_every_related_entity_under_cap(
                 {
                     "id": "common",
                     "type": "common_relation",
-                    "direction": "object",
                     "max_related": 2,
                     "relations": {"target": ["good-a", "good-b", "bad-c"]},
                     "front_template": (
@@ -324,7 +308,6 @@ def test_common_relation_unknown_references_are_config_errors(
             {
                 "id": "common",
                 "type": "common_relation",
-                "direction": "object",
                 "relations": {"target": ["related-1", "related-2"]},
             }
         ],
@@ -340,7 +323,7 @@ def test_common_relation_unknown_references_are_config_errors(
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda item: item.update({"direction": "invalid"}), "object.*subject"),
+        (lambda item: item.update({"direction": "object"}), "Extra inputs are not permitted"),
         (lambda item: item.update({"min_examples": 1}), "greater than or equal to 2"),
         (lambda item: item.update({"max_related": 1}), "max_related"),
         (lambda item: item["relations"]["target"].append("related-1"), "duplicate"),
@@ -354,7 +337,6 @@ def test_common_relation_rejects_invalid_definitions(
     item = {
         "id": "common",
         "type": "common_relation",
-        "direction": "object",
         "relations": {"target": ["related-1", "related-2"]},
     }
     mutation(item)
@@ -388,7 +370,6 @@ def test_common_relation_rejects_malformed_nested_input(
     item = {
         "id": "common",
         "type": "common_relation",
-        "direction": "object",
         "relations": {"target": ["related-1", "related-2"]},
     }
     mutation(item)
@@ -411,7 +392,6 @@ def test_common_relation_does_not_expose_predicate_template_context(
                 {
                     "id": "common",
                     "type": "common_relation",
-                    "direction": "object",
                     "relations": {"target": ["a", "b"]},
                     "front_template": "{{ predicate }}",
                 }
@@ -434,7 +414,6 @@ def test_common_relation_runtime_payload_failures_are_presentation_errors(
                     {
                         "id": "common",
                         "type": "common_relation",
-                        "direction": "object",
                         "relations": {"target": ["a", "b"]},
                     }
                 ],
@@ -447,7 +426,6 @@ def test_common_relation_runtime_payload_failures_are_presentation_errors(
         card_key=key,
         generator_id="common",
         target_id="target",
-        direction="subject",
         related_ids=("a",),
     )
     with pytest.raises(PresentationError, match="inconsistent"):
@@ -457,7 +435,6 @@ def test_common_relation_runtime_payload_failures_are_presentation_errors(
         card_key=None,
         generator_id="common",
         target_id="target",
-        direction="object",
         related_ids=("a", "b"),
     )
     with pytest.raises(PresentationError, match="card identity"):
@@ -466,7 +443,6 @@ def test_common_relation_runtime_payload_failures_are_presentation_errors(
     malformed_generator_id = CommonRelationExercise.model_construct(
         card_key=key,
         target_id="target",
-        direction="object",
         related_ids=("a", "b"),
     )
     with pytest.raises(PresentationError, match="generator identity"):
@@ -476,7 +452,6 @@ def test_common_relation_runtime_payload_failures_are_presentation_errors(
         card_key=key,
         generator_id="common",
         target_id="target",
-        direction="object",
         related_ids="ab",
     )
     with pytest.raises(PresentationError, match="inconsistent"):
@@ -492,7 +467,6 @@ def test_common_relation_runtime_payload_failures_are_presentation_errors(
             card_key=key,
             generator_id="common",
             target_id=values.get("target_id", "target"),
-            direction="object",
             related_ids=values["related_ids"],
         )
         with pytest.raises(PresentationError, match="inconsistent"):
@@ -502,7 +476,6 @@ def test_common_relation_runtime_payload_failures_are_presentation_errors(
         card_key=generator._key("target", "other-deck"),
         generator_id="common",
         target_id="target",
-        direction="object",
         related_ids=("a", "b"),
     )
     with pytest.raises(PresentationError, match="deck"):

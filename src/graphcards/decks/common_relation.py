@@ -17,18 +17,11 @@ from graphcards.decks.base import (
 from graphcards.errors import PresentationError
 from graphcards.models import CardView, Exercise
 
-RelationDirection = Literal["object", "subject"]
-
 FRONT_TEMPLATE = (
+    "What do these have common?\n"
     "{% for related_entity in related_entities %}"
-    "{% if direction == 'object' %}"
-    "{{ related_entity.data.get('label', related_entity.data.get('back', "
-    "related_entity.data.get('answer', related_entity.id))) }} — ?"
-    "{% else %}? — "
-    "{{ related_entity.data.get('label', related_entity.data.get('back', "
-    "related_entity.data.get('answer', related_entity.id))) }}"
-    "{% endif %}"
-    "{% if not loop.last %}\n{% endif %}"
+    "- {{ related_entity.data.get('label', related_entity.data.get('back', "
+    "related_entity.data.get('answer', related_entity.id))) }}\n"
     "{% endfor %}"
 )
 BACK_TEMPLATE = (
@@ -40,13 +33,10 @@ BACK_TEMPLATE = (
 class CommonRelationExerciseGenerator(ExerciseGenerator):
     type: Literal["common_relation"] = "common_relation"
     type_name = "common_relation"
-    direction: RelationDirection
     relations: dict[StrictStr, tuple[StrictStr, ...]]
     min_examples: StrictInt = Field(default=2, ge=2)
     max_related: StrictInt = Field(default=0, ge=0)
-    template_context_names: ClassVar[frozenset[str]] = frozenset(
-        {"target", "related_entities", "direction"}
-    )
+    template_context_names: ClassVar[frozenset[str]] = frozenset({"target", "related_entities"})
 
     @model_validator(mode="before")
     @classmethod
@@ -112,7 +102,6 @@ class CommonRelationExerciseGenerator(ExerciseGenerator):
             card_key=key,
             generator_id=self.id,
             target_id=entity_id,
-            direction=self.direction,
             related_ids=self._selected_related_ids(entity_id, context),
         )
 
@@ -138,7 +127,6 @@ class CommonRelationExerciseGenerator(ExerciseGenerator):
                 card_key=self._key(target_id, context.deck_id),
                 generator_id=self.id,
                 target_id=target_id,
-                direction=self.direction,
                 related_ids=related_ids,
             )
             for target_id, related in self.relations.items()
@@ -153,8 +141,6 @@ class CommonRelationExerciseGenerator(ExerciseGenerator):
             expected_count = (
                 len(related) if self.max_related == 0 else min(self.max_related, len(related))
             )
-            if exercise.direction != self.direction:
-                raise ValueError("exercise direction does not match generator")
             if not isinstance(exercise.related_ids, tuple) or not all(
                 isinstance(related_id, str) for related_id in exercise.related_ids
             ):
@@ -174,7 +160,6 @@ class CommonRelationExerciseGenerator(ExerciseGenerator):
             render_context = {
                 "target": target,
                 "related_entities": related_entities,
-                "direction": exercise.direction,
             }
             return CardView(
                 card_key=exercise.card_key,
@@ -192,7 +177,6 @@ class CommonRelationExerciseGenerator(ExerciseGenerator):
 class CommonRelationExercise(Exercise):
     """Semantic common-relation exercise before presentation rendering."""
 
-    direction: RelationDirection
     related_ids: tuple[StrictStr, ...]
 
     @model_validator(mode="after")
@@ -209,5 +193,4 @@ class CommonRelationExercise(Exercise):
 __all__ = [
     "CommonRelationExercise",
     "CommonRelationExerciseGenerator",
-    "RelationDirection",
 ]

@@ -71,7 +71,6 @@ IDs. The target key is the stable card identity and answer:
 {
   "id": "common-locations",
   "type": "common_relation",
-  "direction": "object",
   "min_examples": 2,
   "max_related": 0,
   "relations": {
@@ -80,10 +79,9 @@ IDs. The target key is the stable card identity and answer:
 }
 ```
 
-`object` asks for the shared target; `subject` asks for the shared target from the opposite side.
-Relationship wording is presentation-specific and can be supplied by a custom template. Each
-target produces one scheduled exercise and therefore one stable card identity, even when the
-generated subset changes.
+Each target produces one scheduled exercise and therefore one stable card identity, even when the
+generated subset changes. Relationship wording is presentation-specific and can be supplied by a
+custom template.
 Groups must contain at least `min_examples` distinct related IDs (default `2`). `max_related` is
 zero for all related IDs, or selects exactly `min(max_related, group size)` distinct IDs; a cap
 below `min_examples` is invalid. Selection uses the generation RNG and restores declaration order
@@ -91,9 +89,8 @@ before storing the IDs in the semantic exercise payload, so rendering is statele
 sample or reorder.
 
 Default labels use `label`, then `back`, then `answer`, then `id` for target and related entities.
-Custom templates receive only `target`, `related_entities`, and `direction`; the default front
-displays one `related — ?` line per related entity for object direction and `? — related` for
-subject direction. The default back displays only the target label.
+Custom templates receive only `target` and `related_entities`; the default front displays one
+`related — ?` line per related entity. The default back displays only the target label.
 
 All entities, generators, IDs, and references are validated before a deck can be synchronized.
 Each targeted entity produces one scheduled exercise. If multiple generators target the same entity,

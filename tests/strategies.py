@@ -124,7 +124,6 @@ def valid_deck_documents(draw: st.DrawFn) -> dict[str, Any]:
         generator = {
             "id": "generator",
             "type": "common_relation",
-            "direction": draw(st.sampled_from(["object", "subject"])),
             "min_examples": min_examples,
             "max_related": draw(st.sampled_from([0, *range(min_examples, len(ids[2:]) + 3)])),
             "relations": relations,
