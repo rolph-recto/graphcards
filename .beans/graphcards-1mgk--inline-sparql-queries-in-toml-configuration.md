@@ -1,10 +1,11 @@
 ---
 # graphcards-1mgk
 title: Inline SPARQL queries in TOML configuration
-status: todo
+status: scrapped
 type: feature
+priority: normal
 created_at: 2026-07-24T20:35:15Z
-updated_at: 2026-07-24T20:35:15Z
+updated_at: 2026-07-28T01:24:38Z
 ---
 
 Allow SPARQL query text to be embedded directly in graphcards.toml instead of requiring a separate .rq file.
