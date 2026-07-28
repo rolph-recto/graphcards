@@ -433,14 +433,22 @@ class Deck:
         )
 
     def render(self, exercise: Exercise, *, rng: random.Random | None = None) -> CardView:
-        if exercise.card_key.deck_id != self.name:
+        try:
+            belongs_to_deck = exercise.card_key.deck_id == self.name
+        except (AttributeError, TypeError) as error:
+            raise PresentationError("exercise has an invalid card identity") from error
+        if not belongs_to_deck:
             raise PresentationError(f"exercise does not belong to deck {self.name!r}")
+        try:
+            exercise_generator_id = exercise.generator_id
+        except AttributeError as error:
+            raise PresentationError("exercise has an invalid generator identity") from error
         context = ExerciseGeneratorContext(self.name, self.entities, rng or random.Random())
         for generator in self.generators:
-            if generator.id == exercise.generator_id:
+            if generator.id == exercise_generator_id:
                 return generator.render(exercise, context)
         raise PresentationError(
-            f"deck {self.name!r} no longer has generator {exercise.generator_id!r}"
+            f"deck {self.name!r} no longer has generator {exercise_generator_id!r}"
         )
 
 

@@ -89,7 +89,9 @@ def entity_ids(draw: st.DrawFn, *, min_size: int = 2, max_size: int = 6) -> list
 @st.composite
 def valid_deck_documents(draw: st.DrawFn) -> dict[str, Any]:
     ids = draw(entity_ids(min_size=4, max_size=6))
-    generator_type = draw(st.sampled_from(["basic", "multiple_choice", "ordered_list", "analogy"]))
+    generator_type = draw(
+        st.sampled_from(["basic", "multiple_choice", "ordered_list", "analogy", "common_relation"])
+    )
     entities = [{"id": entity_id, "label": f"label-{entity_id}"} for entity_id in ids]
     if generator_type == "basic":
         generator = {"id": "generator", "type": "basic", "entities": ids[:3]}
@@ -107,11 +109,25 @@ def valid_deck_documents(draw: st.DrawFn) -> dict[str, Any]:
             "window_size": draw(st.integers(min_value=0, max_value=len(ids))),
             "groups": {ids[0]: ids[1:]},
         }
-    else:
+    elif generator_type == "analogy":
         generator = {
             "id": "generator",
             "type": "analogy",
             "sources": {ids[0]: ids[1:]},
+        }
+    else:
+        relations = {ids[0]: ids[2:]}
+        if len(ids) == 6 and draw(st.booleans()):
+            relations[ids[2]] = ids[4:]
+        smallest_group = min(len(related) for related in relations.values())
+        min_examples = draw(st.integers(min_value=2, max_value=smallest_group))
+        generator = {
+            "id": "generator",
+            "type": "common_relation",
+            "direction": draw(st.sampled_from(["object", "subject"])),
+            "min_examples": min_examples,
+            "max_related": draw(st.sampled_from([0, *range(min_examples, len(ids[2:]) + 3)])),
+            "relations": relations,
         }
     return {"entities": entities, "exercises": [generator]}
 

@@ -11,6 +11,8 @@ from graphcards.decks import (
     AnalogyExercise,
     BasicExercise,
     BasicExerciseGenerator,
+    CommonRelationExercise,
+    CommonRelationExerciseGenerator,
     Deck,
     DeckDocument,
     Entity,
@@ -41,6 +43,474 @@ def test_json_validation_dispatches_typed_generator_definitions() -> None:
         )
     )
     assert isinstance(document.exercises[0], BasicExerciseGenerator)
+
+
+def test_common_relation_is_dispatched_and_exported() -> None:
+    document = DeckDocument.model_validate(
+        {
+            "entities": [
+                {"id": "target"},
+                {"id": "related-1"},
+                {"id": "related-2"},
+            ],
+            "exercises": [
+                {
+                    "id": "common",
+                    "type": "common_relation",
+                    "direction": "object",
+                    "relations": {"target": ["related-1", "related-2"]},
+                }
+            ],
+        }
+    )
+    generator = document.exercises[0]
+    assert isinstance(generator, CommonRelationExerciseGenerator)
+    assert generator.relations["target"] == ("related-1", "related-2")
+    assert generator.target_ids == ("target",)
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected_front"),
+    [
+        ("object", "France — ?\nGermany — ?"),
+        ("subject", "? — Germany\n? — Italy"),
+    ],
+)
+def test_common_relation_defaults_render_both_directions(
+    direction: str, expected_front: str, tmp_path: Path, write_deck
+) -> None:
+    target_id = "europe" if direction == "object" else "france"
+    related_ids = ["france", "germany"] if direction == "object" else ["germany", "italy"]
+    entities = [
+        {"id": target_id, "label": "Europe" if direction == "object" else "France"},
+        *[
+            {"id": related_id, "label": name}
+            for related_id, name in zip(
+                related_ids,
+                ["France", "Germany"] if direction == "object" else ["Germany", "Italy"],
+                strict=True,
+            )
+        ],
+    ]
+    deck = Deck.load(
+        write_deck(
+            tmp_path / direction / "deck.json",
+            {
+                "entities": entities,
+                "exercises": [
+                    {
+                        "id": "common",
+                        "type": "common_relation",
+                        "direction": direction,
+                        "relations": {target_id: related_ids},
+                    }
+                ],
+            },
+        )
+    )
+    card = next(iter(deck.generate_all(rng=random.Random(0)).values()))
+    assert isinstance(card, CommonRelationExercise)
+    view = deck.render(card)
+    assert view.front == expected_front
+    assert view.back == ("Europe" if direction == "object" else "France")
+
+
+def test_common_relation_labels_use_all_fallbacks_and_payload_is_semantic(
+    tmp_path: Path, write_deck
+) -> None:
+    deck = Deck.load(
+        write_deck(
+            tmp_path / "fallbacks" / "deck.json",
+            {
+                "entities": [
+                    {"id": "target", "answer": "Target answer"},
+                    {"id": "related-label", "label": "Related label"},
+                    {"id": "related-id"},
+                ],
+                "exercises": [
+                    {
+                        "id": "common",
+                        "type": "common_relation",
+                        "direction": "object",
+                        "relations": {"target": ["related-label", "related-id"]},
+                    }
+                ],
+            },
+        )
+    )
+    card = next(iter(deck.generate_all(rng=random.Random(5)).values()))
+    assert isinstance(card, CommonRelationExercise)
+    assert card.related_ids == ("related-label", "related-id")
+    assert "Target answer" not in card.model_dump_json()
+    assert deck.render(card).front == "Related label — ?\nrelated-id — ?"
+    assert deck.render(card).back == "Target answer"
+
+
+def test_common_relation_label_precedence_covers_each_entity_role(
+    tmp_path: Path, write_deck
+) -> None:
+    entities: list[dict[str, object]] = []
+    relations: dict[str, list[str]] = {}
+    expected: list[tuple[str, str]] = []
+    for index, source in enumerate(["label", "back", "answer", "id"], start=1):
+        target_id = f"target-{index}"
+        related_ids = [f"related-{index}-a", f"related-{index}-b"]
+        entities.append(
+            {"id": target_id, **({source: f"Target {index}"} if source != "id" else {})}
+        )
+        for related_id, suffix in zip(related_ids, ["a", "b"], strict=True):
+            entities.append(
+                {
+                    "id": related_id,
+                    **({source: f"Related {index}{suffix}"} if source != "id" else {}),
+                }
+            )
+        relations[target_id] = related_ids
+        target_label = f"Target {index}" if source != "id" else target_id
+        related_label = f"Related {index}a" if source != "id" else related_ids[0]
+        expected.append((target_label, related_label))
+
+    deck = Deck.load(
+        write_deck(
+            tmp_path / "precedence" / "deck.json",
+            {
+                "entities": entities,
+                "exercises": [
+                    {
+                        "id": "common",
+                        "type": "common_relation",
+                        "direction": "object",
+                        "relations": relations,
+                    }
+                ],
+            },
+        )
+    )
+    cards = deck.generate_all(rng=random.Random(0))
+    for target_id, (target_label, related_label) in zip(relations, expected, strict=True):
+        card = cards[next(card_id for card_id in cards if cards[card_id].target_id == target_id)]
+        view = deck.render(card)
+        assert view.front == (f"{related_label} — ?\n{related_label[:-1]}b — ?")
+        assert view.back == target_label
+
+
+def test_common_relation_cap_is_exact_ordered_and_identity_stable(
+    tmp_path: Path, write_deck
+) -> None:
+    deck = Deck.load(
+        write_deck(
+            tmp_path / "capped" / "deck.json",
+            {
+                "entities": [{"id": entity_id} for entity_id in ["target", "a", "b", "c", "d"]],
+                "exercises": [
+                    {
+                        "id": "common",
+                        "type": "common_relation",
+                        "direction": "object",
+                        "max_related": 2,
+                        "relations": {"target": ["a", "b", "c", "d"]},
+                    }
+                ],
+            },
+        )
+    )
+    cards = [next(iter(deck.generate_all(rng=random.Random(seed)).values())) for seed in range(8)]
+    assert all(isinstance(card, CommonRelationExercise) for card in cards)
+    assert all(len(card.related_ids) == len(set(card.related_ids)) == 2 for card in cards)
+    assert all(set(card.related_ids) <= {"a", "b", "c", "d"} for card in cards)
+    assert all(
+        card.related_ids
+        == tuple(entity_id for entity_id in ["a", "b", "c", "d"] if entity_id in card.related_ids)
+        for card in cards
+    )
+    assert len({card.card_key for card in cards}) == 1
+
+
+def test_common_relation_cap_covering_group_does_not_consume_rng(
+    tmp_path: Path, write_deck
+) -> None:
+    deck = Deck.load(
+        write_deck(
+            tmp_path / "uncapped" / "deck.json",
+            {
+                "entities": [{"id": entity_id} for entity_id in ["target", "a", "b"]],
+                "exercises": [
+                    {
+                        "id": "common",
+                        "type": "common_relation",
+                        "direction": "object",
+                        "max_related": 4,
+                        "relations": {"target": ["a", "b"]},
+                    }
+                ],
+            },
+        )
+    )
+    rng = random.Random(9)
+    before = rng.getstate()
+    card = next(iter(deck.generate_all(rng=rng).values()))
+    assert isinstance(card, CommonRelationExercise)
+    assert card.related_ids == ("a", "b")
+    assert rng.getstate() == before
+
+
+def test_common_relation_custom_templates_receive_only_semantic_context(
+    tmp_path: Path, write_deck
+) -> None:
+    deck = Deck.load(
+        write_deck(
+            tmp_path / "custom" / "deck.json",
+            {
+                "entities": [{"id": entity_id} for entity_id in ["target", "a", "b"]],
+                "exercises": [
+                    {
+                        "id": "common",
+                        "type": "common_relation",
+                        "direction": "subject",
+                        "relations": {"target": ["a", "b"]},
+                        "front_template": (
+                            "{{ target.id }}|{{ related_entities[0].id }}|{{ direction }}"
+                        ),
+                        "back_template": "{{ related_entities[1].id }}|{{ target.id }}",
+                    }
+                ],
+            },
+        )
+    )
+    card = next(iter(deck.generate_all().values()))
+    assert deck.render(card, rng=random.Random(99)).front == "target|a|subject"
+    assert deck.render(card, rng=random.Random(99)).back == "b|target"
+
+
+def test_common_relation_preflight_covers_every_related_entity_under_cap(
+    tmp_path: Path, write_deck
+) -> None:
+    path = write_deck(
+        tmp_path / "preflight" / "deck.json",
+        {
+            "entities": [
+                {"id": "target"},
+                {"id": "good-a", "answer": {"value": "A"}},
+                {"id": "good-b", "answer": {"value": "B"}},
+                {"id": "bad-c"},
+            ],
+            "exercises": [
+                {
+                    "id": "common",
+                    "type": "common_relation",
+                    "direction": "object",
+                    "max_related": 2,
+                    "relations": {"target": ["good-a", "good-b", "bad-c"]},
+                    "front_template": (
+                        "{% for related_entity in related_entities %}"
+                        "{{ related_entity.data.get('answer').value }}{% endfor %}"
+                    ),
+                }
+            ],
+        },
+    )
+    with pytest.raises(ConfigError, match="could not render card template"):
+        Deck.load(path)
+
+
+@pytest.mark.parametrize("field", ["target", "related"])
+def test_common_relation_unknown_references_are_config_errors(
+    field: str, tmp_path: Path, write_deck
+) -> None:
+    ids = {"target", "related-1", "related-2"}
+    document = {
+        "entities": [{"id": entity_id} for entity_id in ids],
+        "exercises": [
+            {
+                "id": "common",
+                "type": "common_relation",
+                "direction": "object",
+                "relations": {"target": ["related-1", "related-2"]},
+            }
+        ],
+    }
+    if field == "target":
+        document["exercises"][0]["relations"] = {"missing": ["related-1", "related-2"]}
+    else:
+        document["exercises"][0]["relations"]["target"][1] = "missing"
+    with pytest.raises(ConfigError, match="unknown"):
+        Deck.load(write_deck(tmp_path / field / "deck.json", document))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda item: item.update({"direction": "invalid"}), "object.*subject"),
+        (lambda item: item.update({"min_examples": 1}), "greater than or equal to 2"),
+        (lambda item: item.update({"max_related": 1}), "max_related"),
+        (lambda item: item["relations"]["target"].append("related-1"), "duplicate"),
+        (lambda item: item["relations"].update({"target": ["related-1"]}), "at least"),
+        (lambda item: item.update({"extra": True}), "Extra"),
+    ],
+)
+def test_common_relation_rejects_invalid_definitions(
+    mutation, message: str, tmp_path: Path, write_deck
+) -> None:
+    item = {
+        "id": "common",
+        "type": "common_relation",
+        "direction": "object",
+        "relations": {"target": ["related-1", "related-2"]},
+    }
+    mutation(item)
+    document = {
+        "entities": [{"id": entity_id} for entity_id in ["target", "related-1", "related-2"]],
+        "exercises": [item],
+    }
+    with pytest.raises(ConfigError, match=message):
+        Deck.load(write_deck(tmp_path / "invalid" / "deck.json", document))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda item: item.update({"relations": {}}),
+        lambda item: item["relations"].update(
+            {"target": {"predicate": "obsolete", "related": ["related-1", "related-2"]}}
+        ),
+        lambda item: item["relations"].update({"\ttarget": item["relations"].pop("target")}),
+        lambda item: item["relations"].update({" ": item["relations"].pop("target")}),
+        lambda item: item["relations"].update({"target": ["related-1\u200b", "related-2"]}),
+        lambda item: item["relations"].update({"target": [" ", "related-2"]}),
+        lambda item: item.update({"min_examples": True}),
+        lambda item: item.update({"max_related": "2"}),
+        lambda item: item["relations"].update({"target": "related-1"}),
+    ],
+)
+def test_common_relation_rejects_malformed_nested_input(
+    mutation, tmp_path: Path, write_deck
+) -> None:
+    item = {
+        "id": "common",
+        "type": "common_relation",
+        "direction": "object",
+        "relations": {"target": ["related-1", "related-2"]},
+    }
+    mutation(item)
+    document = {
+        "entities": [{"id": entity_id} for entity_id in ["target", "related-1", "related-2"]],
+        "exercises": [item],
+    }
+    with pytest.raises(ConfigError):
+        Deck.load(write_deck(tmp_path / "malformed" / "deck.json", document))
+
+
+def test_common_relation_does_not_expose_predicate_template_context(
+    tmp_path: Path, write_deck
+) -> None:
+    path = write_deck(
+        tmp_path / "predicate-context" / "deck.json",
+        {
+            "entities": [{"id": entity_id} for entity_id in ["target", "a", "b"]],
+            "exercises": [
+                {
+                    "id": "common",
+                    "type": "common_relation",
+                    "direction": "object",
+                    "relations": {"target": ["a", "b"]},
+                    "front_template": "{{ predicate }}",
+                }
+            ],
+        },
+    )
+    with pytest.raises(ConfigError, match="unknown template variable"):
+        Deck.load(path)
+
+
+def test_common_relation_runtime_payload_failures_are_presentation_errors(
+    tmp_path: Path, write_deck
+) -> None:
+    deck = Deck.load(
+        write_deck(
+            tmp_path / "runtime" / "deck.json",
+            {
+                "entities": [{"id": entity_id} for entity_id in ["target", "a", "b"]],
+                "exercises": [
+                    {
+                        "id": "common",
+                        "type": "common_relation",
+                        "direction": "object",
+                        "relations": {"target": ["a", "b"]},
+                    }
+                ],
+            },
+        )
+    )
+    generator = deck.generators[0]
+    key = generator._key("target", deck.name)
+    malformed = CommonRelationExercise.model_construct(
+        card_key=key,
+        generator_id="common",
+        target_id="target",
+        direction="subject",
+        related_ids=("a",),
+    )
+    with pytest.raises(PresentationError, match="inconsistent"):
+        deck.render(malformed)
+
+    malformed_card_key = CommonRelationExercise.model_construct(
+        card_key=None,
+        generator_id="common",
+        target_id="target",
+        direction="object",
+        related_ids=("a", "b"),
+    )
+    with pytest.raises(PresentationError, match="card identity"):
+        deck.render(malformed_card_key)
+
+    malformed_generator_id = CommonRelationExercise.model_construct(
+        card_key=key,
+        target_id="target",
+        direction="object",
+        related_ids=("a", "b"),
+    )
+    with pytest.raises(PresentationError, match="generator identity"):
+        deck.render(malformed_generator_id)
+
+    malformed_related_ids = CommonRelationExercise.model_construct(
+        card_key=key,
+        generator_id="common",
+        target_id="target",
+        direction="object",
+        related_ids="ab",
+    )
+    with pytest.raises(PresentationError, match="inconsistent"):
+        deck.render(malformed_related_ids)
+
+    runtime_cases = [
+        {"related_ids": ("a", "missing")},
+        {"related_ids": ("a", "a")},
+        {"related_ids": ("a", "b"), "target_id": "missing"},
+    ]
+    for values in runtime_cases:
+        runtime_payload = CommonRelationExercise.model_construct(
+            card_key=key,
+            generator_id="common",
+            target_id=values.get("target_id", "target"),
+            direction="object",
+            related_ids=values["related_ids"],
+        )
+        with pytest.raises(PresentationError, match="inconsistent"):
+            deck.render(runtime_payload)
+
+    wrong_identity = CommonRelationExercise.model_construct(
+        card_key=generator._key("target", "other-deck"),
+        generator_id="common",
+        target_id="target",
+        direction="object",
+        related_ids=("a", "b"),
+    )
+    with pytest.raises(PresentationError, match="deck"):
+        deck.render(wrong_identity)
+
+    wrong_type = BasicExercise(card_key=key, generator_id="common", target_id="target")
+    with pytest.raises(PresentationError, match="cannot render"):
+        deck.render(wrong_type)
 
 
 def test_entity_accepts_arbitrary_nested_json_data() -> None:

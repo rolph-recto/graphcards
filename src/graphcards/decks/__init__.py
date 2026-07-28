@@ -9,6 +9,10 @@ from graphcards.decks.base import (
     ExerciseGeneratorContext,
 )
 from graphcards.decks.basic import BasicExercise, BasicExerciseGenerator
+from graphcards.decks.common_relation import (
+    CommonRelationExercise,
+    CommonRelationExerciseGenerator,
+)
 from graphcards.decks.multiple_choice import (
     MultipleChoiceExercise,
     MultipleChoiceExerciseGenerator,
@@ -23,6 +27,8 @@ __all__ = [
     "AnalogyExerciseGenerator",
     "BasicExercise",
     "BasicExerciseGenerator",
+    "CommonRelationExercise",
+    "CommonRelationExerciseGenerator",
     "Deck",
     "DeckDocument",
     "Entity",

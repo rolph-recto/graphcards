@@ -1,0 +1,28 @@
+{
+  "name": "Common relations",
+  "entities": [
+    {"id": "france", "label": "France"},
+    {"id": "germany", "label": "Germany"},
+    {"id": "italy", "label": "Italy"},
+    {"id": "europe", "label": "Europe"},
+    {"id": "spain", "label": "Spain"}
+  ],
+  "exercises": [
+    {
+      "id": "common-locations",
+      "type": "common_relation",
+      "direction": "object",
+      "relations": {
+        "europe": ["france", "germany", "italy"]
+      }
+    },
+    {
+      "id": "common-borders",
+      "type": "common_relation",
+      "direction": "subject",
+      "relations": {
+        "france": ["germany", "italy", "spain"]
+      }
+    }
+  ]
+}

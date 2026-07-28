@@ -5,6 +5,7 @@ from pathlib import Path
 
 from graphcards.cli import main
 from graphcards.config import load_config
+from graphcards.decks import Deck
 from graphcards.storage import Repository
 
 
@@ -14,6 +15,7 @@ def test_templates_lists_bundled_names_without_loading_config() -> None:
     assert main(["--config", "missing.toml", "templates"], output=output) == 0
     assert {line for line in output.getvalue().splitlines()} >= {
         "analogy-capitals",
+        "common-relations",
         "ordered-planets",
         "priority-capitals",
     }
@@ -28,11 +30,22 @@ def test_init_creates_template_workspace_and_refuses_overwrite(tmp_path: Path) -
     assert (workspace / "graphcards.toml").is_file()
     config = load_config(workspace / "graphcards.toml")
     assert config.decks[0].path == (workspace / "deck.json").resolve()
+    deck = Deck.load(workspace / "deck.json")
+    assert len(deck.generate_all()) == 2
     original_files = {
         path: path.read_bytes() for path in (workspace / "deck.json", workspace / "graphcards.toml")
     }
     assert main(["init", str(workspace)], output=StringIO(), error=StringIO()) == 2
     assert {path: path.read_bytes() for path in original_files} == original_files
+
+
+def test_init_common_relations_template_validates(tmp_path: Path) -> None:
+    workspace = tmp_path / "common-relations"
+    assert main(["init", str(workspace), "--template", "common-relations"], output=StringIO()) == 0
+    config = load_config(workspace / "graphcards.toml")
+    assert config.decks[0].path == (workspace / "deck.json").resolve()
+    deck = Deck.load(workspace / "deck.json")
+    assert len(deck.generate_all()) == 2
 
 
 def test_validate_sync_and_full_status_use_json_deck(

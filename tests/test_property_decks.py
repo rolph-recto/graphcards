@@ -6,11 +6,12 @@ import re
 from pathlib import Path
 
 import pytest
-from hypothesis import given
+from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from graphcards.decks import (
     AnalogyExercise,
+    CommonRelationExercise,
     Deck,
     MultipleChoiceExercise,
     OrderedListExercise,
@@ -38,8 +39,10 @@ def test_generated_decks_load_generate_and_render_all_targets(
         raw_targets = raw_generator["choices"].keys()
     elif generator_type == "ordered_list":
         raw_targets = [target for group in raw_generator["groups"].values() for target in group]
-    else:
+    elif generator_type == "analogy":
         raw_targets = raw_generator["sources"].keys()
+    else:
+        raw_targets = raw_generator["relations"].keys()
     expected = {(raw_generator["id"], target_id) for target_id in raw_targets}
     actual = {(card.generator_id, card.target_id) for card in first.values()}
     assert actual == expected
@@ -94,6 +97,21 @@ def test_generated_generator_invariants_hold(
             assert card.source_id != card.target_id
             generator = next(item for item in deck.generators if item.id == card.generator_id)
             assert card.source_id in generator.sources[card.target_id]
+        elif isinstance(card, CommonRelationExercise):
+            generator = next(item for item in deck.generators if item.id == card.generator_id)
+            assert card.direction == generator.direction
+            related = generator.relations[card.target_id]
+            assert len(card.related_ids) == len(set(card.related_ids))
+            assert len(card.related_ids) >= generator.min_examples
+            assert set(card.related_ids) <= set(related)
+            assert card.related_ids == tuple(
+                related_id for related_id in related if related_id in card.related_ids
+            )
+            if generator.max_related:
+                assert len(card.related_ids) == min(generator.max_related, len(related))
+            else:
+                assert card.related_ids == related
+            assert deck.render(card).back == f"label-{card.target_id}"
 
 
 @pytest.mark.parametrize(
@@ -169,7 +187,9 @@ def test_each_generator_rejects_invalid_pools_groups_and_sources(
 
 
 @given(
-    kind=st.sampled_from(["basic", "multiple_choice", "ordered_list", "analogy"]),
+    kind=st.sampled_from(
+        ["basic", "multiple_choice", "ordered_list", "analogy", "common_relation"]
+    ),
     unknown=valid_identity_strings.filter(lambda value: value not in {"e0", "e1", "e2"}),
 )
 @PROPERTY_SETTINGS
@@ -183,14 +203,53 @@ def test_generated_invalid_references_are_config_errors(
         generator = {"id": "generator", "type": kind, "choices": {"e0": [unknown]}}
     elif kind == "ordered_list":
         generator = {"id": "generator", "type": kind, "groups": {"e0": ["e1", unknown]}}
-    else:
+    elif kind == "analogy":
         generator = {"id": "generator", "type": kind, "sources": {"e0": [unknown]}}
+    else:
+        generator = {
+            "id": "generator",
+            "type": kind,
+            "direction": "object",
+            "relations": {"e0": ["e2", unknown]},
+        }
     document = {
         "entities": [{"id": "e0"}, {"id": "e1"}, {"id": "e2"}],
         "exercises": [generator],
     }
     with pytest.raises(ConfigError, match="unknown"):
         Deck.load(write_deck(tmp_path / "invalid-generated" / "deck.json", document))
+
+
+@given(
+    related=st.lists(
+        valid_identity_strings.filter(lambda value: value != "target"),
+        min_size=0,
+        max_size=4,
+        unique=True,
+    ),
+    min_examples=st.integers(min_value=2, max_value=4),
+    max_related=st.integers(min_value=0, max_value=3),
+)
+@PROPERTY_SETTINGS
+def test_generated_common_relation_invalid_bounds_are_config_errors(
+    related: list[str], min_examples: int, max_related: int, tmp_path: Path, write_deck
+) -> None:
+    assume(len(related) < min_examples or (max_related != 0 and max_related < min_examples))
+    document = {
+        "entities": [{"id": entity_id} for entity_id in ["target", *related]],
+        "exercises": [
+            {
+                "id": "generator",
+                "type": "common_relation",
+                "direction": "object",
+                "min_examples": min_examples,
+                "max_related": max_related,
+                "relations": {"target": related},
+            }
+        ],
+    }
+    with pytest.raises(ConfigError):
+        Deck.load(write_deck(tmp_path / "invalid-common-bounds" / "deck.json", document))
 
 
 @given(duplicate=valid_identity_strings)
