@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlencode
 
 from flask import Flask, Response, current_app, redirect, render_template, request, url_for
 from fsrs import Rating
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from werkzeug.exceptions import HTTPException, InternalServerError
 
 from graphcards.errors import ConfigError, GraphCardsError
@@ -29,6 +29,7 @@ from graphcards.web.status import (
     CardStatusQuery,
     FsrsStateFilter,
     HistoryRange,
+    InfoTab,
     ScheduleFilter,
     SortDirection,
     pagination,
@@ -81,13 +82,21 @@ class _StatusActionSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     csrf_token: str = Field(min_length=1, max_length=256)
-    card_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    card_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    entity_id: str | None = Field(default=None, min_length=1, max_length=512)
+    generator_id: str | None = Field(default=None, min_length=1, max_length=512)
     availability: AvailabilityFilter = AvailabilityFilter.ALL
     schedule: ScheduleFilter = ScheduleFilter.ALL
     state: FsrsStateFilter = FsrsStateFilter.ALL
     sort: CardSort = CardSort.NEXT_REVIEW
     direction: SortDirection = SortDirection.ASCENDING
     range: HistoryRange = HistoryRange.NINETY_DAYS
+
+    @model_validator(mode="after")
+    def require_card_reference(self) -> _StatusActionSubmission:
+        if self.card_id is None and self.entity_id is None:
+            raise ValueError("a card reference is required")
+        return self
 
     def status_query(self) -> CardStatusQuery:
         return CardStatusQuery(
@@ -180,9 +189,22 @@ def _render_error(status: HTTPStatus, message: str) -> tuple[str, int]:
 
 
 def _status_url(deck_name: str, query: CardStatusQuery, page: int) -> str:
-    values = query.model_dump(mode="json")
+    values = query.model_dump(mode="json", exclude_none=True)
     values["page"] = page
+    values.pop("preview_entity", None)
+    values.pop("preview_generator", None)
     return f"{url_for('card_status', deck_name=deck_name)}?{urlencode(values)}"
+
+
+def _tab_url(deck_name: str, query: CardStatusQuery, tab: InfoTab) -> str:
+    return _status_url(deck_name, query.model_copy(update={"tab": tab}), 1)
+
+
+def _detail_url(deck_name: str, entity_id: str, query: CardStatusQuery) -> str:
+    values = query.model_dump(mode="json", exclude_none=True)
+    values.pop("preview_entity", None)
+    values.pop("preview_generator", None)
+    return f"{url_for('card_detail', deck_name=deck_name, entity_id=entity_id)}?{urlencode(values)}"
 
 
 def create_flask_app(controller: StudyController) -> Flask:
@@ -208,7 +230,7 @@ def create_flask_app(controller: StudyController) -> Flask:
     def add_security_headers(response: Response) -> Response:
         response.headers["Cache-Control"] = "no-store"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'none'; style-src 'self'; form-action 'self'; "
+            "default-src 'none'; style-src 'self'; script-src 'self'; form-action 'self'; "
             "base-uri 'none'; frame-ancestors 'none'"
         )
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -365,6 +387,8 @@ def create_flask_app(controller: StudyController) -> Flask:
             csrf_token=submission.csrf_token,
             deck_name=deck_name,
             card_id=submission.card_id,
+            entity_id=submission.entity_id,
+            generator_id=submission.generator_id,
             suspended=True,
             reason=submission.reason,
         )
@@ -383,11 +407,56 @@ def create_flask_app(controller: StudyController) -> Flask:
             csrf_token=submission.csrf_token,
             deck_name=deck_name,
             card_id=submission.card_id,
+            entity_id=submission.entity_id,
+            generator_id=submission.generator_id,
             suspended=False,
         )
         return redirect(
             _status_url(deck_name, submission.status_query(), 1) + "#card-status",
             code=HTTPStatus.SEE_OTHER,
+        )
+
+    @app.get("/decks/<path:deck_name>/cards/detail/<path:entity_id>")
+    def card_detail(deck_name: str, entity_id: str) -> str:
+        current = _controller()
+        try:
+            deck = current.config.deck(deck_name)
+        except ConfigError as error:
+            raise RequestFailure(HTTPStatus.NOT_FOUND, "That deck does not exist.") from error
+        try:
+            query = CardStatusQuery.model_validate(_query_data())
+        except ValidationError as error:
+            raise RequestFailure(
+                HTTPStatus.BAD_REQUEST,
+                "The card-detail request is invalid.",
+            ) from error
+        if query.preview_entity is not None:
+            raise RequestFailure(
+                HTTPStatus.BAD_REQUEST,
+                "The card-detail request is invalid.",
+            )
+        now = utc_now()
+        current.entity_status(deck, entity_id, now)
+        generators = current.generators_for_entity(deck, entity_id)
+        preview = None
+        if query.preview_generator is not None:
+            preview = current.preview_generator_for_entity(
+                deck,
+                entity_id,
+                query.preview_generator,
+            )
+        return render_template(
+            "card_detail.html",
+            deck=deck,
+            entity_id=entity_id,
+            generators=generators,
+            query=query,
+            preview=preview,
+            back_url=_status_url(
+                deck.name,
+                query.model_copy(update={"tab": InfoTab.STATUS}),
+                query.page,
+            ),
         )
 
     @app.get("/decks/<path:deck_name>/cards")
@@ -411,28 +480,45 @@ def create_flask_app(controller: StudyController) -> Flask:
         ordered = sort_status_cards(filtered, query)
         total = len(ordered)
         pages = max(1, math.ceil(total / CARD_PAGE_SIZE))
-        if query.page > pages:
+        if query.tab is InfoTab.STATUS and query.page > pages:
             raise RequestFailure(
                 HTTPStatus.NOT_FOUND,
                 "That card-status page does not exist.",
             )
         start = (query.page - 1) * CARD_PAGE_SIZE
         page_cards = tuple(ordered[start : start + CARD_PAGE_SIZE])
-        rows = tuple(
-            status_row(
-                row,
-                now,
-                current.config.display_timezone,
+        rows = (
+            tuple(
+                status_row(
+                    row,
+                    now,
+                    current.config.display_timezone,
+                )
+                for row in page_cards
             )
-            for row in page_cards
+            if query.tab is InfoTab.STATUS
+            else ()
         )
         empty_message = None
-        if not rows:
+        if query.tab is InfoTab.STATUS and not rows:
             empty_message = (
                 "This deck has no active cards."
                 if not all_cards
                 else "No cards match these filters."
             )
+        preview = None
+        if query.preview_entity is not None:
+            if query.tab is not InfoTab.STATUS or query.preview_generator is not None:
+                raise RequestFailure(
+                    HTTPStatus.BAD_REQUEST, "The exercise preview request is invalid."
+                )
+            preview = current.preview_entity(deck, query.preview_entity)
+        elif query.preview_generator is not None:
+            if query.tab is not InfoTab.GENERATORS:
+                raise RequestFailure(
+                    HTTPStatus.BAD_REQUEST, "The exercise preview request is invalid."
+                )
+            preview = current.preview_generator(deck, query.preview_generator)
         return render_template(
             "card_status.html",
             deck=deck,
@@ -457,8 +543,25 @@ def create_flask_app(controller: StudyController) -> Flask:
             state_options=STATE_OPTIONS,
             sort_options=SORT_OPTIONS,
             direction_options=DIRECTION_OPTIONS,
-            history=current.card_history(deck, query.range, now),
+            history=(
+                current.card_history(deck, query.range, now)
+                if query.tab is InfoTab.HISTORY
+                else None
+            ),
             history_range_options=HISTORY_RANGE_OPTIONS,
+            tab=query.tab,
+            tab_urls={
+                InfoTab.STATUS: _tab_url(deck.name, query, InfoTab.STATUS),
+                InfoTab.HISTORY: _tab_url(deck.name, query, InfoTab.HISTORY),
+                InfoTab.GENERATORS: _tab_url(deck.name, query, InfoTab.GENERATORS),
+            },
+            generators=(
+                current.generator_rows(deck, now) if query.tab is InfoTab.GENERATORS else ()
+            ),
+            preview=preview,
+            detail_urls={
+                row.entity_id: _detail_url(deck.name, row.entity_id, query) for row in rows
+            },
         )
 
     return app

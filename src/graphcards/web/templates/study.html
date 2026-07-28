@@ -64,10 +64,6 @@
           <form method="post" action="{{ url_for('suspend_study_card') }}">
             <input type="hidden" name="session_token" value="{{ session.session_token }}">
             <input type="hidden" name="card_id" value="{{ current.card.card_id }}">
-            <label>
-              Reason (optional)
-              <input name="reason" maxlength="500">
-            </label>
             <button type="submit">Suspend and continue</button>
           </form>
         </details>

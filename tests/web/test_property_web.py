@@ -401,6 +401,16 @@ def test_history_ranges_include_only_reviews_in_the_selected_window(selected: Hi
             retrievability=None,
         ),
         ReviewRecord(
+            review_id=3,
+            card_id="old-previous",
+            deck_name="deck",
+            rating=Rating.Good,
+            reviewed_at=now - timedelta(days=101),
+            previous_interval_seconds=None,
+            scheduled_interval_seconds=86400,
+            retrievability=None,
+        ),
+        ReviewRecord(
             review_id=2,
             card_id="recent",
             deck_name="deck",
@@ -412,8 +422,11 @@ def test_history_ranges_include_only_reviews_in_the_selected_window(selected: Hi
         ),
     )
     history = history_view(records, selected, now, ZoneInfo("UTC"))
-    expected_total = 2 if selected in {HistoryRange.ONE_YEAR, HistoryRange.ALL} else 1
+    expected_total = 3 if selected in {HistoryRange.ONE_YEAR, HistoryRange.ALL} else 1
+    expected_longest = 2 if selected in {HistoryRange.ONE_YEAR, HistoryRange.ALL} else 1
     assert history.total_reviews == expected_total
+    assert history.current_streak == 1
+    assert history.longest_streak == expected_longest
     assert sum(bucket.count for bucket in history.buckets) == history.total_reviews
 
 

@@ -60,6 +60,12 @@ class HistoryRange(StrEnum):
     ALL = "all"
 
 
+class InfoTab(StrEnum):
+    STATUS = "status"
+    HISTORY = "history"
+    GENERATORS = "generators"
+
+
 class CardStatusQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -70,12 +76,16 @@ class CardStatusQuery(BaseModel):
     sort: CardSort = CardSort.NEXT_REVIEW
     direction: SortDirection = SortDirection.ASCENDING
     range: HistoryRange = HistoryRange.NINETY_DAYS
+    tab: InfoTab = InfoTab.STATUS
+    preview_entity: str | None = Field(default=None, min_length=1, max_length=512)
+    preview_generator: str | None = Field(default=None, min_length=1, max_length=512)
 
 
 @dataclass(frozen=True)
 class StatusCard:
     status: CardStatus
     retrievability: float | None
+    generator_labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,6 +108,8 @@ class StatusRow:
     difficulty: str
     retrievability: str
     suspension_reason: str | None
+    entity_id: str
+    generator_labels: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -124,6 +136,14 @@ class RatingView:
     percentage: float
     offset: float
     class_name: str
+
+
+@dataclass(frozen=True)
+class GeneratorRow:
+    generator_id: str
+    generator_type: str
+    eligible_count: int
+    due_count: int
 
 
 @dataclass(frozen=True)
@@ -239,9 +259,9 @@ def status_row(
     badges = ["Suspended"] if status.suspended else []
     if status.review_count == 0:
         badges.append("New")
-    badges.extend(("Due" if status.due_at <= now else "Future", status.fsrs_state.title()))
+    badges.append("Due" if status.due_at <= now else "Future")
     step = f" · step {status.fsrs_step}" if status.fsrs_step is not None else ""
-    identity = " / ".join(status.card_key.identity_parts)
+    identity = status.card_key.entity_id
     return StatusRow(
         status=status,
         badges=tuple(badges),
@@ -254,6 +274,8 @@ def status_row(
         difficulty=f"{status.difficulty:.2f}" if status.difficulty is not None else "—",
         retrievability=(f"{row.retrievability:.1%}" if row.retrievability is not None else "—"),
         suspension_reason=status.suspension_reason,
+        entity_id=status.card_key.entity_id,
+        generator_labels=row.generator_labels,
     )
 
 
@@ -355,7 +377,7 @@ def history_view(
     start = _range_start(selected, today, review_days)
     ranged = tuple(record for record, review_day in dated if start <= review_day <= today)
     ranged_days = {record.reviewed_at.astimezone(timezone).date() for record in ranged}
-    current_streak, longest_streak = _streaks(review_days, today)
+    current_streak, longest_streak = _streaks(ranged_days, today)
 
     counts = Counter(
         _bucket_key(record.reviewed_at.astimezone(timezone).date(), selected) for record in ranged

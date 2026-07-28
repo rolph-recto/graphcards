@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% set main_class = "status-main" %}
+{% block title %}{{ deck.display_name }} · {{ entity_id }}{% endblock %}
+{% block masthead %}<p class="deck-name">{{ deck.display_name }}</p>{% endblock %}
+{% block head %}<script src="{{ url_for('static', filename='status.js') }}" defer></script>{% endblock %}
+{% block content %}
+  <nav class="study-nav">
+    <a href="{{ back_url }}">← Card Status</a>
+  </nav>
+  <header class="status-header">
+    <div>
+      <p class="eyebrow">Card details</p>
+      <h1>{{ entity_id }}</h1>
+    </div>
+  </header>
+
+  <section class="card-detail" aria-labelledby="generator-title">
+    <header class="section-header">
+      <h2 id="generator-title">Exercise Generators</h2>
+    </header>
+    <div class="generator-layout">
+      <div class="generator-list">
+        {% if generators %}
+        {% for generator in generators %}
+          <article class="generator-card">
+            <div>
+              <h3>{{ generator.id }}</h3>
+              <p class="muted">Type: {{ generator.type }} </p>
+            </div>
+            <form class="generator-action" method="get" action="{{ url_for('card_detail', deck_name=deck.name, entity_id=entity_id) }}">
+              <input type="hidden" name="page" value="{{ query.page }}">
+              <input type="hidden" name="availability" value="{{ query.availability.value }}">
+              <input type="hidden" name="schedule" value="{{ query.schedule.value }}">
+              <input type="hidden" name="state" value="{{ query.state.value }}">
+              <input type="hidden" name="sort" value="{{ query.sort.value }}">
+              <input type="hidden" name="direction" value="{{ query.direction.value }}">
+              <input type="hidden" name="range" value="{{ query.range.value }}">
+              <input type="hidden" name="tab" value="{{ query.tab.value }}">
+              <input type="hidden" name="preview_generator" value="{{ generator.id }}">
+              <button type="submit">Generate exercise</button>
+            </form>
+          </article>
+        {% endfor %}
+        {% else %}
+          <p class="empty-status">This card has no configured exercise generators.</p>
+        {% endif %}
+      </div>
+      <aside class="exercise-preview exercise-preview-panel" aria-labelledby="exercise-preview-title">
+        <h2 id="exercise-preview-title">Exercise preview</h2>
+        {% if preview and query.preview_generator %}
+          <div class="prompt">{{ preview.front }}</div>
+          <div class="answer" aria-live="polite"><span class="answer-label">Answer</span><div class="answer-text">{{ preview.back }}</div></div>
+          <p class="muted">Preview only; no review or scheduling state was changed.</p>
+        {% else %}
+          <p class="muted">Choose Generate exercise for a generator to preview an exercise here.</p>
+        {% endif %}
+      </aside>
+    </div>
+  </section>
+{% endblock %}

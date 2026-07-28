@@ -1,306 +1,219 @@
 {% extends "base.html" %}
 {% set main_class = "status-main" %}
-{% block title %}{{ deck.display_name }} card status{% endblock %}
-{% block masthead %}<p class="deck-name">{{ deck.display_name }}</p>{% endblock %}
+{% block title %}{{ deck.display_name }} Deck Info{% endblock %}
+{% block masthead %}<p class="deck-name">Decks</p>{% endblock %}
+{% block head %}<script src="{{ url_for('static', filename='status.js') }}" defer></script>{% endblock %}
 {% block content %}
   <nav class="study-nav"><a href="{{ url_for('index') }}">← All decks</a></nav>
   <header class="status-header">
     <div>
       <h1>{{ deck.display_name }}</h1>
-      <p class="muted">Review activity and FSRS memory metrics.</p>
     </div>
-    <p class="muted">
-      {{ available_count }} available · {{ suspended_count }} suspended
-    </p>
+    <p class="muted">{{ available_count }} available · {{ suspended_count }} suspended</p>
   </header>
 
-  <section class="history" id="history" aria-labelledby="history-title">
-    <header class="history-header">
-      <div>
-        <h2 id="history-title">Review history</h2>
-        <p class="muted">
-          Immutable review activity · {{ history.range_label }} · {{ history.timezone }}
-        </p>
+  <nav class="info-tabs" aria-label="Deck information tabs">
+    <a href="{{ tab_urls.status }}"{% if tab.value == "status" %} aria-current="page"{% endif %}>Card Status</a>
+    <a href="{{ tab_urls.history }}"{% if tab.value == "history" %} aria-current="page"{% endif %}>Review History</a>
+    <a href="{{ tab_urls.generators }}"{% if tab.value == "generators" %} aria-current="page"{% endif %}>Exercise Generators</a>
+  </nav>
+
+  {% if preview and query.preview_entity %}
+    <section class="exercise-preview" aria-labelledby="preview-title">
+      <h2 id="preview-title">Exercise preview</h2>
+      <div class="prompt">{{ preview.front }}</div>
+      <div class="answer" aria-live="polite">
+        <span class="answer-label">Answer</span>
+        <div class="answer-text">{{ preview.back }}</div>
       </div>
-      <form class="history-range" method="get"
-            action="{{ url_for('card_status', deck_name=deck.name) }}#history">
-        <input type="hidden" name="schedule" value="{{ query.schedule.value }}">
-        <input type="hidden" name="availability" value="{{ query.availability.value }}">
-        <input type="hidden" name="state" value="{{ query.state.value }}">
-        <input type="hidden" name="sort" value="{{ query.sort.value }}">
-        <input type="hidden" name="direction" value="{{ query.direction.value }}">
-        <label>
-          Date range
-          <select name="range">
-            {% for value, label in history_range_options %}
-              <option value="{{ value.value }}"
-                      {% if value == history.selected_range %} selected{% endif %}>
-                {{ label }}
-              </option>
+      <p class="muted">Preview only; no review or scheduling state was changed.</p>
+    </section>
+  {% endif %}
+
+  {% if tab.value == "history" %}
+    <section class="history" id="history" aria-label="Review History">
+      <header class="history-header">
+        <div>
+          <p class="muted">{{ history.range_label }}</p>
+        </div>
+        <form class="history-range" method="get" action="{{ url_for('card_status', deck_name=deck.name) }}">
+          <input type="hidden" name="tab" value="history">
+          <label>
+            Date range
+            <select name="range" data-submit-on-change>
+              {% for value, label in history_range_options %}
+                <option value="{{ value.value }}"{% if value == history.selected_range %} selected{% endif %}>
+                  {{ label }}
+                </option>
+              {% endfor %}
+            </select>
+            <noscript><button type="submit">Refresh range</button></noscript>
+          </label>
+        </form>
+      </header>
+
+      <div class="history-stats">
+        <article><strong>{{ history.total_reviews }}</strong><span>reviews in range</span></article>
+        <article><strong>{{ history.active_days }}</strong><span>active day(s)</span></article>
+        <article><strong>{{ history.current_streak }}</strong><span>current streak</span></article>
+        <article><strong>{{ history.longest_streak }}</strong><span>longest streak</span></article>
+        <article><strong>{{ history.again_rate }}</strong><span>Again rate</span></article>
+        <article><strong>{{ history.average_growth }}</strong><span>average interval growth</span><small>{{ history.interval_coverage }}</small></article>
+        <article><strong>{{ history.average_interval }}</strong><span>average next interval</span></article>
+        <article><strong>{{ history.average_retrievability }}</strong><span>FSRS retrievability at review</span><small>{{ history.retrievability_coverage }}</small></article>
+      </div>
+
+      <div class="history-grid">
+        <figure class="history-panel">
+          <figcaption>Review volume over time</figcaption>
+          <div class="history-bars">
+            {% for bucket in history.buckets %}
+              <div class="history-bar">
+                <span>{{ bucket.label }}</span>
+                <progress max="{{ history.volume_maximum }}" value="{{ bucket.count }}"
+                          aria-label="{{ bucket.label }}: {{ bucket.count }} review(s)">
+                  {{ bucket.count }}
+                </progress>
+                <strong>{{ bucket.count }}</strong>
+              </div>
             {% endfor %}
+          </div>
+        </figure>
+        <figure class="history-panel rating-panel">
+          <figcaption>Rating distribution</figcaption>
+          <svg class="rating-distribution" viewBox="0 0 100 12" preserveAspectRatio="none" role="img"
+               aria-label="Rating distribution across {{ history.total_reviews }} review(s)">
+            <rect class="rating-track" x="0" y="0" width="100" height="12"></rect>
+            {% for rating in history.ratings %}
+              {% if rating.percentage %}
+                <rect class="rating-segment {{ rating.class_name }}" x="{{ "%.6f"|format(rating.offset) }}" y="0"
+                      width="{{ "%.6f"|format(rating.percentage) }}" height="12">
+                  <title>{{ rating.label }}: {{ rating.count }} review(s), {{ "%.1f"|format(rating.percentage) }}%</title>
+                </rect>
+              {% endif %}
+            {% endfor %}
+          </svg>
+          <ul class="rating-legend">
+            {% for rating in history.ratings %}
+              <li><span class="rating-key {{ rating.class_name }}" aria-hidden="true"></span><span>{{ rating.label }}</span><strong>{{ rating.count }}</strong><small>{{ "%.1f"|format(rating.percentage) }}%</small></li>
+            {% endfor %}
+          </ul>
+        </figure>
+      </div>
+    </section>
+  {% elif tab.value == "generators" %}
+    <section class="generator-status" aria-label="Exercise Generators">
+      <div class="generator-layout">
+        <div class="generator-list">
+          {% if generators %}
+            {% for generator in generators %}
+              <article class="generator-card">
+                <div>
+                  <h3>{{ generator.generator_id }}</h3>
+                  <p class="muted">Type: {{ generator.generator_type }} · {{ generator.eligible_count }} eligible target(s) · {{ generator.due_count }} due card(s)</p>
+                </div>
+                <form class="generator-action" method="get" action="{{ url_for('card_status', deck_name=deck.name) }}">
+                  <input type="hidden" name="tab" value="generators">
+                  <input type="hidden" name="preview_generator" value="{{ generator.generator_id }}">
+                  <button type="submit"{% if not generator.eligible_count %} disabled{% endif %}>Generate exercise</button>
+                </form>
+              </article>
+            {% endfor %}
+          {% else %}
+            <p class="empty-status">This deck has no configured exercise generators.</p>
+          {% endif %}
+        </div>
+        <aside class="exercise-preview exercise-preview-panel" aria-labelledby="exercise-preview-title">
+          <h2 id="exercise-preview-title">Exercise preview</h2>
+          {% if preview and query.preview_generator %}
+            <div class="prompt">{{ preview.front }}</div>
+            <div class="answer" aria-live="polite"><span class="answer-label">Answer</span><div class="answer-text">{{ preview.back }}</div></div>
+          {% else %}
+            <p class="muted">Choose Generate exercise for a generator to preview an exercise here.</p>
+          {% endif %}
+        </aside>
+      </div>
+    </section>
+  {% else %}
+    <section class="card-status" id="card-status" aria-label="Card Status">
+      <form class="status-filters" method="get" action="{{ url_for('card_status', deck_name=deck.name) }}">
+        <input type="hidden" name="tab" value="status">
+        <input type="hidden" name="range" value="{{ query.range.value }}">
+        <label>Availability
+          <select name="availability">
+            {% for value, label in availability_options %}<option value="{{ value.value }}"{% if value == query.availability %} selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Schedule
+          <select name="schedule">
+            {% for value, label in schedule_options %}<option value="{{ value.value }}"{% if value == query.schedule %} selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>FSRS state
+          <select name="state">
+            {% for value, label in state_options %}<option value="{{ value.value }}"{% if value == query.state %} selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Sort by
+          <select name="sort">
+            {% for value, label in sort_options %}<option value="{{ value.value }}"{% if value == query.sort %} selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Direction
+          <select name="direction">
+            {% for value, label in direction_options %}<option value="{{ value.value }}"{% if value == query.direction %} selected{% endif %}>{{ label }}</option>{% endfor %}
           </select>
         </label>
         <button type="submit">Apply</button>
       </form>
-    </header>
 
-    <div class="history-stats">
-      <article>
-        <strong>{{ history.total_reviews }}</strong>
-        <span>reviews in range</span>
-      </article>
-      <article>
-        <strong>{{ history.active_days }}</strong>
-        <span>active day(s)</span>
-      </article>
-      <article>
-        <strong>{{ history.current_streak }}</strong>
-        <span>current streak</span>
-      </article>
-      <article>
-        <strong>{{ history.longest_streak }}</strong>
-        <span>longest streak</span>
-      </article>
-      <article>
-        <strong>{{ history.again_rate }}</strong>
-        <span>Again rate</span>
-      </article>
-      <article>
-        <strong>{{ history.average_growth }}</strong>
-        <span>average interval growth</span>
-        <small>{{ history.interval_coverage }}</small>
-      </article>
-      <article>
-        <strong>{{ history.average_interval }}</strong>
-        <span>average next interval</span>
-      </article>
-      <article>
-        <strong>{{ history.average_retrievability }}</strong>
-        <span>FSRS retrievability at review</span>
-        <small>{{ history.retrievability_coverage }}</small>
-      </article>
-    </div>
-
-    <div class="history-grid">
-      <figure class="history-panel">
-        <figcaption>Review volume over time</figcaption>
-        <div class="history-bars">
-          {% for bucket in history.buckets %}
-            <div class="history-bar">
-              <span>{{ bucket.label }}</span>
-              <progress max="{{ history.volume_maximum }}" value="{{ bucket.count }}">
-                {{ bucket.count }}
-              </progress>
-              <strong>{{ bucket.count }}</strong>
-            </div>
-          {% endfor %}
+      {% if rows %}
+        <div class="table-wrap">
+          <table class="status-table">
+            <thead><tr><th>Entity</th><th>Review history</th><th>Next review</th><th>Schedule</th><th>FSRS Status</th><th>Actions</th></tr></thead>
+            <tbody>
+              {% for row in rows %}
+                <tr class="status-card">
+                  <td>
+                    <code class="card-identity">
+                      <a aria-label="More details for {{ row.entity_id }}" href="{{ detail_urls[row.entity_id] }}">
+                      {{ row.entity_id }}
+                      </a>
+                    </code>
+                  </td>
+                  <td><span class="review-summary">{% if row.last_review %}<span class="date-value" title="{{ row.last_review.display }}">{{ row.last_review.relative }}</span>{% else %}—{% endif %}</td>
+                  <td><span class="date-value" title="{{ row.next_review.display }}">{{ row.next_review.relative }}</span></td>
+                  <td>{% for badge in row.badges %}<span>{{ badge }}</span>{% endfor %}</td>
+                  <td><span>{{ row.fsrs_label }}</span></td>
+                  <td>
+                    <div class="status-actions">
+                      {% if row.status.suspended %}
+                        <form class="card-action" method="post" action="{{ url_for('resume_card', deck_name=deck.name) }}">
+                          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="card_id" value="{{ row.status.card_id }}">
+                          <input type="hidden" name="availability" value="{{ query.availability.value }}"><input type="hidden" name="schedule" value="{{ query.schedule.value }}"><input type="hidden" name="state" value="{{ query.state.value }}"><input type="hidden" name="sort" value="{{ query.sort.value }}"><input type="hidden" name="direction" value="{{ query.direction.value }}"><input type="hidden" name="range" value="{{ query.range.value }}">
+                          <button type="submit">Resume</button>
+                        </form>
+                      {% else %}
+                        <form class="card-action suspend-action" method="post" action="{{ url_for('suspend_card', deck_name=deck.name) }}">
+                          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="card_id" value="{{ row.status.card_id }}">
+                          <input type="hidden" name="availability" value="{{ query.availability.value }}"><input type="hidden" name="schedule" value="{{ query.schedule.value }}"><input type="hidden" name="state" value="{{ query.state.value }}"><input type="hidden" name="sort" value="{{ query.sort.value }}"><input type="hidden" name="direction" value="{{ query.direction.value }}"><input type="hidden" name="range" value="{{ query.range.value }}">
+                          <button type="submit">Suspend</button>
+                        </form>
+                      {% endif %}
+                    </div>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
         </div>
-      </figure>
-
-      <figure class="history-panel rating-panel">
-        <figcaption>Rating distribution</figcaption>
-        <svg class="rating-distribution" viewBox="0 0 100 12"
-             preserveAspectRatio="none" role="img"
-             aria-label="Rating distribution across {{ history.total_reviews }} review(s)">
-          <rect class="rating-track" x="0" y="0" width="100" height="12"></rect>
-          {% for rating in history.ratings %}
-            {% if rating.percentage %}
-              <rect class="rating-segment {{ rating.class_name }}"
-                    x="{{ "%.6f"|format(rating.offset) }}" y="0"
-                    width="{{ "%.6f"|format(rating.percentage) }}" height="12">
-                <title>
-                  {{ rating.label }}: {{ rating.count }} review(s),
-                  {{ "%.1f"|format(rating.percentage) }}%
-                </title>
-              </rect>
-            {% endif %}
-          {% endfor %}
-        </svg>
-        <ul class="rating-legend">
-          {% for rating in history.ratings %}
-            <li>
-              <span class="rating-key {{ rating.class_name }}" aria-hidden="true"></span>
-              <span>{{ rating.label }}</span>
-              <strong>{{ rating.count }}</strong>
-              <small>{{ "%.1f"|format(rating.percentage) }}%</small>
-            </li>
-          {% endfor %}
-        </ul>
-      </figure>
-    </div>
-  </section>
-
-  <section class="card-status" id="card-status" aria-labelledby="card-status-title">
-    <header class="section-header">
-      <h2 id="card-status-title">Card status</h2>
-      <p class="muted">Current schedules and per-card FSRS details.</p>
-    </header>
-
-  <form class="status-filters" method="get"
-        action="{{ url_for('card_status', deck_name=deck.name) }}">
-    <input type="hidden" name="range" value="{{ query.range.value }}">
-    <label>
-      Availability
-      <select name="availability">
-        {% for value, label in availability_options %}
-          <option value="{{ value.value }}"
-                  {% if value == query.availability %} selected{% endif %}>
-            {{ label }}
-          </option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>
-      Schedule
-      <select name="schedule">
-        {% for value, label in schedule_options %}
-          <option value="{{ value.value }}"{% if value == query.schedule %} selected{% endif %}>
-            {{ label }}
-          </option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>
-      FSRS state
-      <select name="state">
-        {% for value, label in state_options %}
-          <option value="{{ value.value }}"{% if value == query.state %} selected{% endif %}>
-            {{ label }}
-          </option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>
-      Sort by
-      <select name="sort">
-        {% for value, label in sort_options %}
-          <option value="{{ value.value }}"{% if value == query.sort %} selected{% endif %}>
-            {{ label }}
-          </option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>
-      Direction
-      <select name="direction">
-        {% for value, label in direction_options %}
-          <option value="{{ value.value }}"{% if value == query.direction %} selected{% endif %}>
-            {{ label }}
-          </option>
-        {% endfor %}
-      </select>
-    </label>
-    <button type="submit">Apply</button>
-  </form>
-
-  {% if rows %}
-    <div class="table-wrap">
-      <table class="status-table">
-        <thead>
-          <tr>
-            <th>Card</th>
-            <th>Schedule</th>
-            <th>Review history</th>
-            <th>Next review</th>
-            <th>FSRS metrics</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in rows %}
-            <tr class="status-card">
-              <td>
-                <code class="card-identity">{{ row.identity }}</code>
-              </td>
-              <td>
-                <div class="badges">
-                  {% for badge in row.badges %}<span class="badge">{{ badge }}</span>{% endfor %}
-                </div>
-                <span class="metric-note">{{ row.fsrs_label }}</span>
-                {% if row.suspension_reason %}
-                  <span class="suspension-reason">{{ row.suspension_reason }}</span>
-                {% endif %}
-              </td>
-              <td>
-                <span class="review-summary">
-                  <span>{{ row.status.review_count }} review(s)</span>
-                  <span>Last rating: {{ row.last_rating }}</span>
-                  {% if row.last_review %}
-                    <span class="date-value">
-                      <time datetime="{{ row.last_review.exact }}">{{ row.last_review.display }}</time>
-                      <small>{{ row.last_review.relative }}</small>
-                    </span>
-                  {% else %}
-                    —
-                  {% endif %}
-                </span>
-              </td>
-              <td>
-                <span class="date-value">
-                  <time datetime="{{ row.next_review.exact }}">{{ row.next_review.display }}</time>
-                  <small>{{ row.next_review.relative }}</small>
-                </span>
-              </td>
-              <td>
-                <span class="fsrs-metrics">
-                  <span>Stability: {{ row.stability }}</span>
-                  <span>Difficulty: {{ row.difficulty }}</span>
-                  <span>Retrievability: {{ row.retrievability }}</span>
-                </span>
-              </td>
-              <td>
-                {% if row.status.suspended %}
-                  <form class="card-action" method="post"
-                        action="{{ url_for('resume_card', deck_name=deck.name) }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <input type="hidden" name="card_id" value="{{ row.status.card_id }}">
-                    <input type="hidden" name="availability"
-                           value="{{ query.availability.value }}">
-                    <input type="hidden" name="schedule" value="{{ query.schedule.value }}">
-                    <input type="hidden" name="state" value="{{ query.state.value }}">
-                    <input type="hidden" name="sort" value="{{ query.sort.value }}">
-                    <input type="hidden" name="direction" value="{{ query.direction.value }}">
-                    <input type="hidden" name="range" value="{{ query.range.value }}">
-                    <button type="submit">Resume</button>
-                  </form>
-                {% else %}
-                  <form class="card-action suspend-action" method="post"
-                        action="{{ url_for('suspend_card', deck_name=deck.name) }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <input type="hidden" name="card_id" value="{{ row.status.card_id }}">
-                    <input type="hidden" name="availability"
-                           value="{{ query.availability.value }}">
-                    <input type="hidden" name="schedule" value="{{ query.schedule.value }}">
-                    <input type="hidden" name="state" value="{{ query.state.value }}">
-                    <input type="hidden" name="sort" value="{{ query.sort.value }}">
-                    <input type="hidden" name="direction" value="{{ query.direction.value }}">
-                    <input type="hidden" name="range" value="{{ query.range.value }}">
-                    <label>
-                      <span>Reason (optional)</span>
-                      <input name="reason" maxlength="500">
-                    </label>
-                    <button type="submit">Suspend</button>
-                  </form>
-                {% endif %}
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    <nav class="pagination" aria-label="Card status pages">
-      <span>{{ pagination.first }}–{{ pagination.last }} of {{ pagination.total }} card(s) · Page {{ pagination.page }} of {{ pagination.pages }}</span>
-      <span class="pagination-links">
-        {% if pagination.previous_url %}
-          <a class="button" href="{{ pagination.previous_url }}">Previous</a>
-        {% endif %}
-        {% if pagination.next_url %}
-          <a class="button" href="{{ pagination.next_url }}">Next</a>
-        {% endif %}
-      </span>
-    </nav>
-  {% else %}
-    <p class="empty-status">{{ empty_message }}</p>
+        <nav class="pagination" aria-label="Card status pages">
+          <span>{{ pagination.first }}–{{ pagination.last }} of {{ pagination.total }} card(s) · Page {{ pagination.page }} of {{ pagination.pages }}</span>
+          <span class="pagination-links">{% if pagination.previous_url %}<a class="button" href="{{ pagination.previous_url }}">Previous</a>{% endif %}{% if pagination.next_url %}<a class="button" href="{{ pagination.next_url }}">Next</a>{% endif %}</span>
+        </nav>
+      {% else %}
+        <p class="empty-status">{{ empty_message }}</p>
+      {% endif %}
+    </section>
   {% endif %}
-  </section>
 {% endblock %}

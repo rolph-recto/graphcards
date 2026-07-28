@@ -172,3 +172,14 @@ graphcards --config graphcards.toml serve
 
 `init --template` creates one of the bundled JSON deck examples. The SQLite state database keeps
 FSRS schedules and review history; rendered exercise text is regenerated from the current deck.
+
+The web deck page is opened through the `View Deck Info` link. It provides separate Card Status,
+Review History, and Exercise Generators tabs. Card Status is a compact table of entity, review,
+next-review, and FSRS data; use `More details` to open one entity's detail page while preserving
+the current filters. The detail page lists every associated generator and shows the selected
+non-persistent exercise in a shared preview panel on the right. The Exercise Generators tab uses
+the same shared right-side preview panel, including for generators with no due cards, without
+changing review or scheduling state or modifying generator sections. Review History applies its
+date range as soon as it changes, and browser
+suspension no longer requests or displays a reason; existing stored reasons remain compatible
+with the state database.
