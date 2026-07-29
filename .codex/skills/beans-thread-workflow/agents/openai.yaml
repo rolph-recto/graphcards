@@ -1,4 +1,0 @@
-interface:
-  display_name: "Beans Thread Workflow"
-  short_description: "Implement beans in worktree threads"
-  default_prompt: "Use $beans-thread-workflow to implement this bean in a worktree thread with review and fix loops, then merge it back."
