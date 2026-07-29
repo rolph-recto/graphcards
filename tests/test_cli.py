@@ -21,6 +21,7 @@ def test_templates_lists_bundled_names_without_loading_config() -> None:
         "ordered-planets",
         "priority-capitals",
         "scrambled-planets",
+        "temporal-comparison",
     }
 
 
@@ -64,6 +65,20 @@ def test_init_scrambled_planets_template_validates(tmp_path: Path) -> None:
     assert config.decks[0].path == (workspace / "deck.json").resolve()
     assert len(deck.generate_all(rng=random.Random(0))) == 1
     assert deck.generators[0].type == "scrambled_list"
+
+
+def test_init_temporal_comparison_template_validates(tmp_path: Path) -> None:
+    workspace = tmp_path / "temporal-comparison"
+
+    assert (
+        main(["init", str(workspace), "--template", "temporal-comparison"], output=StringIO()) == 0
+    )
+    config = load_config(workspace / "graphcards.toml")
+    deck = Deck.load(workspace / "deck.json")
+
+    assert config.decks[0].path == (workspace / "deck.json").resolve()
+    assert len(deck.generate_all(rng=random.Random(0))) == 3
+    assert deck.generators[0].type == "temporal_comparison"
 
 
 def test_init_odd_one_out_template_validates(tmp_path: Path) -> None:

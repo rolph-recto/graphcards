@@ -31,6 +31,10 @@ from graphcards.decks.scrambled_list import (
     ScrambledListExercise,
     ScrambledListExerciseGenerator,
 )
+from graphcards.decks.temporal_comparison import (
+    TemporalComparisonExercise,
+    TemporalComparisonExerciseGenerator,
+)
 from graphcards.references import EntityId, EntityIdList, EntityIdListMarker
 
 __all__ = [
@@ -58,4 +62,6 @@ __all__ = [
     "OddOneOutRelation",
     "ScrambledListExercise",
     "ScrambledListExerciseGenerator",
+    "TemporalComparisonExercise",
+    "TemporalComparisonExerciseGenerator",
 ]

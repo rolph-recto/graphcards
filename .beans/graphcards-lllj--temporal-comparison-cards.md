@@ -1,50 +1,44 @@
 ---
 # graphcards-lllj
 title: Temporal comparison cards
-status: todo
+status: completed
 type: feature
+priority: normal
 created_at: 2026-07-24T20:08:48Z
-updated_at: 2026-07-24T20:08:48Z
+updated_at: 2026-07-29T18:40:02Z
 ---
 
-Add a temporal-comparison card source that reuses the ordered-list query contract.
+Implement temporal-comparison cards within the current entity-backed deck architecture.
 
-Query shape:
+The current codebase loads JSON, TOML, and YAML deck documents. It does not load RDF sources or execute SPARQL queries. Use the existing `DeckDocument`, `ExerciseGenerator` registry, ordered entity-group configuration, Pydantic v2 validation, and `Presentation`/Jinja/`CardView` rendering flow.
 
-```sparql
-SELECT ?entity ?group ?position ?label
-WHERE {
-  ...
-}
-```
+Implementation plan:
 
-Each group is an ordered timeline. For every event in a valid group, generate one entity card by selecting a different event from the same group during card generation.
+- [x] Add `src/graphcards/decks/temporal_comparison.py` with a registered `temporal_comparison` generator and a `TemporalComparisonExercise` model.
+- [x] Reuse the ordered-group shape used by `missing_sequence_item`: each group contains at least two distinct event entity IDs, list order is the strict 1-based position, each event belongs to one group, and every reference is validated against the deck entity registry.
+- [x] Schedule one card for each event entity. During `generate`, select a different event from the target event's group with the supplied RNG. Store the target ID, selected comparison ID, group ID, and both positions in the semantic exercise so `render` does not use RNG.
+- [x] Derive the answer from the stored positions. Return `before` when the target position is lower and `after` when it is higher. Reject invalid or ambiguous exercise data with the repository's existing user-facing error types.
+- [x] Define the built-in front and back templates and the allowed custom-template context. Expose entity references plus the group, target position, comparison position, and answer. Keep the existing label fallback order and the stateless `Presentation`/Jinja/`CardView` contract.
+- [x] Export the new generator and exercise from `src/graphcards/decks/__init__.py`. Confirm generator dispatch and target ownership work with the existing `DeckDocument` and `Deck` logic.
+- [x] Add the bundled `src/graphcards/templates/temporal-comparison/` template. Include `README.md`, `deck.json`, `deck.toml`, `deck.yaml`, and `graphcards.toml`. Use a small timeline example and show the before/after card behavior. Ensure the template is listed by `graphcards templates` and copied by `graphcards init --template`.
+- [x] Add behavioral and property tests for valid generation, different-event selection, position-based answers, invalid groups, unknown references, malformed semantic exercises, custom template context, label fallbacks, and JSON/TOML/YAML loading.
+- [x] Update `README.md` with the generator configuration, semantic exercise data, template context, and the fact that positions come from declared group order. Keep exact dates and precision grading out of scope.
+- [x] Run `uv run pytest -W error`, `uv run ruff check .`, `uv run ruff format --check .`, and `uv build`. Inspect `git status` and do not stage generated workspaces, databases, build artifacts, caches, or unrelated user files.
 
-Example prompt:
+Acceptance criteria:
 
-```text
-Did the Signing of the Magna Carta happen before or after the Battle of Bouvines?
-```
+- A valid temporal-comparison deck loads in all three supported deck formats.
+- Each event receives one stable card, and each generated comparison event is different but belongs to the same group.
+- Rendering is deterministic for a stored exercise and produces only `before` or `after` from the stored positions.
+- Invalid configuration and presentation failures use the repository's existing error boundaries.
+- The new bundled template is available through the existing scaffold and CLI commands.
 
-The answer is derived from the positions of the two events and is either `before` or `after`.
+## Summary of Changes
 
-Configuration:
+Implemented temporal-comparison cards in the current entity-backed architecture.
 
-```toml
-[[decks.sources]]
-kind = "temporal_comparison"
-target = "entity"
-query = "queries/events.rq"
-```
-
-Requirements:
-- Reuse the ordered-list projection exactly: ?entity, ?group, ?position, and ?label.
-- Use target = entity; each event is the identity of one generated card.
-- Validate groups with at least two events, strict 1-based positions, contiguous positions, one group per entity, and distinct entities.
-- Generate one card per event, pairing it with a randomly selected different event from the same group. Random selection occurs during card generation; Presentation receives no RNG.
-- Store both event entities, labels, group, and positions in the generated card data.
-- Derive the answer from positions as before or after; reject impossible or ambiguous ordering data.
-- Render the question and answer through the Presentation/Jinja/CardView pipeline.
-- Support the existing label fallback behavior and ordered-list validation conventions.
-- Exact dates and precision/close-enough grading are out of scope for this type; the ordered position is the temporal fact.
-- Update extension APIs, configuration validation, documentation, templates, and behavioral tests.
+- Added the registered generator and semantic exercise model.
+- Added position-based before/after generation with stateless rendering.
+- Added JSON, TOML, and YAML bundled template files.
+- Added documentation, behavioral tests, format tests, and scaffold tests.
+- Verification passed: 318 tests, Ruff check, Ruff format check, and `uv build`.

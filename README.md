@@ -140,6 +140,31 @@ each map key is the target entity and each list is that target's ordered related
 Each target needs at least two unique related entities and cannot appear in its own list. Custom
 templates receive `target`, `scrambled_entities`, and `ordered_entities`.
 
+### Temporal comparison
+
+Temporal-comparison generators map each group entity to an ordered list of event entity IDs. The
+declared list order is the event position, starting at `1`:
+
+```json
+{
+  "id": "event-comparisons",
+  "type": "temporal_comparison",
+  "groups": {
+    "european-events": ["magna-carta", "bouvines", "paris-treaty"]
+  }
+}
+```
+
+The group entity must exist in the deck and each event can belong to only one group. Every group
+must contain at least two distinct events. Each event produces one card. Generation selects a
+different event from the same group and stores both event IDs and positions in the semantic
+exercise. Rendering does not select a new event.
+
+The default front asks whether the target happened before or after the selected comparison event.
+The answer is `before` when the target position is lower and `after` when it is higher. Exact dates
+and precision grading are out of scope. Custom templates receive `target`, `comparison`, `group`,
+`target_position`, `comparison_position`, and `answer`.
+
 All entities, generators, IDs, and references are validated before a deck can be synchronized.
 Each targeted entity produces one scheduled exercise. If multiple generators target the same entity,
 the generator with the lexicographically smallest ID owns that entity's exercise; this keeps the

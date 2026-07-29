@@ -1,0 +1,24 @@
+name = "Temporal comparison"
+
+[[entities]]
+id = "european-events"
+label = "European events"
+
+[[entities]]
+id = "magna-carta"
+label = "Signing of the Magna Carta"
+
+[[entities]]
+id = "bouvines"
+label = "Battle of Bouvines"
+
+[[entities]]
+id = "paris-treaty"
+label = "Treaty of Paris"
+
+[[exercises]]
+id = "event-comparisons"
+type = "temporal_comparison"
+
+[exercises.groups]
+european-events = ["magna-carta", "bouvines", "paris-treaty"]
