@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import random
 import tomllib
-import unicodedata
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -13,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from stat import S_ISREG
 from types import MappingProxyType
-from typing import Annotated, Any, ClassVar, Literal, cast
+from typing import Annotated, Any, ClassVar, Literal, cast, get_args, get_origin, get_type_hints
 
 from jinja2 import StrictUndefined, Template, TemplateError, meta
 from jinja2.sandbox import SandboxedEnvironment
@@ -34,6 +33,7 @@ from yaml.nodes import MappingNode
 
 from graphcards.errors import ConfigError, PresentationError
 from graphcards.models import Card, CardKey, CardView, Exercise, FrozenModel
+from graphcards.references import EntityId, EntityIdListMarker, validate_entity_id
 
 MAX_TEMPLATE_LENGTH = 100_000
 MAX_RENDERED_LENGTH = 1_000_000
@@ -160,13 +160,7 @@ def _render_template(source: str, context: Mapping[str, object]) -> str:
 
 
 def _nonblank(value: object) -> object:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("must be a non-blank string")
-    if any(
-        unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for character in value
-    ):
-        raise ValueError("must not contain control characters")
-    return value
+    return validate_entity_id(value)
 
 
 def _template_nonblank(value: object) -> object:
@@ -372,7 +366,7 @@ class Entity(FrozenModel):
     """One entity with a stable ID and arbitrary immutable JSON-compatible fields."""
 
     model_config = FrozenModel.model_config | ConfigDict(extra="allow")
-    id: StrictStr
+    id: EntityId
 
     @field_validator("id")
     @classmethod
@@ -478,6 +472,26 @@ class Entity(FrozenModel):
         raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 
 
+class EntityGroup(FrozenModel):
+    """An ordered, reusable list of concrete entity IDs."""
+
+    id: StrictStr
+    entities: tuple[EntityId, ...]
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        return cast(str, _nonblank(value))
+
+    @model_validator(mode="after")
+    def validate_members(self) -> EntityGroup:
+        if not self.entities:
+            raise ValueError(f"group {self.id!r} must define at least one entity")
+        if len(self.entities) != len(set(self.entities)):
+            raise ValueError(f"group {self.id!r} has duplicate entities")
+        return self
+
+
 @dataclass(frozen=True, slots=True)
 class ExerciseGeneratorContext:
     """Immutable per-operation context supplied to an exercise generator."""
@@ -571,6 +585,7 @@ class DeckDocument(FrozenModel):
 
     name: StrictStr | None = None
     entities: tuple[Entity, ...]
+    groups: tuple[EntityGroup, ...] = ()
     exercises: tuple[ExerciseGenerator, ...]
 
     @classmethod
@@ -619,6 +634,7 @@ class DeckDocument(FrozenModel):
 
         if not isinstance(value, Mapping):
             return value
+        groups = _raw_group_registry(value.get("groups"))
         raw_exercises = value.get("exercises")
         if not isinstance(raw_exercises, (list, tuple)):
             return value
@@ -631,7 +647,8 @@ class DeckDocument(FrozenModel):
             runtime_class = ExerciseGenerator._registry.get(kind) if isinstance(kind, str) else None
             if runtime_class is None:
                 raise ValueError(f"unknown exercise generator type {kind!r}")
-            dispatched.append(runtime_class.model_validate(item))
+            normalized = _expand_generator_group_references(item, runtime_class, groups)
+            dispatched.append(runtime_class.model_validate(normalized))
         result = dict(value)
         result["exercises"] = dispatched
         return result
@@ -647,9 +664,116 @@ class DeckDocument(FrozenModel):
             duplicate = next(item for item in generator_ids if generator_ids.count(item) > 1)
             raise ValueError(f"duplicate generator ID: {duplicate!r}")
         known = set(entity_ids)
+        group_ids = tuple(group.id for group in self.groups)
+        if len(set(group_ids)) != len(group_ids):
+            duplicate = next(item for item in group_ids if group_ids.count(item) > 1)
+            raise ValueError(f"duplicate group ID: {duplicate!r}")
+        overlap = sorted(set(entity_ids).intersection(group_ids))
+        if overlap:
+            raise ValueError(f"entity and group IDs must be distinct: {overlap[0]!r}")
+        for group in self.groups:
+            _require_refs(group.id, group.entities, known, "group member")
         for generator in self.exercises:
             generator.validate_references(known)
         return self
+
+
+def _raw_group_registry(value: object) -> dict[str, tuple[str, ...]]:
+    """Build group aliases early enough to normalize generator envelopes."""
+
+    if not isinstance(value, (list, tuple)):
+        return {}
+    registry: dict[str, tuple[str, ...]] = {}
+    for item in value:
+        if isinstance(item, EntityGroup):
+            group = item
+        elif isinstance(item, Mapping):
+            group = EntityGroup.model_validate(item)
+        else:
+            continue
+        if group.id in registry:
+            raise ValueError(f"duplicate group ID: {group.id!r}")
+        registry[group.id] = group.entities
+    return registry
+
+
+def _expand_entity_list(value: object, groups: Mapping[str, tuple[str, ...]], path: str) -> object:
+    """Resolve one whole-list group alias while rejecting mixed list syntax."""
+
+    if isinstance(value, str):
+        group_id = value.strip()
+        if group_id not in groups:
+            raise ValueError(f"{path} must name a known entity group, got {value!r}")
+        return list(groups[group_id])
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            if isinstance(item, str) and item.strip() in groups:
+                raise ValueError(
+                    f"{path} must contain concrete entity IDs; group {item!r} must replace "
+                    "the entire list"
+                )
+    return value
+
+
+@lru_cache(maxsize=128)
+def _generator_annotations(generator_type: type[ExerciseGenerator]) -> dict[str, object]:
+    return get_type_hints(generator_type, include_extras=True)
+
+
+def _expand_generator_group_references(
+    item: Mapping[str, object],
+    generator_type: type[ExerciseGenerator],
+    groups: Mapping[str, tuple[str, ...]],
+) -> dict[str, object]:
+    """Resolve aliases according to the registered generator's annotated schema."""
+
+    annotations = _generator_annotations(generator_type)
+    return {
+        field_name: _resolve_group_references(
+            raw_value,
+            annotations[field_name],
+            groups,
+            f"generator {item.get('id')!r} {field_name}",
+        )
+        if field_name in annotations
+        else raw_value
+        for field_name, raw_value in item.items()
+    }
+
+
+def _resolve_group_references(
+    value: object,
+    annotation: object,
+    groups: Mapping[str, tuple[str, ...]],
+    path: str,
+) -> object:
+    """Recursively resolve group aliases only at marked entity-list positions."""
+
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        base, *metadata = get_args(annotation)
+        if any(isinstance(item, EntityIdListMarker) for item in metadata):
+            return _expand_entity_list(value, groups, path)
+        return _resolve_group_references(value, base, groups, path)
+
+    args = get_args(annotation)
+    if isinstance(value, Mapping) and args and origin is not None:
+        value_annotation = args[1] if len(args) > 1 else None
+        if value_annotation is not None:
+            return {
+                key: _resolve_group_references(
+                    raw_value, value_annotation, groups, f"{path} for {key!r}"
+                )
+                for key, raw_value in value.items()
+            }
+
+    if isinstance(value, (list, tuple)) and args and origin in (list, tuple):
+        item_annotation = args[0]
+        return [
+            _resolve_group_references(item, item_annotation, groups, f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    return value
 
 
 def _require_refs(generator_id: str, refs: Sequence[str], known: set[str], label: str) -> None:
@@ -825,6 +949,7 @@ __all__ = [
     "Deck",
     "DeckDocument",
     "Entity",
+    "EntityGroup",
     "ExerciseGenerator",
     "ExerciseGeneratorContext",
 ]

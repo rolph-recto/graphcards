@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, ClassVar, Literal
 
-from pydantic import Field, StrictInt, StrictStr, model_validator
+from pydantic import Field, StrictInt, model_validator
 
 from graphcards.decks.base import (
     ExerciseGenerator,
@@ -15,6 +15,7 @@ from graphcards.decks.base import (
 )
 from graphcards.errors import PresentationError
 from graphcards.models import CardView, Exercise
+from graphcards.references import EntityId, EntityIdList
 
 DEFAULT_MAX_CHOICES = 4
 FRONT_TEMPLATE = (
@@ -30,7 +31,7 @@ BACK_TEMPLATE = "{{ target.label|default(target.back)|default(target.answer)|def
 class MultipleChoiceExerciseGenerator(ExerciseGenerator):
     type: Literal["multiple_choice"] = "multiple_choice"
     type_name = "multiple_choice"
-    choices: dict[StrictStr, tuple[StrictStr, ...]]
+    choices: dict[EntityId, EntityIdList]
     max_choices: Annotated[StrictInt, Field(default=DEFAULT_MAX_CHOICES, ge=2)]
     template_context_names: ClassVar[frozenset[str]] = frozenset({"target", "choice_entities"})
 
@@ -102,7 +103,7 @@ class MultipleChoiceExerciseGenerator(ExerciseGenerator):
 class MultipleChoiceExercise(Exercise):
     """Multiple-choice exercise identifying the target entity to render."""
 
-    choices: tuple[StrictStr, ...]
+    choices: tuple[EntityId, ...]
 
     @model_validator(mode="after")
     def validate_choices(self) -> MultipleChoiceExercise:

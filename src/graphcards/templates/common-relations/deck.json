@@ -7,6 +7,9 @@
     {"id": "europe", "label": "Europe"},
     {"id": "spain", "label": "Spain"}
   ],
+  "groups": [
+    {"id": "france-borders", "entities": ["germany", "italy", "spain"]}
+  ],
   "exercises": [
     {
       "id": "common-locations",
@@ -19,7 +22,7 @@
       "id": "common-borders",
       "type": "common_relation",
       "relations": {
-        "france": ["germany", "italy", "spain"]
+        "france": "france-borders"
       }
     }
   ]

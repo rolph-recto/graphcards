@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from typing import ClassVar, Literal
 
-from pydantic import Field, StrictInt, StrictStr, ValidationError, model_validator
+from pydantic import Field, StrictInt, ValidationError, model_validator
 
 from graphcards.decks.base import (
     ExerciseGenerator,
@@ -16,6 +16,7 @@ from graphcards.decks.base import (
 )
 from graphcards.errors import PresentationError
 from graphcards.models import CardView, Exercise
+from graphcards.references import EntityId, EntityIdList
 
 FRONT_TEMPLATE = (
     "{% for related_entity in related_entities %}"
@@ -31,7 +32,7 @@ BACK_TEMPLATE = "{{ target.label|default(target.back)|default(target.answer)|def
 class CommonRelationExerciseGenerator(ExerciseGenerator):
     type: Literal["common_relation"] = "common_relation"
     type_name = "common_relation"
-    relations: dict[StrictStr, tuple[StrictStr, ...]]
+    relations: dict[EntityId, EntityIdList]
     min_examples: StrictInt = Field(default=2, ge=2)
     max_related: StrictInt = Field(default=0, ge=0)
     template_context_names: ClassVar[frozenset[str]] = frozenset({"target", "related_entities"})
@@ -175,7 +176,7 @@ class CommonRelationExerciseGenerator(ExerciseGenerator):
 class CommonRelationExercise(Exercise):
     """Semantic common-relation exercise before presentation rendering."""
 
-    related_ids: tuple[StrictStr, ...]
+    related_ids: tuple[EntityId, ...]
 
     @model_validator(mode="after")
     def validate_relation_payload(self) -> CommonRelationExercise:

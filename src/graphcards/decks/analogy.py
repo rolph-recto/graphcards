@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar, Literal
 
-from pydantic import StrictStr, model_validator
+from pydantic import model_validator
 
 from graphcards.decks.base import (
     ExerciseGenerator,
@@ -14,6 +14,7 @@ from graphcards.decks.base import (
 )
 from graphcards.errors import PresentationError
 from graphcards.models import CardView, Exercise
+from graphcards.references import EntityId, EntityIdList
 
 FRONT_TEMPLATE = (
     "{{ source.front|default(source.prompt)|default(source.question)|default(source.id) }}"
@@ -28,7 +29,7 @@ BACK_TEMPLATE = "{{ target.back|default(target.answer)|default(target.label)|def
 class AnalogyExerciseGenerator(ExerciseGenerator):
     type: Literal["analogy"] = "analogy"
     type_name = "analogy"
-    sources: dict[StrictStr, tuple[StrictStr, ...]]
+    sources: dict[EntityId, EntityIdList]
     template_context_names: ClassVar[frozenset[str]] = frozenset({"source", "target"})
 
     @model_validator(mode="after")
@@ -102,7 +103,7 @@ class AnalogyExerciseGenerator(ExerciseGenerator):
 
 
 class AnalogyExercise(Exercise):
-    source_id: StrictStr
+    source_id: EntityId
 
     @model_validator(mode="after")
     def validate_source(self) -> AnalogyExercise:

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import ClassVar, Literal
 
-from pydantic import StrictStr
-
 from graphcards.decks.base import (
     ExerciseGenerator,
     ExerciseGeneratorContext,
@@ -14,6 +12,7 @@ from graphcards.decks.base import (
 )
 from graphcards.errors import PresentationError
 from graphcards.models import CardView, Exercise
+from graphcards.references import EntityIdList
 
 FRONT_TEMPLATE = (
     "{{ entity.front|default(entity.prompt)|default(entity.question)|default(entity.id) }}"
@@ -25,7 +24,7 @@ BACK_TEMPLATE = "{{ entity.back|default(entity.answer)|default(entity.id) }}"
 class BasicExerciseGenerator(ExerciseGenerator):
     type: Literal["basic"] = "basic"
     type_name = "basic"
-    entities: tuple[StrictStr, ...]
+    entities: EntityIdList
     template_context_names: ClassVar[frozenset[str]] = frozenset({"entity"})
 
     def validate_references(self, known_entity_ids: set[str]) -> None:

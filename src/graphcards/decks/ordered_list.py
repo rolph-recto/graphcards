@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar, Literal
 
-from pydantic import StrictInt, StrictStr, model_validator
+from pydantic import StrictInt, model_validator
 
 from graphcards.decks.base import (
     ExerciseGenerator,
@@ -14,6 +14,7 @@ from graphcards.decks.base import (
 )
 from graphcards.errors import PresentationError
 from graphcards.models import CardView, Exercise
+from graphcards.references import EntityId, EntityIdList
 
 DEFAULT_WINDOW_SIZE = 5
 FRONT_TEMPLATE = (
@@ -33,7 +34,7 @@ BACK_TEMPLATE = "{{ target.label|default(target.back)|default(target.answer)|def
 class OrderedListExerciseGenerator(ExerciseGenerator):
     type: Literal["ordered_list"] = "ordered_list"
     type_name = "ordered_list"
-    groups: dict[StrictStr, tuple[StrictStr, ...]]
+    groups: dict[EntityId, EntityIdList]
     window_size: StrictInt = DEFAULT_WINDOW_SIZE
     template_context_names: ClassVar[frozenset[str]] = frozenset(
         {"target", "ordered_entities", "rows", "omitted_before", "omitted_after"}
@@ -137,8 +138,8 @@ class OrderedListExerciseGenerator(ExerciseGenerator):
 
 
 class OrderedListExercise(Exercise):
-    group_id: StrictStr
-    ordered_ids: tuple[StrictStr, ...]
+    group_id: EntityId
+    ordered_ids: tuple[EntityId, ...]
 
     @model_validator(mode="after")
     def validate_ordered_list(self) -> OrderedListExercise:

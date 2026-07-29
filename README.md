@@ -65,6 +65,28 @@ and rendered views is preserved.
 Generated multiple-choice exercises record the selected and ordered entity IDs in `choices`;
 rendering only resolves those references into entity objects and never reselects them.
 
+Named entity groups can remove repetition across generators. Define an ordered, non-empty group at
+the deck level and use its ID as a whole-list alias wherever a generator expects a list of entity
+IDs:
+
+```json
+{
+  "groups": [
+    {"id": "european-countries", "entities": ["france", "germany", "italy"]}
+  ],
+  "exercises": [
+    {"id": "basics", "type": "basic", "entities": "european-countries"}
+  ]
+}
+```
+
+Aliases are supported by `basic.entities`, multiple-choice `choices` values, ordered-list group
+member values, analogy `sources` values, and common-relation `relations` values. Each field must
+use either a list of concrete entity IDs or one group ID string; group IDs cannot appear inside
+lists, so `["france", "european-countries"]` is invalid. Group IDs must be unique, must not collide
+with entity IDs, and group definitions cannot contain other group IDs. Expansion preserves the
+declared group order, while generators continue to validate the resulting concrete IDs.
+
 ### Common-relation completion
 
 Common-relation generators map each scheduled target directly to an ordered list of related entity
@@ -104,7 +126,8 @@ remain deterministic from the deck directory identity, selected generator ID, an
 ### TOML authoring
 
 TOML decks use `[[entities]]` and `[[exercises]]` arrays of tables. Generator maps such as
-`choices`, `groups`, `sources`, and `relations` are nested TOML tables:
+`choices`, `groups`, `sources`, and `relations` are nested TOML tables. Reusable entity groups use
+`[[groups]]` tables:
 
 ```toml
 name = "Capital study"
@@ -119,10 +142,14 @@ id = "germany"
 front = "Germany"
 back = "Berlin"
 
+[[groups]]
+id = "western-europe"
+entities = ["france", "germany"]
+
 [[exercises]]
 id = "basics"
 type = "basic"
-entities = ["france", "germany"]
+entities = "western-europe"
 ```
 
 A mixed workspace can list all supported formats:
@@ -138,7 +165,8 @@ extensions are rejected without inspecting their contents.
 ### YAML authoring
 
 YAML decks use sequences for repeated `entities` and `exercises`, and mappings for generator data
-such as `choices`, `groups`, `sources`, and `relations`:
+such as `choices`, `groups`, `sources`, and `relations`. Reusable entity groups are a top-level
+sequence of mappings:
 
 ```yaml
 name: Capital study
@@ -149,10 +177,13 @@ entities:
   - id: germany
     front: Germany
     back: Berlin
+groups:
+  - id: western-europe
+    entities: [france, germany]
 exercises:
   - id: basics
     type: basic
-    entities: [france, germany]
+    entities: western-europe
 ```
 
 YAML loading uses a safe parser. Mapping keys must be unique strings, exactly one document is

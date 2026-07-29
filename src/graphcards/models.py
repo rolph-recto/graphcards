@@ -18,6 +18,8 @@ from pydantic import (
     model_validator,
 )
 
+from graphcards.references import EntityId
+
 
 def validation_message(error: ValidationError) -> str:
     """Return the first Pydantic failure without implementation-specific decoration."""
@@ -61,7 +63,7 @@ class CardKey(FrozenModel):
 
     deck_id: StrictStr
     generator_id: StrictStr
-    entity_id: StrictStr
+    entity_id: EntityId
 
     @model_validator(mode="after")
     def validate_identity(self) -> CardKey:
@@ -104,7 +106,7 @@ class Exercise(FrozenModel):
 
     card_key: CardKey
     generator_id: StrictStr = Field(min_length=1)
-    target_id: StrictStr = Field(min_length=1)
+    target_id: EntityId
 
     @model_validator(mode="after")
     def validate_scope(self) -> Exercise:

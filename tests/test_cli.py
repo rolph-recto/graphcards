@@ -45,6 +45,10 @@ def test_init_common_relations_template_validates(tmp_path: Path) -> None:
     config = load_config(workspace / "graphcards.toml")
     assert config.decks[0].path == (workspace / "deck.json").resolve()
     deck = Deck.load(workspace / "deck.json")
+    common_borders = next(
+        generator for generator in deck.generators if generator.id == "common-borders"
+    )
+    assert common_borders.relations["france"] == ("germany", "italy", "spain")
     assert len(deck.generate_all()) == 2
 
 

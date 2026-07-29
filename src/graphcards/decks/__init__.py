@@ -5,6 +5,7 @@ from graphcards.decks.base import (
     Deck,
     DeckDocument,
     Entity,
+    EntityGroup,
     ExerciseGenerator,
     ExerciseGeneratorContext,
 )
@@ -21,6 +22,7 @@ from graphcards.decks.ordered_list import (
     OrderedListExercise,
     OrderedListExerciseGenerator,
 )
+from graphcards.references import EntityId, EntityIdList, EntityIdListMarker
 
 __all__ = [
     "AnalogyExercise",
@@ -32,6 +34,10 @@ __all__ = [
     "Deck",
     "DeckDocument",
     "Entity",
+    "EntityGroup",
+    "EntityId",
+    "EntityIdList",
+    "EntityIdListMarker",
     "ExerciseGenerator",
     "ExerciseGeneratorContext",
     "MultipleChoiceExercise",
