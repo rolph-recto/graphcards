@@ -39,7 +39,7 @@ def deck_path(tmp_path: Path) -> Path:
                     },
                     {
                         "id": "order",
-                        "type": "ordered_list",
+                        "type": "missing_sequence_item",
                         "groups": {"europe": ["france", "germany"]},
                     },
                 ],

@@ -44,16 +44,16 @@ Entity records require unique non-blank IDs and may contain any nested JSON-comp
 Generator records are strict. Basic generators schedule the listed entities. Multiple-choice
 generators list each target entity’s exhaustive distractor choices inline; the target is always the
 correct answer, and random choice selection/order does not participate in identity. `max_choices`
-is an upper bound on rendered choices; the target is always included. Ordered-list groups are
+is an upper bound on rendered choices; the target is always included. Missing-sequence-item groups are
 metadata, while their members are the scheduled targets in declared order. A member can belong to
-only one group in a generator. Ordered-list `window_size` is the total number of visible rows,
+only one group in a generator. Missing-sequence-item `window_size` is the total number of visible rows,
 centered around the target; `0` shows the complete ordered group.
 Analogy generators map each target entity to a list of source entities. The default template renders
 the selected source and target `front`/`back` values as an “A is to B as C is to ?” exercise.
 Each generator may override its type’s `front_template` and `back_template` in either deck format; omitted
 templates use the built-in renderer defaults. Templates receive entity references with arbitrary
 nested data and structural information only: basic (`entity: Entity`), multiple-choice
-(`target: Entity`, `choice_entities: tuple[Entity, ...]`), ordered-list (`target: Entity`,
+(`target: Entity`, `choice_entities: tuple[Entity, ...]`), missing-sequence-item (`target: Entity`,
 `ordered_entities: tuple[Entity, ...]`, `rows: tuple[dict[str, object], ...]` with `position`,
 `entity`, and `is_target`, plus `omitted_before: bool` and `omitted_after: bool`), and analogy
 (`source: Entity`, `target: Entity`). Entity references expose `.id` and every ordinary top-level
@@ -80,7 +80,7 @@ IDs:
 }
 ```
 
-Aliases are supported by `basic.entities`, multiple-choice `choices` values, ordered-list group
+Aliases are supported by `basic.entities`, multiple-choice `choices` values, missing-sequence-item group
 member values, analogy `sources` values, and common-relation `relations` values. Each field must
 use either a list of concrete entity IDs or one group ID string; group IDs cannot appear inside
 lists, so `["france", "european-countries"]` is invalid. Group IDs must be unique, must not collide

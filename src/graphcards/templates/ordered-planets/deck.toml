@@ -22,7 +22,7 @@ label = "Mars"
 
 [[exercises]]
 id = "planet-order"
-type = "ordered_list"
+type = "missing_sequence_item"
 window_size = 3
 
 [exercises.groups]

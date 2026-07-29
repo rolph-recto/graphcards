@@ -94,7 +94,9 @@ def entity_ids(draw: st.DrawFn, *, min_size: int = 2, max_size: int = 6) -> list
 def valid_deck_documents(draw: st.DrawFn) -> dict[str, Any]:
     ids = draw(entity_ids(min_size=4, max_size=6))
     generator_type = draw(
-        st.sampled_from(["basic", "multiple_choice", "ordered_list", "analogy", "common_relation"])
+        st.sampled_from(
+            ["basic", "multiple_choice", "missing_sequence_item", "analogy", "common_relation"]
+        )
     )
     entities = [{"id": entity_id, "label": f"label-{entity_id}"} for entity_id in ids]
     if generator_type == "basic":
@@ -106,10 +108,10 @@ def valid_deck_documents(draw: st.DrawFn) -> dict[str, Any]:
             "max_choices": draw(st.integers(min_value=2, max_value=4)),
             "choices": {ids[0]: ids[1:]},
         }
-    elif generator_type == "ordered_list":
+    elif generator_type == "missing_sequence_item":
         generator = {
             "id": "generator",
-            "type": "ordered_list",
+            "type": "missing_sequence_item",
             "window_size": draw(st.integers(min_value=0, max_value=len(ids))),
             "groups": {ids[0]: ids[1:]},
         }

@@ -35,7 +35,7 @@ DOCUMENT = {
         },
         {
             "id": "ordered",
-            "type": "ordered_list",
+            "type": "missing_sequence_item",
             "groups": {"target": ["ordered-a", "ordered-b"]},
         },
         {"id": "analogy", "type": "analogy", "sources": {"target": ["source"]}},
@@ -97,7 +97,7 @@ choice = ["target", "other"]
 
 [[exercises]]
 id = "ordered"
-type = "ordered_list"
+type = "missing_sequence_item"
 [exercises.groups]
 target = ["ordered-a", "ordered-b"]
 

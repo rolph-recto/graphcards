@@ -17,8 +17,8 @@ from graphcards.decks import (
     DeckDocument,
     Entity,
     ExerciseGeneratorContext,
+    MissingSequenceItemExercise,
     MultipleChoiceExercise,
-    OrderedListExercise,
 )
 from graphcards.errors import ConfigError, PresentationError
 
@@ -27,7 +27,7 @@ def test_loads_typed_generators_and_nested_entity_data(deck: Deck) -> None:
     assert tuple(type(generator).__name__ for generator in deck.generators) == (
         "BasicExerciseGenerator",
         "MultipleChoiceExerciseGenerator",
-        "OrderedListExerciseGenerator",
+        "MissingSequenceItemExerciseGenerator",
     )
     assert deck.entities["france"].front == "France"
     assert deck.entities["france"].id == "france"
@@ -168,7 +168,7 @@ def test_builtin_templates_use_direct_attribute_fallbacks(tmp_path: Path, write_
                     },
                     {
                         "id": "ordered",
-                        "type": "ordered_list",
+                        "type": "missing_sequence_item",
                         "groups": {"ordered-group": ["ordered-one", "ordered-two"]},
                     },
                     {
@@ -612,9 +612,9 @@ def test_generators_produce_semantic_exercises(deck: Deck) -> None:
     assert len(choice.choices) == 3
     assert not hasattr(choice, "correct_id")
     assert not hasattr(choice, "prompt")
-    ordered = next(card for card in cards if isinstance(card, OrderedListExercise))
-    assert ordered.group_id == "europe"
-    assert ordered.ordered_ids == ("france", "germany")
+    missing_item = next(card for card in cards if isinstance(card, MissingSequenceItemExercise))
+    assert missing_item.group_id == "europe"
+    assert missing_item.ordered_ids == ("france", "germany")
     rendered_choice = deck.render(choice)
     assert rendered_choice.back == "Rome"
     assert "italy" in rendered_choice.front
@@ -663,7 +663,7 @@ def test_generator_rendering_settings_come_from_deck_json(tmp_path: Path, write_
                 },
                 {
                     "id": "ordered",
-                    "type": "ordered_list",
+                    "type": "missing_sequence_item",
                     "window_size": 3,
                     "groups": {"0": ["1", "2", "3", "4", "5"]},
                 },
@@ -680,7 +680,7 @@ def test_generator_rendering_settings_come_from_deck_json(tmp_path: Path, write_
     ordered = next(
         card
         for card in cards.values()
-        if isinstance(card, OrderedListExercise) and card.target_id == "3"
+        if isinstance(card, MissingSequenceItemExercise) and card.target_id == "3"
     )
     rendered = deck.render(ordered)
     assert rendered.front == "…\n2. Entity 2\n3. ?\n4. Entity 4\n…"
@@ -717,7 +717,7 @@ def test_generator_templates_are_configurable_in_deck_json(tmp_path: Path, write
                 },
                 {
                     "id": "ordered",
-                    "type": "ordered_list",
+                    "type": "missing_sequence_item",
                     "groups": {"source": ["source", "target"]},
                     "front_template": (
                         "ORDER: {% for row in rows %}{% if row.is_target %}?{% else %}"
@@ -1033,7 +1033,7 @@ def test_basic_generator_rejects_duplicate_targets(tmp_path: Path, write_deck) -
         Deck.load(path)
 
 
-def test_ordered_list_groups_are_metadata_and_members_cannot_overlap(
+def test_missing_sequence_item_groups_are_metadata_and_members_cannot_overlap(
     tmp_path: Path, write_deck
 ) -> None:
     path = tmp_path / "order.json"
@@ -1044,7 +1044,7 @@ def test_ordered_list_groups_are_metadata_and_members_cannot_overlap(
             "exercises": [
                 {
                     "id": "order",
-                    "type": "ordered_list",
+                    "type": "missing_sequence_item",
                     "groups": {"g1": ["a", "b"], "g2": ["b", "c"]},
                 }
             ],

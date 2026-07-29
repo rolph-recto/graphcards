@@ -16,8 +16,8 @@ from graphcards.decks import (
     Deck,
     DeckDocument,
     Entity,
+    MissingSequenceItemExercise,
     MultipleChoiceExercise,
-    OrderedListExercise,
 )
 from graphcards.errors import ConfigError
 from tests.strategies import PROPERTY_SETTINGS, valid_deck_documents, valid_identity_strings
@@ -40,7 +40,7 @@ def test_generated_decks_load_generate_and_render_all_targets(
         raw_targets = raw_generator["entities"]
     elif generator_type == "multiple_choice":
         raw_targets = raw_generator["choices"].keys()
-    elif generator_type == "ordered_list":
+    elif generator_type == "missing_sequence_item":
         raw_targets = [target for group in raw_generator["groups"].values() for target in group]
     elif generator_type == "analogy":
         raw_targets = raw_generator["sources"].keys()
@@ -84,7 +84,7 @@ def test_generated_generator_invariants_hold(
             generator = next(item for item in deck.generators if item.id == card.generator_id)
             assert len(card.choices) <= generator.max_choices
             assert set(card.choices) <= {card.target_id, *generator.choices[card.target_id]}
-        elif isinstance(card, OrderedListExercise):
+        elif isinstance(card, MissingSequenceItemExercise):
             assert card.target_id in card.ordered_ids
             assert len(card.ordered_ids) == len(set(card.ordered_ids))
             assert len(card.ordered_ids) >= 2
@@ -165,7 +165,7 @@ def test_invalid_generated_deck_documents_are_repository_facing_errors(
         (
             {
                 "id": "generator",
-                "type": "ordered_list",
+                "type": "missing_sequence_item",
                 "groups": {"e0": ["e1", "e1"]},
             },
             "duplicate members",
@@ -190,7 +190,7 @@ def test_each_generator_rejects_invalid_pools_groups_and_sources(
 
 @given(
     kind=st.sampled_from(
-        ["basic", "multiple_choice", "ordered_list", "analogy", "common_relation"]
+        ["basic", "multiple_choice", "missing_sequence_item", "analogy", "common_relation"]
     ),
     unknown=valid_identity_strings.filter(lambda value: value not in {"e0", "e1", "e2"}),
 )
@@ -203,7 +203,7 @@ def test_generated_invalid_references_are_config_errors(
         generator = {"id": "generator", "type": kind, "entities": [unknown]}
     elif kind == "multiple_choice":
         generator = {"id": "generator", "type": kind, "choices": {"e0": [unknown]}}
-    elif kind == "ordered_list":
+    elif kind == "missing_sequence_item":
         generator = {"id": "generator", "type": kind, "groups": {"e0": ["e1", unknown]}}
     elif kind == "analogy":
         generator = {"id": "generator", "type": kind, "sources": {"e0": [unknown]}}

@@ -44,7 +44,7 @@ exercises:
     choices:
       choice: [target, other]
   - id: ordered
-    type: ordered_list
+    type: missing_sequence_item
     groups:
       target: [ordered-a, ordered-b]
   - id: analogy

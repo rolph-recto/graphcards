@@ -14,6 +14,10 @@ from graphcards.decks.common_relation import (
     CommonRelationExercise,
     CommonRelationExerciseGenerator,
 )
+from graphcards.decks.missing_sequence_item import (
+    MissingSequenceItemExercise,
+    MissingSequenceItemExerciseGenerator,
+)
 from graphcards.decks.multiple_choice import (
     MultipleChoiceExercise,
     MultipleChoiceExerciseGenerator,
@@ -22,10 +26,6 @@ from graphcards.decks.odd_one_out import (
     OddOneOutExercise,
     OddOneOutExerciseGenerator,
     OddOneOutRelation,
-)
-from graphcards.decks.ordered_list import (
-    OrderedListExercise,
-    OrderedListExerciseGenerator,
 )
 from graphcards.references import EntityId, EntityIdList, EntityIdListMarker
 
@@ -47,8 +47,8 @@ __all__ = [
     "ExerciseGeneratorContext",
     "MultipleChoiceExercise",
     "MultipleChoiceExerciseGenerator",
-    "OrderedListExercise",
-    "OrderedListExerciseGenerator",
+    "MissingSequenceItemExercise",
+    "MissingSequenceItemExerciseGenerator",
     "OddOneOutExercise",
     "OddOneOutExerciseGenerator",
     "OddOneOutRelation",

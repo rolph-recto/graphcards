@@ -1,4 +1,4 @@
-"""Ordered-list entity-backed exercise generator."""
+"""Missing-sequence-item entity-backed exercise generator."""
 
 from __future__ import annotations
 
@@ -31,9 +31,9 @@ BACK_TEMPLATE = "{{ target.label|default(target.back)|default(target.answer)|def
 
 
 @ExerciseGenerator.register
-class OrderedListExerciseGenerator(ExerciseGenerator):
-    type: Literal["ordered_list"] = "ordered_list"
-    type_name = "ordered_list"
+class MissingSequenceItemExerciseGenerator(ExerciseGenerator):
+    type: Literal["missing_sequence_item"] = "missing_sequence_item"
+    type_name = "missing_sequence_item"
     groups: dict[EntityId, EntityIdList]
     window_size: StrictInt = DEFAULT_WINDOW_SIZE
     template_context_names: ClassVar[frozenset[str]] = frozenset(
@@ -41,19 +41,19 @@ class OrderedListExerciseGenerator(ExerciseGenerator):
     )
 
     @model_validator(mode="after")
-    def validate_group_ids(self) -> OrderedListExerciseGenerator:
+    def validate_group_ids(self) -> MissingSequenceItemExerciseGenerator:
         for group_id, members in self.groups.items():
             if not group_id.strip():
-                raise ValueError("ordered-list group IDs must be non-blank strings")
+                raise ValueError("missing-sequence-item group IDs must be non-blank strings")
             for member in members:
                 if not member.strip():
-                    raise ValueError("ordered-list members must be non-blank strings")
+                    raise ValueError("missing-sequence-item members must be non-blank strings")
         return self
 
     @model_validator(mode="after")
-    def validate_window_size(self) -> OrderedListExerciseGenerator:
+    def validate_window_size(self) -> MissingSequenceItemExerciseGenerator:
         if self.window_size < 0:
-            raise ValueError("ordered-list window_size must be zero or greater")
+            raise ValueError("missing-sequence-item window_size must be zero or greater")
         return self
 
     def validate_references(self, known_entity_ids: set[str]) -> None:
@@ -85,7 +85,7 @@ class OrderedListExerciseGenerator(ExerciseGenerator):
         key = self._key(entity_id, context.deck_id)
         for group_id, members in self.groups.items():
             if entity_id in members:
-                return OrderedListExercise(
+                return MissingSequenceItemExercise(
                     card_key=key,
                     generator_id=self.id,
                     target_id=entity_id,
@@ -95,7 +95,7 @@ class OrderedListExerciseGenerator(ExerciseGenerator):
         raise PresentationError(f"generator {self.id!r} has no group for entity {entity_id!r}")
 
     def render(self, exercise: Exercise, context: ExerciseGeneratorContext) -> CardView:
-        if not isinstance(exercise, OrderedListExercise):
+        if not isinstance(exercise, MissingSequenceItemExercise):
             raise PresentationError(f"generator {self.id!r} cannot render this exercise type")
         try:
             target_index = exercise.ordered_ids.index(exercise.target_id)
@@ -137,17 +137,19 @@ class OrderedListExerciseGenerator(ExerciseGenerator):
             ) from error
 
 
-class OrderedListExercise(Exercise):
+class MissingSequenceItemExercise(Exercise):
     group_id: EntityId
     ordered_ids: tuple[EntityId, ...]
 
     @model_validator(mode="after")
-    def validate_ordered_list(self) -> OrderedListExercise:
+    def validate_missing_sequence_item(self) -> MissingSequenceItemExercise:
         if self.target_id not in self.ordered_ids:
-            raise ValueError("ordered-list target must be one of its members")
+            raise ValueError("missing-sequence-item target must be one of its members")
         if len(self.ordered_ids) < 2 or len(set(self.ordered_ids)) != len(self.ordered_ids):
-            raise ValueError("ordered-list members must be unique and contain at least two items")
+            raise ValueError(
+                "missing-sequence-item members must be unique and contain at least two items"
+            )
         return self
 
 
-__all__ = ["OrderedListExercise", "OrderedListExerciseGenerator"]
+__all__ = ["MissingSequenceItemExercise", "MissingSequenceItemExerciseGenerator"]

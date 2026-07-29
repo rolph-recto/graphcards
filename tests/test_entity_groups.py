@@ -55,7 +55,7 @@ def grouped_document() -> dict[str, object]:
             },
             {
                 "id": "ordered",
-                "type": "ordered_list",
+                "type": "missing_sequence_item",
                 "groups": {"ordered-target": "ordered-members"},
             },
             {
@@ -205,7 +205,7 @@ choice-target = "choice-distractors"
 
 [[exercises]]
 id = "ordered"
-type = "ordered_list"
+type = "missing_sequence_item"
 [exercises.groups]
 ordered-target = "ordered-members"
 
@@ -273,7 +273,7 @@ exercises:
     choices:
       choice-target: choice-distractors
   - id: ordered
-    type: ordered_list
+    type: missing_sequence_item
     groups:
       ordered-target: ordered-members
   - id: analogy
