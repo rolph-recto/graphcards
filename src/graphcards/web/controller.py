@@ -283,6 +283,11 @@ class StudyController:
                     return status.card_id
         raise RequestFailure(HTTPStatus.NOT_FOUND, "That card is not known in this deck.")
 
+    def end_session(self) -> None:
+        """End the active study session when the student leaves the study flow."""
+
+        self.session = None
+
     def start_session(
         self,
         *,

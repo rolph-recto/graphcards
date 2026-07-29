@@ -46,6 +46,16 @@ CONTROLLER_EXTENSION = "graphcards_controller"
 EXPECTED_HOST_CONFIG = "GRAPHCARDS_EXPECTED_HOST"
 _MAX_FIELDS = 32
 _ASCII_HEX_DIGITS = frozenset(b"0123456789abcdefABCDEF")
+_STUDY_ENDPOINTS = frozenset(
+    {
+        "study",
+        "reveal",
+        "rate",
+        "next_practice",
+        "suspend_study_card",
+        "static",
+    }
+)
 
 
 class _SessionStartSubmission(BaseModel):
@@ -225,6 +235,11 @@ def create_flask_app(controller: StudyController) -> Flask:
         expected_host = current_app.config[EXPECTED_HOST_CONFIG]
         if not isinstance(expected_host, str) or request.host != expected_host:
             raise RequestFailure(HTTPStatus.BAD_REQUEST, "The request host is not valid.")
+
+    @app.before_request
+    def end_session_outside_study_flow() -> None:
+        if request.endpoint not in _STUDY_ENDPOINTS:
+            _controller().end_session()
 
     @app.after_request
     def add_security_headers(response: Response) -> Response:

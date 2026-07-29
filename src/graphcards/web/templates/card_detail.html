@@ -1,33 +1,33 @@
 {% extends "base.html" %}
-{% set main_class = "status-main" %}
+{% set main_width = "max-w-7xl" %}
 {% block title %}{{ deck.display_name }} · {{ entity_id }}{% endblock %}
-{% block masthead %}<p class="deck-name">{{ deck.display_name }}</p>{% endblock %}
+{% block masthead %}<p class="truncate text-sm text-neutral-500">{{ deck.display_name }}</p>{% endblock %}
 {% block head %}<script src="{{ url_for('static', filename='status.js') }}" defer></script>{% endblock %}
 {% block content %}
-  <nav class="study-nav">
+  <nav class="mb-4 text-sm">
     <a href="{{ back_url }}">← Card Status</a>
   </nav>
-  <header class="status-header">
+  <header class="mb-6 flex items-end justify-between gap-4 max-sm:flex-col max-sm:items-stretch">
     <div>
-      <p class="eyebrow">Card details</p>
-      <h1>{{ entity_id }}</h1>
+      <p class="mb-4 text-xs font-bold uppercase tracking-wider text-neutral-500">Card details</p>
+      <h1 class="mb-1.5">{{ entity_id }}</h1>
     </div>
   </header>
 
-  <section class="card-detail" aria-labelledby="generator-title">
-    <header class="section-header">
-      <h2 id="generator-title">Exercise Generators</h2>
+  <section class="mt-6" aria-labelledby="generator-title">
+    <header class="mb-4">
+      <h2 class="mb-1 text-2xl" id="generator-title">Exercise Generators</h2>
     </header>
-    <div class="generator-layout">
+    <div class="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
       <div class="generator-list">
         {% if generators %}
         {% for generator in generators %}
           <article class="generator-card">
             <div>
               <h3>{{ generator.id }}</h3>
-              <p class="muted">Type: {{ generator.type }} </p>
+              <p class="text-neutral-500">Type: {{ generator.type }} </p>
             </div>
-            <form class="generator-action" method="get" action="{{ url_for('card_detail', deck_name=deck.name, entity_id=entity_id) }}">
+            <form method="get" action="{{ url_for('card_detail', deck_name=deck.name, entity_id=entity_id) }}">
               <input type="hidden" name="page" value="{{ query.page }}">
               <input type="hidden" name="availability" value="{{ query.availability.value }}">
               <input type="hidden" name="schedule" value="{{ query.schedule.value }}">
@@ -42,7 +42,7 @@
           </article>
         {% endfor %}
         {% else %}
-          <p class="empty-status">This card has no configured exercise generators.</p>
+          <p class="rounded-xl border border-neutral-200 p-8 text-center text-neutral-600">This card has no configured exercise generators.</p>
         {% endif %}
       </div>
       <aside class="exercise-preview exercise-preview-panel" aria-labelledby="exercise-preview-title">
@@ -50,9 +50,9 @@
         {% if preview and query.preview_generator %}
           <div class="prompt">{{ preview.front }}</div>
           <div class="answer" aria-live="polite"><span class="answer-label">Answer</span><div class="answer-text">{{ preview.back }}</div></div>
-          <p class="muted">Preview only; no review or scheduling state was changed.</p>
+          <p class="text-neutral-500">Preview only; no review or scheduling state was changed.</p>
         {% else %}
-          <p class="muted">Choose Generate exercise for a generator to preview an exercise here.</p>
+          <p class="text-neutral-500">Choose Generate exercise for a generator to preview an exercise here.</p>
         {% endif %}
       </aside>
     </div>

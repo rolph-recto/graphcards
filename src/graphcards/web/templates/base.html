@@ -8,10 +8,11 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <main{% if main_class %} class="{{ main_class }}"{% endif %}>
+  {% set width = main_width | default('max-w-4xl') %}
+  <main class="mx-auto w-full {{ width }} px-4 py-8 md:py-16">
     <div{% if wrapper_class %} class="{{ wrapper_class }}"{% endif %}>
-      <header class="masthead">
-        <a class="brand" href="{{ url_for('index') }}">GRAPHCARDS</a>
+      <header class="mb-8 flex items-center justify-between gap-4 border-b border-neutral-200 pb-3.5">
+        <a class="text-xs font-bold tracking-widest text-neutral-900 no-underline" href="{{ url_for('index') }}">GRAPHCARDS</a>
         {% block masthead %}{% endblock %}
       </header>
       {% block content %}{% endblock %}

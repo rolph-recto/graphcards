@@ -1,30 +1,30 @@
 {% extends "base.html" %}
-{% set wrapper_class = "study-shell" %}
+{% set wrapper_class = "mx-auto w-full max-w-2xl" %}
 {% block title %}{{ session.deck.display_name }}{% endblock %}
-{% block masthead %}<p class="deck-name">{{ session.deck.display_name }}</p>{% endblock %}
+{% block masthead %}<p class="truncate text-sm text-neutral-500">{{ session.deck.display_name }}</p>{% endblock %}
 {% block content %}
-  <nav class="study-nav"><a href="{{ url_for('index') }}">← All decks</a></nav>
-  <article class="card">
-    <progress class="progress" value="{{ progress }}" max="{{ maximum }}"
+  <nav class="mb-4 text-sm"><a href="{{ url_for('index') }}">← All decks</a></nav>
+  <article class="overflow-hidden rounded-xl border border-neutral-200 bg-white">
+    <progress class="progress h-1 w-full appearance-none border-0" value="{{ progress }}" max="{{ maximum }}"
               aria-label="Study progress"></progress>
-    <div class="content">
+    <div class="p-6 md:p-10">
       {% if not current %}
-        <p class="eyebrow">Study complete</p>
+        <p class="mb-4 text-xs font-bold uppercase tracking-wider text-neutral-500">Study complete</p>
         <h1>{{ completion_title }}</h1>
-        <p class="summary">{{ completion_summary }}</p>
+        <p class="mt-6 text-lg leading-relaxed text-neutral-600">{{ completion_summary }}</p>
         {% if session.skipped %}
-          <details class="skipped">
+          <details class="mt-6 text-sm text-neutral-600">
             <summary>{{ session.skipped|length }} skipped card(s)</summary>
             <ul>
-              {% for message in session.skipped %}<li>{{ message }}</li>{% endfor %}
+              {% for message in session.skipped %}<li class="my-2">{{ message }}</li>{% endfor %}
             </ul>
           </details>
         {% endif %}
-        <div class="completion-actions">
+        <div class="mt-6">
           <a class="button primary" href="{{ url_for('index') }}">Back to decks</a>
         </div>
       {% else %}
-        <p class="eyebrow">
+        <p class="mb-4 text-xs font-bold uppercase tracking-wider text-neutral-500">
           {{ session.mode.label }} · Card {{ session.index + 1 }} of {{ session.cards|length }}
         </p>
         <div class="prompt">{{ current.front }}</div>
@@ -38,17 +38,17 @@
             <form method="post" action="{{ url_for('next_practice') }}">
               <input type="hidden" name="session_token" value="{{ session.session_token }}">
               <input type="hidden" name="card_id" value="{{ current.card.card_id }}">
-              <button class="primary wide" type="submit">Next card</button>
+              <button class="primary w-full" type="submit">Next card</button>
             </form>
           {% else %}
             <form method="post" action="{{ url_for('rate') }}">
               <input type="hidden" name="session_token" value="{{ session.session_token }}">
               <input type="hidden" name="card_id" value="{{ current.card.card_id }}">
-              <div class="ratings" aria-label="Rate your recall">
-                <button class="rating-again" name="rating" value="1">Again</button>
-                <button class="rating-hard" name="rating" value="2">Hard</button>
-                <button class="rating-good" name="rating" value="3">Good</button>
-                <button class="rating-easy" name="rating" value="4">Easy</button>
+              <div class="grid grid-cols-4 gap-2.5 max-sm:grid-cols-2" aria-label="Rate your recall">
+                <button class="rating-again border-transparent text-white hover:border-rating-again-hover hover:bg-rating-again-hover focus-visible:outline-neutral-900" name="rating" value="1">Again</button>
+                <button class="rating-hard border-transparent text-white hover:border-rating-hard-hover hover:bg-rating-hard-hover focus-visible:outline-neutral-900" name="rating" value="2">Hard</button>
+                <button class="rating-good border-transparent text-white hover:border-rating-good-hover hover:bg-rating-good-hover focus-visible:outline-neutral-900" name="rating" value="3">Good</button>
+                <button class="rating-easy border-transparent text-white hover:border-rating-easy-hover hover:bg-rating-easy-hover focus-visible:outline-neutral-900" name="rating" value="4">Easy</button>
               </div>
             </form>
           {% endif %}
@@ -56,12 +56,12 @@
           <form method="post" action="{{ url_for('reveal') }}">
             <input type="hidden" name="session_token" value="{{ session.session_token }}">
             <input type="hidden" name="card_id" value="{{ current.card.card_id }}">
-            <button class="primary wide" type="submit">Reveal answer</button>
+            <button class="primary w-full" type="submit">Reveal answer</button>
           </form>
         {% endif %}
-        <details class="suspend-control">
-          <summary>Suspend this card</summary>
-          <form method="post" action="{{ url_for('suspend_study_card') }}">
+        <details class="mt-4 border-t border-neutral-200 pt-3">
+          <summary class="cursor-pointer text-sm font-semibold text-neutral-600">Suspend this card</summary>
+          <form class="mt-3 grid gap-2.5" method="post" action="{{ url_for('suspend_study_card') }}">
             <input type="hidden" name="session_token" value="{{ session.session_token }}">
             <input type="hidden" name="card_id" value="{{ current.card.card_id }}">
             <button type="submit">Suspend and continue</button>

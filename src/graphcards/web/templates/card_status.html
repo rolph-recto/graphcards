@@ -1,21 +1,21 @@
 {% extends "base.html" %}
-{% set main_class = "status-main" %}
+{% set main_width = "max-w-7xl" %}
 {% block title %}{{ deck.display_name }} Deck Info{% endblock %}
-{% block masthead %}<p class="deck-name">Decks</p>{% endblock %}
+{% block masthead %}<p class="truncate text-sm text-neutral-500">Decks</p>{% endblock %}
 {% block head %}<script src="{{ url_for('static', filename='status.js') }}" defer></script>{% endblock %}
 {% block content %}
-  <nav class="study-nav"><a href="{{ url_for('index') }}">← All decks</a></nav>
-  <header class="status-header">
+  <nav class="mb-4 text-sm"><a href="{{ url_for('index') }}">← All decks</a></nav>
+  <header class="mb-6 flex items-end justify-between gap-4 max-sm:flex-col max-sm:items-stretch">
     <div>
-      <h1>{{ deck.display_name }}</h1>
+      <h1 class="mb-1.5">{{ deck.display_name }}</h1>
     </div>
-    <p class="muted">{{ available_count }} available · {{ suspended_count }} suspended</p>
+    <p class="text-neutral-500">{{ available_count }} available · {{ suspended_count }} suspended</p>
   </header>
 
-  <nav class="info-tabs" aria-label="Deck information tabs">
-    <a href="{{ tab_urls.status }}"{% if tab.value == "status" %} aria-current="page"{% endif %}>Card Status</a>
-    <a href="{{ tab_urls.history }}"{% if tab.value == "history" %} aria-current="page"{% endif %}>Review History</a>
-    <a href="{{ tab_urls.generators }}"{% if tab.value == "generators" %} aria-current="page"{% endif %}>Exercise Generators</a>
+  <nav class="my-6 flex flex-wrap gap-1.5 border-b border-neutral-200" aria-label="Deck information tabs">
+    <a class="px-3.5 py-2.5 text-sm font-semibold no-underline{% if tab.value == 'status' %} border-b-2 border-neutral-900 text-neutral-900{% else %} text-neutral-600{% endif %}" href="{{ tab_urls.status }}"{% if tab.value == "status" %} aria-current="page"{% endif %}>Card Status</a>
+    <a class="px-3.5 py-2.5 text-sm font-semibold no-underline{% if tab.value == 'history' %} border-b-2 border-neutral-900 text-neutral-900{% else %} text-neutral-600{% endif %}" href="{{ tab_urls.history }}"{% if tab.value == "history" %} aria-current="page"{% endif %}>Review History</a>
+    <a class="px-3.5 py-2.5 text-sm font-semibold no-underline{% if tab.value == 'generators' %} border-b-2 border-neutral-900 text-neutral-900{% else %} text-neutral-600{% endif %}" href="{{ tab_urls.generators }}"{% if tab.value == "generators" %} aria-current="page"{% endif %}>Exercise Generators</a>
   </nav>
 
   {% if preview and query.preview_entity %}
@@ -26,17 +26,17 @@
         <span class="answer-label">Answer</span>
         <div class="answer-text">{{ preview.back }}</div>
       </div>
-      <p class="muted">Preview only; no review or scheduling state was changed.</p>
+      <p class="text-neutral-500">Preview only; no review or scheduling state was changed.</p>
     </section>
   {% endif %}
 
   {% if tab.value == "history" %}
-    <section class="history" id="history" aria-label="Review History">
-      <header class="history-header">
+    <section class="mb-12 border-b border-neutral-300 pb-8" id="history" aria-label="Review History">
+      <header class="mb-4 flex items-end justify-between gap-4 max-sm:flex-col max-sm:items-stretch">
         <div>
-          <p class="muted">{{ history.range_label }}</p>
+          <p class="text-neutral-500">{{ history.range_label }}</p>
         </div>
-        <form class="history-range" method="get" action="{{ url_for('card_status', deck_name=deck.name) }}">
+        <form class="flex items-end gap-2 max-sm:items-stretch" method="get" action="{{ url_for('card_status', deck_name=deck.name) }}">
           <input type="hidden" name="tab" value="history">
           <label>
             Date range
@@ -47,12 +47,12 @@
                 </option>
               {% endfor %}
             </select>
-            <noscript><button type="submit">Refresh range</button></noscript>
+            <noscript><button class="min-h-10" type="submit">Refresh range</button></noscript>
           </label>
         </form>
       </header>
 
-      <div class="history-stats">
+      <div class="history-stats mb-3 grid grid-cols-4 gap-3 max-md:grid-cols-2">
         <article><strong>{{ history.total_reviews }}</strong><span>reviews in range</span></article>
         <article><strong>{{ history.active_days }}</strong><span>active day(s)</span></article>
         <article><strong>{{ history.current_streak }}</strong><span>current streak</span></article>
@@ -63,56 +63,56 @@
         <article><strong>{{ history.average_retrievability }}</strong><span>FSRS retrievability at review</span><small>{{ history.retrievability_coverage }}</small></article>
       </div>
 
-      <div class="history-grid">
-        <figure class="history-panel">
-          <figcaption>Review volume over time</figcaption>
-          <div class="history-bars">
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <figure class="m-0 min-w-0 rounded-lg border border-neutral-200 p-4 md:col-span-2">
+          <figcaption class="mb-3.5 text-sm font-bold">Review volume over time</figcaption>
+          <div class="grid gap-2">
             {% for bucket in history.buckets %}
-              <div class="history-bar">
+              <div class="flex items-center gap-2 text-xs text-neutral-600">
                 <span>{{ bucket.label }}</span>
-                <progress max="{{ history.volume_maximum }}" value="{{ bucket.count }}"
+                <progress class="history-progress h-2.5 flex-1 appearance-none overflow-hidden rounded-full border-0" max="{{ history.volume_maximum }}" value="{{ bucket.count }}"
                           aria-label="{{ bucket.label }}: {{ bucket.count }} review(s)">
                   {{ bucket.count }}
                 </progress>
-                <strong>{{ bucket.count }}</strong>
+                <strong class="w-12 text-right text-xs tabular-nums text-neutral-700">{{ bucket.count }}</strong>
               </div>
             {% endfor %}
           </div>
         </figure>
-        <figure class="history-panel rating-panel">
-          <figcaption>Rating distribution</figcaption>
-          <svg class="rating-distribution" viewBox="0 0 100 12" preserveAspectRatio="none" role="img"
+        <figure class="m-0 min-w-0 rounded-lg border border-neutral-200 p-4">
+          <figcaption class="mb-3.5 text-sm font-bold">Rating distribution</figcaption>
+          <svg class="mt-0.5 mb-4 block h-3.5 w-full overflow-hidden rounded-full" viewBox="0 0 100 12" preserveAspectRatio="none" role="img"
                aria-label="Rating distribution across {{ history.total_reviews }} review(s)">
-            <rect class="rating-track" x="0" y="0" width="100" height="12"></rect>
+            <rect class="fill-neutral-200" x="0" y="0" width="100" height="12"></rect>
             {% for rating in history.ratings %}
               {% if rating.percentage %}
-                <rect class="rating-segment {{ rating.class_name }}" x="{{ "%.6f"|format(rating.offset) }}" y="0"
+                <rect class="{{ rating.class_name }}" x="{{ "%.6f"|format(rating.offset) }}" y="0"
                       width="{{ "%.6f"|format(rating.percentage) }}" height="12">
                   <title>{{ rating.label }}: {{ rating.count }} review(s), {{ "%.1f"|format(rating.percentage) }}%</title>
                 </rect>
               {% endif %}
             {% endfor %}
           </svg>
-          <ul class="rating-legend">
+          <ul class="m-0 grid list-none grid-cols-2 gap-x-3.5 gap-y-2.5 p-0 max-sm:grid-cols-1">
             {% for rating in history.ratings %}
-              <li><span class="rating-key {{ rating.class_name }}" aria-hidden="true"></span><span>{{ rating.label }}</span><strong>{{ rating.count }}</strong><small>{{ "%.1f"|format(rating.percentage) }}%</small></li>
+              <li class="flex flex-wrap items-center gap-x-1.5 text-xs text-neutral-600"><span class="{{ rating.class_name }} h-2.5 w-2.5 rounded-full" aria-hidden="true"></span><span>{{ rating.label }}</span><strong class="ml-auto tabular-nums text-neutral-800">{{ rating.count }}</strong><small class="basis-full pl-4 tabular-nums text-neutral-500">{{ "%.1f"|format(rating.percentage) }}%</small></li>
             {% endfor %}
           </ul>
         </figure>
       </div>
     </section>
   {% elif tab.value == "generators" %}
-    <section class="generator-status" aria-label="Exercise Generators">
-      <div class="generator-layout">
+    <section aria-label="Exercise Generators">
+      <div class="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
         <div class="generator-list">
           {% if generators %}
             {% for generator in generators %}
               <article class="generator-card">
                 <div>
                   <h3>{{ generator.generator_id }}</h3>
-                  <p class="muted">Type: {{ generator.generator_type }} · {{ generator.eligible_count }} eligible target(s) · {{ generator.due_count }} due card(s)</p>
+                  <p class="text-neutral-500">Type: {{ generator.generator_type }} · {{ generator.eligible_count }} eligible target(s) · {{ generator.due_count }} due card(s)</p>
                 </div>
-                <form class="generator-action" method="get" action="{{ url_for('card_status', deck_name=deck.name) }}">
+                <form method="get" action="{{ url_for('card_status', deck_name=deck.name) }}">
                   <input type="hidden" name="tab" value="generators">
                   <input type="hidden" name="preview_generator" value="{{ generator.generator_id }}">
                   <button type="submit"{% if not generator.eligible_count %} disabled{% endif %}>Generate exercise</button>
@@ -120,7 +120,7 @@
               </article>
             {% endfor %}
           {% else %}
-            <p class="empty-status">This deck has no configured exercise generators.</p>
+            <p class="rounded-xl border border-neutral-200 p-8 text-center text-neutral-600">This deck has no configured exercise generators.</p>
           {% endif %}
         </div>
         <aside class="exercise-preview exercise-preview-panel" aria-labelledby="exercise-preview-title">
@@ -129,14 +129,14 @@
             <div class="prompt">{{ preview.front }}</div>
             <div class="answer" aria-live="polite"><span class="answer-label">Answer</span><div class="answer-text">{{ preview.back }}</div></div>
           {% else %}
-            <p class="muted">Choose Generate exercise for a generator to preview an exercise here.</p>
+            <p class="text-neutral-500">Choose Generate exercise for a generator to preview an exercise here.</p>
           {% endif %}
         </aside>
       </div>
     </section>
   {% else %}
-    <section class="card-status" id="card-status" aria-label="Card Status">
-      <form class="status-filters" method="get" action="{{ url_for('card_status', deck_name=deck.name) }}">
+    <section id="card-status" aria-label="Card Status">
+      <form class="mb-4 grid grid-cols-1 items-end gap-2.5 rounded-xl border border-neutral-200 bg-neutral-50 p-4 sm:grid-cols-2 lg:grid-cols-6" method="get" action="{{ url_for('card_status', deck_name=deck.name) }}">
         <input type="hidden" name="tab" value="status">
         <input type="hidden" name="range" value="{{ query.range.value }}">
         <label>Availability
@@ -164,40 +164,40 @@
             {% for value, label in direction_options %}<option value="{{ value.value }}"{% if value == query.direction %} selected{% endif %}>{{ label }}</option>{% endfor %}
           </select>
         </label>
-        <button type="submit">Apply</button>
+        <button class="col-span-full lg:col-span-1" type="submit">Apply</button>
       </form>
 
       {% if rows %}
-        <div class="table-wrap">
+        <div class="overflow-x-auto rounded-xl border border-neutral-200 bg-white">
           <table class="status-table">
             <thead><tr><th>Entity</th><th>Review history</th><th>Next review</th><th>Schedule</th><th>FSRS Status</th><th>Actions</th></tr></thead>
             <tbody>
               {% for row in rows %}
                 <tr class="status-card">
                   <td>
-                    <code class="card-identity">
+                    <code class="block max-w-sm font-mono text-xs wrap-anywhere text-neutral-600">
                       <a aria-label="More details for {{ row.entity_id }}" href="{{ detail_urls[row.entity_id] }}">
                       {{ row.entity_id }}
                       </a>
                     </code>
                   </td>
-                  <td><span class="review-summary">{% if row.last_review %}<span class="date-value" title="{{ row.last_review.display }}">{{ row.last_review.relative }}</span>{% else %}—{% endif %}</td>
-                  <td><span class="date-value" title="{{ row.next_review.display }}">{{ row.next_review.relative }}</span></td>
+                  <td><span class="whitespace-nowrap">{% if row.last_review %}<span class="whitespace-nowrap" title="{{ row.last_review.display }}">{{ row.last_review.relative }}</span>{% else %}—{% endif %}</span></td>
+                  <td><span class="whitespace-nowrap" title="{{ row.next_review.display }}">{{ row.next_review.relative }}</span></td>
                   <td>{% for badge in row.badges %}<span>{{ badge }}</span>{% endfor %}</td>
                   <td><span>{{ row.fsrs_label }}</span></td>
                   <td>
-                    <div class="status-actions">
+                    <div class="flex flex-wrap gap-1">
                       {% if row.status.suspended %}
-                        <form class="card-action" method="post" action="{{ url_for('resume_card', deck_name=deck.name) }}">
+                        <form class="grid gap-2" method="post" action="{{ url_for('resume_card', deck_name=deck.name) }}">
                           <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="card_id" value="{{ row.status.card_id }}">
                           <input type="hidden" name="availability" value="{{ query.availability.value }}"><input type="hidden" name="schedule" value="{{ query.schedule.value }}"><input type="hidden" name="state" value="{{ query.state.value }}"><input type="hidden" name="sort" value="{{ query.sort.value }}"><input type="hidden" name="direction" value="{{ query.direction.value }}"><input type="hidden" name="range" value="{{ query.range.value }}">
-                          <button type="submit">Resume</button>
+                          <button class="min-h-7 rounded-md px-2 py-1 text-xs" type="submit">Resume</button>
                         </form>
                       {% else %}
-                        <form class="card-action suspend-action" method="post" action="{{ url_for('suspend_card', deck_name=deck.name) }}">
+                        <form class="grid gap-2" method="post" action="{{ url_for('suspend_card', deck_name=deck.name) }}">
                           <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="card_id" value="{{ row.status.card_id }}">
                           <input type="hidden" name="availability" value="{{ query.availability.value }}"><input type="hidden" name="schedule" value="{{ query.schedule.value }}"><input type="hidden" name="state" value="{{ query.state.value }}"><input type="hidden" name="sort" value="{{ query.sort.value }}"><input type="hidden" name="direction" value="{{ query.direction.value }}"><input type="hidden" name="range" value="{{ query.range.value }}">
-                          <button type="submit">Suspend</button>
+                          <button class="min-h-7 rounded-md px-2 py-1 text-xs" type="submit">Suspend</button>
                         </form>
                       {% endif %}
                     </div>
@@ -207,12 +207,12 @@
             </tbody>
           </table>
         </div>
-        <nav class="pagination" aria-label="Card status pages">
+        <nav class="mt-4 flex items-center justify-between gap-4 text-sm text-neutral-600" aria-label="Card status pages">
           <span>{{ pagination.first }}–{{ pagination.last }} of {{ pagination.total }} card(s) · Page {{ pagination.page }} of {{ pagination.pages }}</span>
-          <span class="pagination-links">{% if pagination.previous_url %}<a class="button" href="{{ pagination.previous_url }}">Previous</a>{% endif %}{% if pagination.next_url %}<a class="button" href="{{ pagination.next_url }}">Next</a>{% endif %}</span>
+          <span class="flex gap-2">{% if pagination.previous_url %}<a class="button min-h-9 px-3 py-1.5" href="{{ pagination.previous_url }}">Previous</a>{% endif %}{% if pagination.next_url %}<a class="button min-h-9 px-3 py-1.5" href="{{ pagination.next_url }}">Next</a>{% endif %}</span>
         </nav>
       {% else %}
-        <p class="empty-status">{{ empty_message }}</p>
+        <p class="rounded-xl border border-neutral-200 p-8 text-center text-neutral-600">{{ empty_message }}</p>
       {% endif %}
     </section>
   {% endif %}

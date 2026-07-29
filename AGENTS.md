@@ -13,6 +13,13 @@ uv run ruff format --check .
 uv build
 ```
 
+- The web UI is styled with Tailwind CSS. Edit the templates or
+  `src/graphcards/web/style.src.css`, then rebuild the committed stylesheet:
+
+```console
+uv run tailwindcss -i src/graphcards/web/style.src.css -o src/graphcards/web/static/style.css --minify
+```
+
 - Tests should assert behavior, not check backwards compatibility.
 
 - When completing a bean, commit its bean file together with the implementation changes that

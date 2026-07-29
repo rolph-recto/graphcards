@@ -1,13 +1,13 @@
 {% extends "base.html" %}
-{% set wrapper_class = "study-shell" %}
+{% set wrapper_class = "mx-auto w-full max-w-2xl" %}
 {% block title %}{{ status.value }} {{ status.phrase }}{% endblock %}
 {% block content %}
-  <article class="card">
-    <div class="content">
-      <p class="error-code">{{ status.value }} {{ status.phrase }}</p>
+  <article class="overflow-hidden rounded-xl border border-neutral-200 bg-white">
+    <div class="p-6 md:p-10">
+      <p class="mb-3 font-bold text-neutral-600">{{ status.value }} {{ status.phrase }}</p>
       <h1>Study request failed</h1>
-      <p class="summary">{{ message }}</p>
-      <p class="summary"><a href="{{ url_for('index') }}">Return to the deck list</a></p>
+      <p class="mt-6 text-lg leading-relaxed text-neutral-600">{{ message }}</p>
+      <p class="mt-6 text-lg leading-relaxed text-neutral-600"><a href="{{ url_for('index') }}">Return to the deck list</a></p>
     </div>
   </article>
 {% endblock %}

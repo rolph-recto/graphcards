@@ -1,28 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Decks{% endblock %}
-{% block masthead %}<p class="deck-name">Local study</p>{% endblock %}
+{% block masthead %}<p class="truncate text-sm text-neutral-500">Local study</p>{% endblock %}
 {% block content %}
   <h1>Your decks</h1>
-  <p class="intro">
+  <p class="mb-8 leading-relaxed text-neutral-600">
     Study cards that are due, or choose an advanced mode for extra practice.
   </p>
 
-  {% if controller.session and not controller.session.complete %}
-    <aside class="resume">
-      <p>
-        <strong>Study session in progress</strong><br>
-        <span class="muted">
-          {{ controller.session.deck.display_name }} · {{ controller.session.mode.label }}
-        </span>
-      </p>
-      <a href="{{ url_for('study') }}">Resume</a>
-    </aside>
-  {% endif %}
-
-  <section class="deck-list" aria-label="Study decks">
+  <section class="grid gap-4" aria-label="Study decks">
     {% for deck, status in decks %}
-      <article class="deck">
-        <div class="deck-head">
+      <article class="rounded-xl border border-neutral-200 bg-white p-5">
+        <div class="flex items-start justify-between gap-4 max-sm:flex-col max-sm:items-stretch">
           <div>
             <h2>{{ deck.display_name }}</h2>
             <div class="stats">
@@ -33,7 +21,7 @@
               <span><strong>{{ status.future }}</strong> future</span>
             </div>
           </div>
-          <div class="deck-actions">
+          <div class="grid justify-items-stretch gap-2">
             <form method="post" action="{{ url_for('start_session') }}">
               <input type="hidden" name="csrf_token" value="{{ controller.csrf_token }}">
               <input type="hidden" name="deck_name" value="{{ deck.name }}">
@@ -46,24 +34,24 @@
                 {% endif %}
               </button>
             </form>
-            <a class="status-link" href="{{ url_for('card_status', deck_name=deck.name) }}">
+            <a class="text-center text-sm font-semibold text-neutral-600" href="{{ url_for('card_status', deck_name=deck.name) }}">
               View Deck Info
             </a>
           </div>
         </div>
 
-        <details class="advanced">
-          <summary>Advanced study</summary>
-          <div class="advanced-grid">
+        <details class="mt-4 border-t border-neutral-200 pt-3.5">
+          <summary class="cursor-pointer text-sm font-semibold text-neutral-600">Advanced study</summary>
+          <div class="mt-4 grid grid-cols-3 gap-3 max-md:grid-cols-1">
             {% for mode, description in advanced_modes %}
-              <form class="advanced-option" method="post"
+              <form class="flex flex-col gap-3 rounded-lg border border-neutral-200 bg-neutral-50 p-3.5 max-md:grid max-md:grid-cols-2 max-sm:flex" method="post"
                     action="{{ url_for('start_session') }}">
                 <input type="hidden" name="csrf_token" value="{{ controller.csrf_token }}">
                 <input type="hidden" name="deck_name" value="{{ deck.name }}">
                 <input type="hidden" name="mode" value="{{ mode.value }}">
                 <h3>{{ mode.label }}</h3>
-                <p>{{ description }}</p>
-                <div class="fields{% if mode.value == 'practice' %} single{% endif %}">
+                <p class="flex-1 text-sm text-neutral-500 max-md:col-span-2">{{ description }}</p>
+                <div class="grid gap-2 {% if mode.value == 'practice' %}grid-cols-1{% else %}grid-cols-2{% endif %}">
                   {% if mode.value != "practice" %}
                     <label>
                       Days
@@ -84,7 +72,7 @@
         </details>
       </article>
     {% else %}
-      <p class="muted">No decks are configured.</p>
+      <p class="text-neutral-500">No decks are configured.</p>
     {% endfor %}
   </section>
 {% endblock %}

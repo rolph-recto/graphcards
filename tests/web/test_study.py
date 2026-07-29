@@ -85,3 +85,44 @@ def test_practice_next_does_not_create_review(web_context: tuple[object, object,
     assert next_response.status_code == 303
     assert controller.session.index == initial_index + 1
     assert history == ()
+
+
+def test_leaving_for_the_deck_list_ends_the_session(
+    web_context: tuple[object, object, object],
+) -> None:
+    client, controller, _repository = web_context
+    _start_session(client, controller, StudyMode.DUE)
+
+    index = client.get("/", headers={"Host": "localhost"})
+    study = client.get("/study", headers={"Host": "localhost"})
+
+    assert index.status_code == 200
+    assert b"Study session in progress" not in index.data
+    assert controller.session is None
+    assert study.status_code == 409
+
+
+def test_leaving_for_deck_info_ends_the_session(
+    web_context: tuple[object, object, object],
+) -> None:
+    client, controller, _repository = web_context
+    _start_session(client, controller, StudyMode.DUE)
+
+    status = client.get("/decks/capitals/cards", headers={"Host": "localhost"})
+
+    assert status.status_code == 200
+    assert controller.session is None
+
+
+def test_study_pages_and_static_assets_keep_the_session(
+    web_context: tuple[object, object, object],
+) -> None:
+    client, controller, _repository = web_context
+    _start_session(client, controller, StudyMode.DUE)
+
+    study = client.get("/study", headers={"Host": "localhost"})
+    stylesheet = client.get("/static/style.css", headers={"Host": "localhost"}, buffered=True)
+
+    assert study.status_code == 200
+    assert stylesheet.status_code == 200
+    assert controller.session is not None

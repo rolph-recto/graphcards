@@ -176,10 +176,11 @@ def test_study_rejects_wrong_card_and_repeated_reveal(
 
 @given(mode=st.sampled_from([StudyMode.DUE, StudyMode.PRACTICE]))
 @EXPENSIVE_PROPERTY_SETTINGS
-def test_study_refresh_and_navigation_preserve_current_card(
+def test_study_refresh_preserves_state_but_leaving_ends_session(
     web_context: tuple[object, object, Repository], mode: StudyMode
 ) -> None:
-    # Property: refreshing or navigating study preserves the current card and reveal state.
+    # Property: refreshing study preserves the current card and reveal state,
+    # but navigating outside the study flow ends the session.
     client, controller, repository = web_context
     _reset_web_context(controller, repository)
     session = _start_session(client, controller, mode)
@@ -187,7 +188,6 @@ def test_study_refresh_and_navigation_preserve_current_card(
     current = session.current
     index = session.index
     assert client.get("/study", headers={"Host": "localhost"}).status_code == 200
-    assert client.get("/", headers={"Host": "localhost"}).status_code == 200
     assert session.current is current
     assert session.index == index
     assert current.revealed is False
@@ -203,6 +203,18 @@ def test_study_refresh_and_navigation_preserve_current_card(
     assert session.current is current
     assert current.revealed is True
     assert repository.review_history("capitals", utc_now()) == ()
+
+    assert client.get("/", headers={"Host": "localhost"}).status_code == 200
+    assert controller.session is None
+    assert (
+        client.post(
+            "/study/reveal",
+            data={"session_token": session.session_token, "card_id": current.card.card_id},
+            headers={"Host": "localhost"},
+        ).status_code
+        == 409
+    )
+    assert client.get("/study", headers={"Host": "localhost"}).status_code == 409
 
 
 def test_status_actions_reject_invalid_csrf_without_mutation(
