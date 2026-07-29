@@ -1,0 +1,28 @@
+name = "Scrambled planets"
+
+[[entities]]
+id = "solar-system"
+label = "Solar system"
+
+[[entities]]
+id = "mercury"
+label = "Mercury"
+
+[[entities]]
+id = "venus"
+label = "Venus"
+
+[[entities]]
+id = "earth"
+label = "Earth"
+
+[[entities]]
+id = "mars"
+label = "Mars"
+
+[[exercises]]
+id = "planet-order"
+type = "scrambled_list"
+
+[exercises.groups]
+solar-system = ["mercury", "venus", "earth", "mars"]

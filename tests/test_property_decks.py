@@ -18,6 +18,7 @@ from graphcards.decks import (
     Entity,
     MissingSequenceItemExercise,
     MultipleChoiceExercise,
+    ScrambledListExercise,
 )
 from graphcards.errors import ConfigError
 from tests.strategies import PROPERTY_SETTINGS, valid_deck_documents, valid_identity_strings
@@ -42,6 +43,8 @@ def test_generated_decks_load_generate_and_render_all_targets(
         raw_targets = raw_generator["choices"].keys()
     elif generator_type == "missing_sequence_item":
         raw_targets = [target for group in raw_generator["groups"].values() for target in group]
+    elif generator_type == "scrambled_list":
+        raw_targets = raw_generator["groups"].keys()
     elif generator_type == "analogy":
         raw_targets = raw_generator["sources"].keys()
     else:
@@ -57,6 +60,12 @@ def test_generated_decks_load_generate_and_render_all_targets(
         assert isinstance(view.back, str)
         target = deck.entities[card.target_id]
         generator = next(item for item in deck.generators if item.id == card.generator_id)
+        if generator.type == "scrambled_list":
+            assert view.back == "\n".join(
+                f"{index}. label-{entity_id}"
+                for index, entity_id in enumerate(generator.groups[card.target_id], start=1)
+            )
+            continue
         if generator.type == "basic":
             fields = ("back", "answer")
         elif generator.type == "analogy":
@@ -96,6 +105,16 @@ def test_generated_generator_invariants_hold(
             if generator.window_size:
                 assert len(positions) <= generator.window_size
             assert card.ordered_ids.index(card.target_id) + 1 in positions
+        elif isinstance(card, ScrambledListExercise):
+            generator = next(item for item in deck.generators if item.id == card.generator_id)
+            assert card.ordered_ids == generator.groups[card.target_id]
+            assert set(card.scrambled_ids) == set(card.ordered_ids)
+            assert len(card.scrambled_ids) == len(set(card.scrambled_ids))
+            assert card.scrambled_ids != card.ordered_ids
+            assert deck.render(card).back == "\n".join(
+                f"{index}. label-{entity_id}"
+                for index, entity_id in enumerate(card.ordered_ids, start=1)
+            )
         elif isinstance(card, AnalogyExercise):
             assert card.source_id != card.target_id
             generator = next(item for item in deck.generators if item.id == card.generator_id)
@@ -190,7 +209,14 @@ def test_each_generator_rejects_invalid_pools_groups_and_sources(
 
 @given(
     kind=st.sampled_from(
-        ["basic", "multiple_choice", "missing_sequence_item", "analogy", "common_relation"]
+        [
+            "basic",
+            "multiple_choice",
+            "missing_sequence_item",
+            "scrambled_list",
+            "analogy",
+            "common_relation",
+        ]
     ),
     unknown=valid_identity_strings.filter(lambda value: value not in {"e0", "e1", "e2"}),
 )
@@ -203,7 +229,7 @@ def test_generated_invalid_references_are_config_errors(
         generator = {"id": "generator", "type": kind, "entities": [unknown]}
     elif kind == "multiple_choice":
         generator = {"id": "generator", "type": kind, "choices": {"e0": [unknown]}}
-    elif kind == "missing_sequence_item":
+    elif kind == "missing_sequence_item" or kind == "scrambled_list":
         generator = {"id": "generator", "type": kind, "groups": {"e0": ["e1", unknown]}}
     elif kind == "analogy":
         generator = {"id": "generator", "type": kind, "sources": {"e0": [unknown]}}

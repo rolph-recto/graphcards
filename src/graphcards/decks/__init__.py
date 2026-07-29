@@ -27,6 +27,10 @@ from graphcards.decks.odd_one_out import (
     OddOneOutExerciseGenerator,
     OddOneOutRelation,
 )
+from graphcards.decks.scrambled_list import (
+    ScrambledListExercise,
+    ScrambledListExerciseGenerator,
+)
 from graphcards.references import EntityId, EntityIdList, EntityIdListMarker
 
 __all__ = [
@@ -52,4 +56,6 @@ __all__ = [
     "OddOneOutExercise",
     "OddOneOutExerciseGenerator",
     "OddOneOutRelation",
+    "ScrambledListExercise",
+    "ScrambledListExerciseGenerator",
 ]

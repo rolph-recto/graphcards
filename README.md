@@ -48,6 +48,9 @@ is an upper bound on rendered choices; the target is always included. Missing-se
 metadata, while their members are the scheduled targets in declared order. A member can belong to
 only one group in a generator. Missing-sequence-item `window_size` is the total number of visible rows,
 centered around the target; `0` shows the complete ordered group.
+Scrambled-list generators map each target entity to an ordered list of related entities. The default
+front shows the target and a shuffled list. The default back shows the configured order. The shuffle
+is stored in the semantic exercise, so rendering does not shuffle the list again.
 Analogy generators map each target entity to a list of source entities. The default template renders
 the selected source and target `front`/`back` values as an “A is to B as C is to ?” exercise.
 Each generator may override its type’s `front_template` and `back_template` in either deck format; omitted
@@ -56,7 +59,8 @@ nested data and structural information only: basic (`entity: Entity`), multiple-
 (`target: Entity`, `choice_entities: tuple[Entity, ...]`), missing-sequence-item (`target: Entity`,
 `ordered_entities: tuple[Entity, ...]`, `rows: tuple[dict[str, object], ...]` with `position`,
 `entity`, and `is_target`, plus `omitted_before: bool` and `omitted_after: bool`), and analogy
-(`source: Entity`, `target: Entity`). Entity references expose `.id` and every ordinary top-level
+(`source: Entity`, `target: Entity`), and scrambled-list (`target: Entity`,
+`scrambled_entities: tuple[Entity, ...]`, `ordered_entities: tuple[Entity, ...]`). Entity references expose `.id` and every ordinary top-level
 record field directly, including a source field named `data` when present; `data` is never an
 aggregate mapping. Templates choose which fields to render and use Jinja `default`/`is defined`
 semantics to fall back when optional fields are missing. Templates are sandboxed, compiled,
@@ -81,7 +85,8 @@ IDs:
 ```
 
 Aliases are supported by `basic.entities`, multiple-choice `choices` values, missing-sequence-item group
-member values, analogy `sources` values, and common-relation `relations` values. Each field must
+member values, scrambled-list group values, analogy `sources` values, and common-relation `relations`
+values. Each field must
 use either a list of concrete entity IDs or one group ID string; group IDs cannot appear inside
 lists, so `["france", "european-countries"]` is invalid. Group IDs must be unique, must not collide
 with entity IDs, and group definitions cannot contain other group IDs. Expansion preserves the
@@ -116,6 +121,24 @@ sample or reorder.
 Default labels use `label`, then `back`, then `answer`, then `id` for target and related entities.
 Custom templates receive only `target` and `related_entities`; the default front displays one
 `related — ?` line per related entity. The default back displays only the target label.
+
+### Scrambled-list ordering
+
+Scrambled-list generators use the same map-of-lists shape as missing-sequence-item generators, but
+each map key is the target entity and each list is that target's ordered related entities:
+
+```json
+{
+  "id": "planet-order",
+  "type": "scrambled_list",
+  "groups": {
+    "solar-system": ["mercury", "venus", "earth", "mars"]
+  }
+}
+```
+
+Each target needs at least two unique related entities and cannot appear in its own list. Custom
+templates receive `target`, `scrambled_entities`, and `ordered_entities`.
 
 All entities, generators, IDs, and references are validated before a deck can be synchronized.
 Each targeted entity produces one scheduled exercise. If multiple generators target the same entity,
