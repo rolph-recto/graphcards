@@ -18,6 +18,11 @@ from graphcards.decks.multiple_choice import (
     MultipleChoiceExercise,
     MultipleChoiceExerciseGenerator,
 )
+from graphcards.decks.odd_one_out import (
+    OddOneOutExercise,
+    OddOneOutExerciseGenerator,
+    OddOneOutRelation,
+)
 from graphcards.decks.ordered_list import (
     OrderedListExercise,
     OrderedListExerciseGenerator,
@@ -44,4 +49,7 @@ __all__ = [
     "MultipleChoiceExerciseGenerator",
     "OrderedListExercise",
     "OrderedListExerciseGenerator",
+    "OddOneOutExercise",
+    "OddOneOutExerciseGenerator",
+    "OddOneOutRelation",
 ]

@@ -1,0 +1,49 @@
+name = "Odd-one-out relations"
+
+[[entities]]
+id = "france"
+label = "France"
+
+[[entities]]
+id = "germany"
+label = "Germany"
+
+[[entities]]
+id = "italy"
+label = "Italy"
+
+[[entities]]
+id = "spain"
+label = "Spain"
+
+[[entities]]
+id = "poland"
+label = "Poland"
+
+[[entities]]
+id = "egypt"
+label = "Egypt"
+
+[[entities]]
+id = "europe"
+label = "Europe"
+
+[[entities]]
+id = "africa"
+label = "Africa"
+
+[[exercises]]
+id = "location-odd-one-out"
+type = "odd_one_out"
+
+[exercises.relations.europe]
+common = ["france", "germany", "italy"]
+odd = ["egypt"]
+
+[[exercises]]
+id = "border-odd-one-out"
+type = "odd_one_out"
+
+[exercises.relations.france]
+common = ["germany", "spain", "italy"]
+odd = ["poland"]

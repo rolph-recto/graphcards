@@ -16,6 +16,7 @@ def test_templates_lists_bundled_names_without_loading_config() -> None:
     assert {line for line in output.getvalue().splitlines()} >= {
         "analogy-capitals",
         "common-relations",
+        "odd-one-out",
         "ordered-planets",
         "priority-capitals",
     }
@@ -50,6 +51,17 @@ def test_init_common_relations_template_validates(tmp_path: Path) -> None:
     )
     assert common_borders.relations["france"] == ("germany", "italy", "spain")
     assert len(deck.generate_all()) == 2
+
+
+def test_init_odd_one_out_template_validates(tmp_path: Path) -> None:
+    workspace = tmp_path / "odd-one-out"
+    assert main(["init", str(workspace), "--template", "odd-one-out"], output=StringIO()) == 0
+    config = load_config(workspace / "graphcards.toml")
+    assert config.decks[0].path == (workspace / "deck.json").resolve()
+    for filename in ("deck.json", "deck.toml", "deck.yaml"):
+        deck = Deck.load(workspace / filename)
+        assert len(deck.generate_all()) == 2
+        assert {generator.type for generator in deck.generators} == {"odd_one_out"}
 
 
 def test_validate_sync_and_full_status_use_json_deck(

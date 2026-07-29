@@ -120,8 +120,41 @@ Custom templates receive only `target` and `related_entities`; the default front
 All entities, generators, IDs, and references are validated before a deck can be synchronized.
 Each targeted entity produces one scheduled exercise. If multiple generators target the same entity,
 the generator with the lexicographically smallest ID owns that entity's exercise; this keeps the
-count entity-based and makes the selected type independent of declaration order. Exercise IDs
-remain deterministic from the deck directory identity, selected generator ID, and target entity ID.
+selected type independent of declaration order. Exercise IDs remain deterministic from the deck
+directory identity, selected generator ID, and target entity ID.
+
+### Odd-one-out relation cards
+
+The `odd_one_out` generator uses explicit entity lists in the deck document. It does not load RDF
+files or execute SPARQL queries. Each relation map key is an existing target entity and the stable
+card identity.
+
+```json
+{
+  "id": "locations",
+  "type": "odd_one_out",
+  "min_candidates": 3,
+  "max_candidates": 0,
+  "relations": {
+    "europe": {
+      "common": ["france", "germany", "italy"],
+      "odd": ["egypt", "japan"]
+    }
+  }
+}
+```
+
+The `common` and `odd` lists must contain declared, unique entity IDs, and the lists must be
+exclusive. The generator selects exactly one entity from the explicit `odd` pool for each exercise;
+it does not infer odd entities from the entities that are absent from `common`. The default minimum
+is three displayed candidates, including the selected odd entity. `max_candidates` is zero for all
+common entities plus the selected odd entity; a positive cap samples common entities and always
+keeps the selected odd entity. The generated order is stored in the semantic exercise, so
+rendering does not sample or reorder.
+
+Each relation produces one card whose entity ID is the target entity. Default templates show the
+target and candidate entities on the front and the odd entity on the back. Custom templates receive
+`target`, `common_entities`, `candidate_entities`, and `odd_entity`.
 
 ### TOML authoring
 

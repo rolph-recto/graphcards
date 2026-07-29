@@ -756,6 +756,24 @@ def _resolve_group_references(
             return _expand_entity_list(value, groups, path)
         return _resolve_group_references(value, base, groups, path)
 
+    if (
+        isinstance(annotation, type)
+        and issubclass(annotation, FrozenModel)
+        and isinstance(value, Mapping)
+    ):
+        model_annotations = get_type_hints(annotation, include_extras=True)
+        return {
+            field_name: _resolve_group_references(
+                raw_value,
+                model_annotations[field_name],
+                groups,
+                f"{path}.{field_name}",
+            )
+            if field_name in model_annotations
+            else raw_value
+            for field_name, raw_value in value.items()
+        }
+
     args = get_args(annotation)
     if isinstance(value, Mapping) and args and origin is not None:
         value_annotation = args[1] if len(args) > 1 else None
@@ -799,9 +817,8 @@ class Deck:
     def _generators_by_entity(self) -> dict[str, ExerciseGenerator]:
         """Choose one stable exercise generator for every targeted entity.
 
-        A deck schedules entities, not generator/entity pairs.  Sorting by generator ID makes
-        the selected exercise type independent of deck declaration order when configurations
-        overlap intentionally.
+        A deck schedules entities, not generator/entity pairs. Sorting by generator ID makes the
+        selected exercise type independent of deck declaration order when configurations overlap.
         """
 
         selected: dict[str, ExerciseGenerator] = {}
@@ -894,8 +911,8 @@ class Deck:
         random_source = rng or random.Random()
         context = ExerciseGeneratorContext(self.name, self.entities, random_source)
         generated: dict[str, Card] = {}
-        for target_id, generator in self._generators_by_entity().items():
-            exercise = generator.generate(target_id, context)
+        for entity_id, generator in self._generators_by_entity().items():
+            exercise = generator.generate(entity_id, context)
             card_id = exercise.card_key.digest
             existing = generated.get(card_id)
             if existing is not None and existing.card_key != exercise.card_key:
