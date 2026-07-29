@@ -1,5 +1,12 @@
 **IMPORTANT**: before you do anything else, run the `beans prime` command and heed its output.
 
+- This is a new application built from scratch. That means you should not treat it as a legacy application.
+Do not make backwards compatibility tests; do not plan to preserve the internal shape of the codebase.
+
+- Do NOT make any commits without explicit confimation.
+
+- Any plan you write should adhere to the ASD-STE100 writing system.
+
 - Use Pydantic v2 models for configuration and domain validation.
 - Translate Pydantic, RDF parser, and storage corruption failures into the repository's
   user-facing error types where appropriate.
