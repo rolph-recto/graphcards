@@ -25,7 +25,7 @@
           <article class="generator-card">
             <div>
               <h3>{{ generator.id }}</h3>
-              <p class="text-neutral-500">Type: {{ generator.type }} </p>
+              <p class="text-neutral-500">Type: {{ generator.type }}{% if generator.type == "cloze" %} · {{ generator.scheduled_keys(deck.entities)|length }} selected cloze(s){% endif %}</p>
             </div>
             <form method="get" action="{{ url_for('card_detail', deck_name=deck.name, entity_id=entity_id) }}">
               <input type="hidden" name="page" value="{{ query.page }}">

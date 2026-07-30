@@ -61,13 +61,50 @@ nested data and structural information only: basic (`entity: Entity`), multiple-
 `entity`, and `is_target`, plus `omitted_before: bool` and `omitted_after: bool`), and analogy
 (`source: Entity`, `target: Entity`), and scrambled-list (`target: Entity`,
 `scrambled_entities: tuple[Entity, ...]`, `ordered_entities: tuple[Entity, ...]`). Entity references expose `.id` and every ordinary top-level
-record field directly, including a source field named `data` when present; `data` is never an
+record field directly. Cloze templates receive `entity`, `cloze_id`, `front`, and `back`; the
+pre-rendered `front` and `back` values apply the selected marker visibility rules. A source field
+named `data` is also exposed directly when present; `data` is never an
 aggregate mapping. Templates choose which fields to render and use Jinja `default`/`is defined`
 semantics to fall back when optional fields are missing. Templates are sandboxed, compiled,
 and checked for unknown variables while loading the complete deck; whitespace in template sources
 and rendered views is preserved.
 Generated multiple-choice exercises record the selected and ordered entity IDs in `choices`;
 rendering only resolves those references into entity objects and never reselects them.
+
+### Cloze exercises
+
+Cloze generators store complete sentences in the entity field named by `cloze_field`. Mark each
+answer with a stable ID and select entities as strings or as objects with a `cloze_ids` list:
+
+```json
+{
+  "entities": [
+    {
+      "id": "capital",
+      "sentence": "The capital of [[c1::France]] is [[c2::Paris]]."
+    },
+    {
+      "id": "nested",
+      "sentence": "([[c1::The answer is [[c2::Answer 1]] NOT CORRECT]])"
+    }
+  ],
+  "exercises": [
+    {
+      "id": "clozes",
+      "type": "cloze",
+      "cloze_field": "sentence",
+      "entities": ["capital", {"id": "nested", "cloze_ids": ["c2"]}]
+    }
+  ]
+}
+```
+
+The generator creates one FSRS card for each selected entity. For an entity with multiple selected
+cloze IDs, the first selected ID in declaration order is the stable rendered variant for that
+entity. The front hides only that cloze and shows the other clozes. The back shows all clozes. Nested markers are
+supported: hiding `c1` hides its complete nested answer, while hiding `c2` hides only `c2` inside
+the visible outer text. The cloze ID selects the rendered variant but does not change the entity's
+FSRS card identity. See `graphcards init --template cloze` for JSON, TOML, and YAML examples.
 
 Named entity groups can remove repetition across generators. Define an ordered, non-empty group at
 the deck level and use its ID as a whole-list alias wherever a generator expects a list of entity
@@ -166,10 +203,12 @@ and precision grading are out of scope. Custom templates receive `target`, `comp
 `target_position`, `comparison_position`, and `answer`.
 
 All entities, generators, IDs, and references are validated before a deck can be synchronized.
-Each targeted entity produces one scheduled exercise. If multiple generators target the same entity,
-the generator with the lexicographically smallest ID owns that entity's exercise; this keeps the
-selected type independent of declaration order. Exercise IDs remain deterministic from the deck
-directory identity, selected generator ID, and target entity ID.
+Each targeted entity produces one scheduled exercise for non-cloze generators. If multiple
+generators target the same entity, the generator with the lexicographically smallest ID owns that
+non-cloze exercise; this keeps the selected type independent of declaration order. Cloze generators
+produce one exercise for each selected entity. Exercise IDs remain deterministic from the deck
+directory identity, selected generator ID, and target entity. The optional cloze ID selects the
+rendered variant but does not change the FSRS card identity.
 
 ### Odd-one-out relation cards
 

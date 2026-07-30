@@ -10,6 +10,7 @@ from graphcards.decks.base import (
     ExerciseGeneratorContext,
 )
 from graphcards.decks.basic import BasicExercise, BasicExerciseGenerator
+from graphcards.decks.cloze import ClozeExercise, ClozeExerciseGenerator, ClozeSelection
 from graphcards.decks.common_relation import (
     CommonRelationExercise,
     CommonRelationExerciseGenerator,
@@ -44,6 +45,9 @@ __all__ = [
     "BasicExerciseGenerator",
     "CommonRelationExercise",
     "CommonRelationExerciseGenerator",
+    "ClozeExercise",
+    "ClozeExerciseGenerator",
+    "ClozeSelection",
     "Deck",
     "DeckDocument",
     "Entity",

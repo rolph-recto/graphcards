@@ -78,11 +78,16 @@ class CardKey(FrozenModel):
         return self
 
     @classmethod
-    def exercise(cls, deck_id: str, generator_id: str, entity_id: str) -> CardKey:
+    def exercise(
+        cls,
+        deck_id: str,
+        generator_id: str,
+        entity_id: str,
+    ) -> CardKey:
         return cls(deck_id=deck_id, generator_id=generator_id, entity_id=entity_id)
 
     @property
-    def identity_parts(self) -> tuple[str, str, str]:
+    def identity_parts(self) -> tuple[str, ...]:
         return self.deck_id, self.generator_id, self.entity_id
 
     @property

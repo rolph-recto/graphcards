@@ -334,13 +334,11 @@ class Repository:
                 if card_key.deck_id != deck_name:
                     raise StorageError(f"card key {card_id} does not belong to deck {deck_name!r}")
                 identity_json = json.dumps(
-                    dict(
-                        zip(
-                            ("deck_id", "generator_id", "entity_id"),
-                            card_key.identity_parts,
-                            strict=True,
-                        )
-                    ),
+                    {
+                        "deck_id": card_key.deck_id,
+                        "generator_id": card_key.generator_id,
+                        "entity_id": card_key.entity_id,
+                    },
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )

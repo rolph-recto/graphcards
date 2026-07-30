@@ -553,6 +553,11 @@ class ExerciseGenerator(FrozenModel, ABC):
     def target_ids(self) -> tuple[str, ...]:
         """The scheduled target IDs in declared generator order."""
 
+    def scheduled_keys(self, entities: Mapping[str, Entity]) -> tuple[tuple[str, str | None], ...]:
+        """Return the scheduled entity and optional cloze ID pairs."""
+
+        return tuple((entity_id, None) for entity_id in self.target_ids)
+
     @classmethod
     def register(cls, generator_type: type[ExerciseGenerator]) -> type[ExerciseGenerator]:
         cls._registry[generator_type.type_name] = generator_type
@@ -564,6 +569,11 @@ class ExerciseGenerator(FrozenModel, ABC):
                 f"generator {self.id!r} does not generate an exercise for entity {entity_id!r}"
             )
         return CardKey.exercise(deck_id, self.id, entity_id)
+
+    def generate_card(self, card_key: CardKey, context: ExerciseGeneratorContext) -> Exercise:
+        """Generate the semantic exercise identified by one scheduled card key."""
+
+        return self.generate(card_key.entity_id, context)
 
     @abstractmethod
     def generate(self, entity_id: str, context: ExerciseGeneratorContext) -> Exercise:
@@ -814,24 +824,31 @@ class Deck:
     def display_name(self) -> str:
         return self.document.name or self.name
 
-    def _generators_by_entity(self) -> dict[str, ExerciseGenerator]:
-        """Choose one stable exercise generator for every targeted entity.
+    def _generators_by_key(self) -> dict[tuple[str, str | None], ExerciseGenerator]:
+        """Choose one stable exercise generator for every scheduled exercise key.
 
-        A deck schedules entities, not generator/entity pairs. Sorting by generator ID makes the
-        selected exercise type independent of deck declaration order when configurations overlap.
+        Sorting by generator ID makes the selected exercise type independent of deck declaration
+        order when configurations overlap.
         """
 
-        selected: dict[str, ExerciseGenerator] = {}
+        selected_entities: dict[str, ExerciseGenerator] = {}
         for generator in sorted(self.generators, key=lambda item: item.id):
-            for entity_id in generator.target_ids:
-                selected.setdefault(entity_id, generator)
+            for key in generator.scheduled_keys(self.entities):
+                selected_entities.setdefault(key[0], generator)
+        selected: dict[tuple[str, str | None], ExerciseGenerator] = {}
+        for generator in sorted(self.generators, key=lambda item: item.id):
+            if generator not in selected_entities.values():
+                continue
+            for key in generator.scheduled_keys(self.entities):
+                if selected_entities.get(key[0]) is generator:
+                    selected[key] = generator
         return selected
 
     @property
     def target_entity_ids(self) -> tuple[str, ...]:
         """The unique entities represented by the deck's scheduled exercises."""
 
-        return tuple(self._generators_by_entity())
+        return tuple(dict.fromkeys(entity_id for entity_id, _cloze_id in self._generators_by_key()))
 
     @classmethod
     def from_document(cls, document: DeckDocument, *, name: str, path: Path) -> Deck:
@@ -911,8 +928,9 @@ class Deck:
         random_source = rng or random.Random()
         context = ExerciseGeneratorContext(self.name, self.entities, random_source)
         generated: dict[str, Card] = {}
-        for entity_id, generator in self._generators_by_entity().items():
-            exercise = generator.generate(entity_id, context)
+        for (entity_id, _cloze_id), generator in self._generators_by_key().items():
+            card_key = CardKey.exercise(self.name, generator.id, entity_id)
+            exercise = generator.generate_card(card_key, context)
             card_id = exercise.card_key.digest
             existing = generated.get(card_id)
             if existing is not None and existing.card_key != exercise.card_key:
@@ -924,17 +942,12 @@ class Deck:
         if card_key.deck_id != self.name or card_key.generator_id is None:
             raise PresentationError(f"card {card_key.digest} does not belong to deck {self.name!r}")
         context = ExerciseGeneratorContext(self.name, self.entities, rng or random.Random())
-        selected = self._generators_by_entity().get(card_key.entity_id)
+        selected = self._generators_by_key().get((card_key.entity_id, None))
         if selected is None or selected.id != card_key.generator_id:
             raise PresentationError(
                 f"deck {self.name!r} no longer generates card {card_key.digest}"
             )
-        for generator in self.generators:
-            if generator.id == card_key.generator_id:
-                return generator.generate(cast(str, card_key.entity_id), context)
-        raise PresentationError(
-            f"deck {self.name!r} no longer has generator {card_key.generator_id!r}"
-        )
+        return selected.generate_card(card_key, context)
 
     def render(self, exercise: Exercise, *, rng: random.Random | None = None) -> CardView:
         try:

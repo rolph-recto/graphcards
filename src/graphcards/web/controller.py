@@ -11,6 +11,7 @@ from graphcards.app import StudyService
 from graphcards.config import AppConfig
 from graphcards.decks import Deck, ExerciseGenerator, ExerciseGeneratorContext
 from graphcards.errors import ConfigError, PresentationError
+from graphcards.models import CardKey
 from graphcards.storage import DeckStatus, Repository, utc_now
 from graphcards.web.status import (
     GeneratorRow,
@@ -92,7 +93,7 @@ class StudyController:
             GeneratorRow(
                 generator_id=generator.id,
                 generator_type=generator.type,
-                eligible_count=len(generator.target_ids),
+                eligible_count=len(generator.scheduled_keys(deck.entities)),
                 due_count=due_by_generator[generator.id],
             )
             for generator in deck.generators
@@ -117,8 +118,18 @@ class StudyController:
                 HTTPStatus.CONFLICT,
                 "That card no longer has an available exercise generator.",
             )
-        generator = preview_rng.choice(generators)
-        return self._render_preview(deck, generator, entity_id, preview_rng)
+        row = preview_rng.choice(matching)
+        generator = next(
+            generator
+            for generator in generators
+            if generator.id == row.status.card_key.generator_id
+        )
+        return self._render_preview(
+            deck,
+            generator,
+            entity_id,
+            preview_rng,
+        )
 
     def preview_generator(self, deck: Deck, generator_id: str):
         """Render a random eligible exercise without changing persisted study state."""
@@ -131,13 +142,14 @@ class StudyController:
             raise RequestFailure(
                 HTTPStatus.NOT_FOUND, "That exercise generator is not in this deck."
             )
-        if not generator.target_ids:
+        scheduled_keys = generator.scheduled_keys(deck.entities)
+        if not scheduled_keys:
             raise RequestFailure(
                 HTTPStatus.CONFLICT,
                 "That exercise generator has no eligible targets.",
             )
         preview_rng = random.Random()
-        entity_id = preview_rng.choice(generator.target_ids)
+        entity_id, _cloze_id = preview_rng.choice(scheduled_keys)
         return self._render_preview(deck, generator, entity_id, preview_rng)
 
     def entity_status(self, deck: Deck, entity_id: str, now: datetime) -> StatusCard:
@@ -181,7 +193,16 @@ class StudyController:
                 HTTPStatus.NOT_FOUND,
                 "That exercise generator is not associated with this card.",
             )
-        return self._render_preview(deck, generator, entity_id, random.Random())
+        scheduled_keys = tuple(
+            key for key in generator.scheduled_keys(deck.entities) if key[0] == entity_id
+        )
+        if not scheduled_keys:
+            raise RequestFailure(
+                HTTPStatus.NOT_FOUND,
+                "That exercise generator is not associated with this card.",
+            )
+        selected_entity_id, _cloze_id = random.Random().choice(scheduled_keys)
+        return self._render_preview(deck, generator, selected_entity_id, random.Random())
 
     def _render_preview(
         self,
@@ -192,7 +213,8 @@ class StudyController:
     ):
         try:
             context = ExerciseGeneratorContext(deck.name, deck.entities, rng)
-            exercise = generator.generate(entity_id, context)
+            card_key = CardKey.exercise(deck.name, generator.id, entity_id)
+            exercise = generator.generate_card(card_key, context)
             return deck.render(exercise, rng=rng)
         except (PresentationError, KeyError, TypeError, ValueError) as error:
             raise RequestFailure(

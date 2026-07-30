@@ -1,0 +1,14 @@
+name: Cloze study
+entities:
+  - id: capital
+    sentence: 'The capital of [[c1::France]] is [[c2::Paris]].'
+  - id: nested
+    sentence: '([[c1::The answer is [[c2::Answer 1]] NOT CORRECT]])'
+exercises:
+  - id: capital-clozes
+    type: cloze
+    cloze_field: sentence
+    entities:
+      - capital
+      - id: nested
+        cloze_ids: [c2]
