@@ -103,7 +103,7 @@ def test_validate_sync_and_full_status_use_json_deck(
     assert main(["--config", str(config_path), "sync"], output=StringIO()) == 0
     output = StringIO()
     assert main(["--config", str(config_path), "status", "--full"], output=output) == 0
-    assert "CARD ID" in output.getvalue()
+    assert "IDENTITY" in output.getvalue()
     assert "capitals /" in output.getvalue()
 
 
@@ -114,7 +114,7 @@ def test_cli_suspend_and_resume_change_membership(
     assert main(["--config", str(config_path), "sync"], output=StringIO()) == 0
     config = load_config(config_path)
     with Repository(config.state_path) as repository:
-        card_id = repository.active_cards("capitals")[0].card_id
+        entity_id = repository.active_cards("capitals")[0].card_key.entity_id
 
     assert (
         main(
@@ -123,7 +123,7 @@ def test_cli_suspend_and_resume_change_membership(
                 str(config_path),
                 "suspend",
                 "capitals",
-                card_id,
+                entity_id,
                 "--reason",
                 "later",
             ],
@@ -134,26 +134,34 @@ def test_cli_suspend_and_resume_change_membership(
     config = load_config(config_path)
     with Repository(config.state_path) as repository:
         card_status = next(
-            status for status in repository.card_statuses("capitals") if status.card_id == card_id
+            status
+            for status in repository.card_statuses("capitals")
+            if status.card_key.entity_id == entity_id
         )
         assert card_status.suspended is True
         assert card_status.suspension_reason == "later"
-        assert card_id not in {card.card_id for card in repository.active_cards("capitals")}
+        assert entity_id not in {
+            card.card_key.entity_id for card in repository.active_cards("capitals")
+        }
 
     assert (
         main(
-            ["--config", str(config_path), "resume", "capitals", card_id],
+            ["--config", str(config_path), "resume", "capitals", entity_id],
             output=StringIO(),
         )
         == 0
     )
     with Repository(config.state_path) as repository:
         card_status = next(
-            status for status in repository.card_statuses("capitals") if status.card_id == card_id
+            status
+            for status in repository.card_statuses("capitals")
+            if status.card_key.entity_id == entity_id
         )
         assert card_status.suspended is False
         assert card_status.suspension_reason is None
-        assert card_id in {card.card_id for card in repository.active_cards("capitals")}
+        assert entity_id in {
+            card.card_key.entity_id for card in repository.active_cards("capitals")
+        }
 
 
 def test_cli_missing_configuration_is_user_facing_error(tmp_path: Path) -> None:

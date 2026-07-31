@@ -44,8 +44,8 @@ def test_status_page_lists_cards_and_filters(web_context: tuple[object, object, 
 
     assert response.status_code == 200
     assert b"Card status" in response.data
-    assert reviewed.card_id.encode() not in response.data
-    assert reviewed.card_id.encode() in all_cards.data
+    assert b'entity_id="france"' not in response.data
+    assert b"france" in all_cards.data
 
 
 def test_schedule_badges_do_not_repeat_fsrs_state(
@@ -57,7 +57,7 @@ def test_schedule_badges_do_not_repeat_fsrs_state(
     controller.study_service.review(deck, card, Rating.Good, utc_now())
     now = utc_now()
     row = next(
-        row for row in controller.card_statuses(deck, now) if row.status.card_id == card.card_id
+        row for row in controller.card_statuses(deck, now) if row.status.card_key == card.card_key
     )
     view = status_row(row, now, controller.config.display_timezone)
 
@@ -67,19 +67,21 @@ def test_schedule_badges_do_not_repeat_fsrs_state(
 
 def test_status_suspend_and_resume_round_trip(web_context: tuple[object, object, object]) -> None:
     client, controller, repository = web_context
-    card_id = repository.active_cards("capitals")[0].card_id
+    entity_id = repository.active_cards("capitals")[0].card_key.entity_id
     suspend = client.post(
         "/decks/capitals/cards/suspend",
-        data={"csrf_token": controller.csrf_token, "card_id": card_id, "reason": "later"},
+        data={"csrf_token": controller.csrf_token, "entity_id": entity_id, "reason": "later"},
         headers={"Host": "localhost"},
     )
     suspended_status = repository.card_statuses("capitals")[0]
-    available_after_suspend = {item.card_id for item in repository.active_cards("capitals")}
+    available_after_suspend = {
+        item.card_key.entity_id for item in repository.active_cards("capitals")
+    }
     suspended_page = client.get("/decks/capitals/cards", headers={"Host": "localhost"})
     suspended_cells = _first_status_row_cells(suspended_page.data)
     resume = client.post(
         "/decks/capitals/cards/resume",
-        data={"csrf_token": controller.csrf_token, "card_id": card_id},
+        data={"csrf_token": controller.csrf_token, "entity_id": entity_id},
         headers={"Host": "localhost"},
     )
     resumed_status = repository.card_statuses("capitals")[0]
@@ -91,7 +93,7 @@ def test_status_suspend_and_resume_round_trip(web_context: tuple[object, object,
     assert len(suspended_cells) == 6
     assert b"More details" in suspended_cells[0]
     assert b"Resume" in suspended_cells[5]
-    assert card_id not in available_after_suspend
+    assert entity_id not in available_after_suspend
     assert resume.status_code == 303
     assert resumed_status.suspended is False
     assert resumed_status.suspension_reason is None
@@ -224,14 +226,12 @@ def test_status_actions_validate_card_ownership_fields(
     web_context: tuple[object, object, object],
 ) -> None:
     client, controller, repository = web_context
-    card_id = repository.active_cards("capitals")[0].card_id
     before = repository.card_statuses("capitals")
 
     response = client.post(
         "/decks/capitals/cards/suspend",
         data={
             "csrf_token": controller.csrf_token,
-            "card_id": card_id,
             "entity_id": "not-the-card",
         },
         headers={"Host": "localhost"},

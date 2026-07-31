@@ -16,7 +16,7 @@ from graphcards.errors import StaleReviewError, StorageError
 from graphcards.models import Card as SemanticCard
 from graphcards.models import CardKey, FrozenModel, validation_message
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 MAX_SUSPENSION_REASON_LENGTH = 500
 _UNSAFE_REASON_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 
@@ -80,7 +80,6 @@ def _datetime_from_text(value: object) -> datetime:
 
 
 class StoredCard(FrozenModel):
-    card_id: str
     card_key: CardKey
     card_json: str
 
@@ -109,7 +108,6 @@ class DeckStatus(FrozenModel):
 class CardStatus(FrozenModel):
     """Card-level schedule details used by the full status view."""
 
-    card_id: str
     card_key: CardKey
     card_json: str
     fsrs_state: str
@@ -127,7 +125,6 @@ class CardStatus(FrozenModel):
         """Rebuild the complete stored card used for read-only FSRS calculations."""
 
         return StoredCard(
-            card_id=self.card_id,
             card_key=self.card_key,
             card_json=self.card_json,
         )
@@ -204,8 +201,7 @@ class ReviewRecord(FrozenModel):
     """One immutable review event decoded and checked against its SQL mirrors."""
 
     review_id: int = Field(gt=0)
-    card_id: str = Field(min_length=1)
-    deck_name: str = Field(min_length=1)
+    card_key: CardKey
     rating: Rating
     reviewed_at: datetime
     previous_interval_seconds: float | None
@@ -256,19 +252,20 @@ class Repository:
             self.connection.executescript(
                 """
                 CREATE TABLE cards (
-                    card_id TEXT PRIMARY KEY,
+                    deck_id TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
                     target_kind TEXT NOT NULL CHECK (target_kind = 'entity'),
-                    identity_json TEXT NOT NULL,
                     card_json TEXT NOT NULL,
                     due_at TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (deck_id, entity_id)
                 );
                 CREATE INDEX cards_due_at_idx ON cards(due_at);
 
                 CREATE TABLE deck_cards (
-                    deck_name TEXT NOT NULL,
-                    card_id TEXT NOT NULL REFERENCES cards(card_id),
+                    deck_id TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
                     active INTEGER NOT NULL CHECK (active IN (0, 1)),
                     suspended INTEGER NOT NULL DEFAULT 0 CHECK (suspended IN (0, 1)),
                     suspension_reason TEXT CHECK (
@@ -278,22 +275,26 @@ class Repository:
                         )
                     ),
                     last_seen_at TEXT NOT NULL,
-                    PRIMARY KEY (deck_name, card_id)
+                    PRIMARY KEY (deck_id, entity_id),
+                    FOREIGN KEY (deck_id, entity_id)
+                        REFERENCES cards(deck_id, entity_id)
                 );
-                CREATE INDEX deck_cards_active_idx ON deck_cards(deck_name, active);
+                CREATE INDEX deck_cards_active_idx ON deck_cards(deck_id, active);
                 CREATE INDEX deck_cards_queue_idx
-                    ON deck_cards(deck_name, active, suspended, card_id);
+                    ON deck_cards(deck_id, active, suspended, entity_id);
 
                 CREATE TABLE reviews (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    card_id TEXT NOT NULL REFERENCES cards(card_id),
-                    deck_name TEXT NOT NULL,
+                    deck_id TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
                     rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 4),
                     reviewed_at TEXT NOT NULL,
-                    review_json TEXT NOT NULL
+                    review_json TEXT NOT NULL,
+                    FOREIGN KEY (deck_id, entity_id)
+                        REFERENCES cards(deck_id, entity_id)
                 );
-                CREATE INDEX reviews_card_idx ON reviews(card_id, reviewed_at);
-                PRAGMA user_version = 5;
+                CREATE INDEX reviews_card_idx ON reviews(deck_id, entity_id, reviewed_at);
+                PRAGMA user_version = 7;
                 """
             )
         try:
@@ -301,13 +302,13 @@ class Repository:
                 self.connection.execute(
                     """
                     CREATE INDEX IF NOT EXISTS reviews_deck_time_idx
-                    ON reviews(deck_name, reviewed_at, id)
+                    ON reviews(deck_id, reviewed_at, id)
                     """
                 )
                 self.connection.execute(
                     """
                     CREATE INDEX IF NOT EXISTS deck_cards_queue_idx
-                    ON deck_cards(deck_name, active, suspended, card_id)
+                    ON deck_cards(deck_id, active, suspended, entity_id)
                     """
                 )
         except sqlite3.Error as error:
@@ -325,46 +326,37 @@ class Repository:
             # Membership is rebuilt for this deck only. The cards table is deliberately
             # untouched here so removed cards retain their FSRS state and review history.
             self.connection.execute(
-                "UPDATE deck_cards SET active = 0 WHERE deck_name = ?", (deck_name,)
+                "UPDATE deck_cards SET active = 0 WHERE deck_id = ?", (deck_name,)
             )
-            for card_id, semantic_card in cards.items():
+            for entity_id, semantic_card in cards.items():
                 card_key = semantic_card.card_key
-                if card_id != card_key.digest:
-                    raise StorageError(f"card key {card_id} does not match its card identity hash")
+                if entity_id != card_key.entity_id:
+                    raise StorageError(f"card key {entity_id} does not match its entity identity")
                 if card_key.deck_id != deck_name:
-                    raise StorageError(f"card key {card_id} does not belong to deck {deck_name!r}")
-                identity_json = json.dumps(
-                    {
-                        "deck_id": card_key.deck_id,
-                        "generator_id": card_key.generator_id,
-                        "entity_id": card_key.entity_id,
-                    },
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                    raise StorageError(
+                        f"card key {entity_id} does not belong to deck {deck_name!r}"
+                    )
                 existing = self.connection.execute(
                     """
-                    SELECT card_id, target_kind, identity_json, card_json, due_at
-                    FROM cards WHERE card_id = ?
+                    SELECT deck_id, entity_id, target_kind, card_json, due_at
+                    FROM cards WHERE deck_id = ? AND entity_id = ?
                     """,
-                    (card_id,),
+                    (deck_name, entity_id),
                 ).fetchone()
                 if existing is None:
                     card = Card(due=now)
                     self.connection.execute(
                         """
                         INSERT INTO cards (
-                            card_id, target_kind, identity_json, card_json, due_at,
+                            deck_id, entity_id, target_kind, card_json, due_at,
                             created_at, updated_at
                         ) VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
-                            card_id,
+                            deck_name,
+                            entity_id,
                             "entity",
-                            identity_json,
                             card.to_json(),
-                            # due_at mirrors the value inside card_json so SQLite
-                            # can index and order due cards without parsing JSON.
                             datetime_to_text(card.due),
                             timestamp,
                             timestamp,
@@ -373,25 +365,24 @@ class Repository:
                     created += 1
                 else:
                     stored = self._stored_card(existing)
-                    stored_key = stored.card_key
-                    if stored_key != card_key or stored_key.digest != card_id:
+                    if stored.card_key != card_key:
                         raise StorageError(
-                            f"stored identity for card hash {card_id} does not match "
+                            f"stored identity for {deck_name}/{entity_id} does not match "
                             "generated exercises"
                         )
                 self.connection.execute(
                     """
-                    INSERT INTO deck_cards (deck_name, card_id, active, last_seen_at)
+                    INSERT INTO deck_cards (deck_id, entity_id, active, last_seen_at)
                     VALUES (?, ?, 1, ?)
-                    ON CONFLICT(deck_name, card_id) DO UPDATE SET
+                    ON CONFLICT(deck_id, entity_id) DO UPDATE SET
                         active = 1,
                         last_seen_at = excluded.last_seen_at
                     """,
-                    (deck_name, card_id, timestamp),
+                    (deck_name, entity_id, timestamp),
                 )
         return len(cards), created
 
-    def suspend_card(self, deck_name: str, card_id: str, reason: str | None = None) -> None:
+    def suspend_card(self, deck_name: str, entity_id: str, reason: str | None = None) -> None:
         """Suspend one known deck membership without changing its global schedule."""
 
         try:
@@ -403,14 +394,16 @@ class Repository:
                 """
                 UPDATE deck_cards
                 SET suspended = 1, suspension_reason = ?
-                WHERE deck_name = ? AND card_id = ? AND active = 1
+                WHERE deck_id = ? AND entity_id = ? AND active = 1
                 """,
-                (update.reason, deck_name, card_id),
+                (update.reason, deck_name, entity_id),
             )
             if cursor.rowcount != 1:
-                raise StorageError(f"card {card_id} is not a known member of deck {deck_name!r}")
+                raise StorageError(
+                    f"entity {entity_id} is not a known member of deck {deck_name!r}"
+                )
 
-    def resume_card(self, deck_name: str, card_id: str) -> None:
+    def resume_card(self, deck_name: str, entity_id: str) -> None:
         """Resume one known deck membership and clear its current reason."""
 
         with self.connection:
@@ -418,12 +411,14 @@ class Repository:
                 """
                 UPDATE deck_cards
                 SET suspended = 0, suspension_reason = NULL
-                WHERE deck_name = ? AND card_id = ? AND active = 1
+                WHERE deck_id = ? AND entity_id = ? AND active = 1
                 """,
-                (deck_name, card_id),
+                (deck_name, entity_id),
             )
             if cursor.rowcount != 1:
-                raise StorageError(f"card {card_id} is not a known member of deck {deck_name!r}")
+                raise StorageError(
+                    f"entity {entity_id} is not a known member of deck {deck_name!r}"
+                )
 
     @staticmethod
     def _membership_state(
@@ -449,39 +444,39 @@ class Repository:
             raise StorageError("stored resumed deck membership still has a suspension reason")
         return bool(active), bool(suspended), reason
 
-    def card_available(self, deck_name: str, card_id: str) -> bool:
+    def card_available(self, deck_name: str, entity_id: str) -> bool:
         """Return whether a known membership may currently enter a study queue."""
 
-        state = self._card_membership_state(deck_name, card_id)
+        state = self._card_membership_state(deck_name, entity_id)
         if state is None:
             return False
         active, suspended, _reason = state
         return active and not suspended
 
-    def card_suspended(self, deck_name: str, card_id: str) -> bool:
+    def card_suspended(self, deck_name: str, entity_id: str) -> bool:
         """Return whether a current membership is suspended."""
 
-        state = self._card_membership_state(deck_name, card_id)
+        state = self._card_membership_state(deck_name, entity_id)
         if state is None:
             return False
         active, suspended, _reason = state
         return active and suspended
 
-    def has_membership(self, deck_name: str, card_id: str) -> bool:
-        return self._card_membership_state(deck_name, card_id) is not None
+    def has_membership(self, deck_name: str, entity_id: str) -> bool:
+        return self._card_membership_state(deck_name, entity_id) is not None
 
     def _card_membership_state(
         self,
         deck_name: str,
-        card_id: str,
+        entity_id: str,
     ) -> tuple[bool, bool, str | None] | None:
         row = self.connection.execute(
             """
             SELECT active, suspended, suspension_reason
             FROM deck_cards
-            WHERE deck_name = ? AND card_id = ?
+            WHERE deck_id = ? AND entity_id = ?
             """,
-            (deck_name, card_id),
+            (deck_name, entity_id),
         ).fetchone()
         if row is None:
             return None
@@ -490,35 +485,6 @@ class Repository:
             row["suspended"],
             row["suspension_reason"],
         )
-
-    @staticmethod
-    def _decode_identity(identity_json: object) -> CardKey:
-        """Rebuild and validate the scoped identity stored beside card_id."""
-
-        if not isinstance(identity_json, str):
-            raise StorageError("stored card identity is not JSON text")
-        try:
-            values = json.loads(identity_json, object_pairs_hook=_unique_json_object)
-        except (json.JSONDecodeError, TypeError, ValueError) as error:
-            raise StorageError("stored card identity is invalid JSON") from error
-        if not isinstance(values, dict):
-            raise StorageError("stored exercise identity must be a JSON object")
-        required = {"deck_id", "generator_id", "entity_id"}
-        if set(values) != required:
-            raise StorageError("stored exercise identity has invalid fields")
-        deck_id, generator_id, entity_id = (
-            values["deck_id"],
-            values["generator_id"],
-            values["entity_id"],
-        )
-        if not all(
-            isinstance(value, str) and value.strip() for value in (deck_id, generator_id, entity_id)
-        ):
-            raise StorageError("stored exercise identity has invalid scope IDs")
-        try:
-            return CardKey.exercise(deck_id, generator_id, entity_id)
-        except ValidationError as error:
-            raise StorageError("stored exercise identity is invalid") from error
 
     def due_cards(self, deck_name: str, now: datetime, limit: int | None) -> list[StoredCard]:
         self._validate_active_due_mirrors(deck_name)
@@ -529,12 +495,12 @@ class Repository:
             parameters.append(limit)
         rows = self.connection.execute(
             """
-            SELECT c.card_id, c.target_kind, c.identity_json, c.card_json, c.due_at
+            SELECT c.deck_id, c.entity_id, c.target_kind, c.card_json, c.due_at
             FROM cards AS c
-            JOIN deck_cards AS dc ON dc.card_id = c.card_id
-            WHERE dc.deck_name = ? AND dc.active = 1 AND dc.suspended = 0
+            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
+            WHERE dc.deck_id = ? AND dc.active = 1 AND dc.suspended = 0
               AND c.due_at <= ?
-            ORDER BY c.due_at, c.card_id
+            ORDER BY c.due_at, c.entity_id
             """
             + limit_sql,
             parameters,
@@ -547,11 +513,11 @@ class Repository:
         self._validate_active_memberships(deck_name)
         rows = self.connection.execute(
             """
-            SELECT c.card_id, c.target_kind, c.identity_json, c.card_json, c.due_at
+            SELECT c.deck_id, c.entity_id, c.target_kind, c.card_json, c.due_at
             FROM cards AS c
-            JOIN deck_cards AS dc ON dc.card_id = c.card_id
-            WHERE dc.deck_name = ? AND dc.active = 1 AND dc.suspended = 0
-            ORDER BY c.due_at, c.card_id
+            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
+            WHERE dc.deck_id = ? AND dc.active = 1 AND dc.suspended = 0
+            ORDER BY c.due_at, c.entity_id
             """,
             (deck_name,),
         ).fetchall()
@@ -576,19 +542,20 @@ class Repository:
             parameters.append(limit)
         rows = self.connection.execute(
             """
-            SELECT c.card_id, c.target_kind, c.identity_json, c.card_json, c.due_at
+            SELECT c.deck_id, c.entity_id, c.target_kind, c.card_json, c.due_at
             FROM cards AS c
-            JOIN deck_cards AS dc ON dc.card_id = c.card_id
-            WHERE dc.deck_name = ? AND dc.active = 1 AND dc.suspended = 0 AND EXISTS (
+            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
+            WHERE dc.deck_id = ? AND dc.active = 1 AND dc.suspended = 0 AND EXISTS (
                 SELECT 1
                 FROM reviews AS r
-                WHERE r.card_id = c.card_id AND r.rating = 1 AND r.reviewed_at >= ?
+                WHERE r.deck_id = c.deck_id AND r.entity_id = c.entity_id
+                  AND r.rating = 1 AND r.reviewed_at >= ?
             )
             ORDER BY (
                 SELECT MAX(r.reviewed_at)
                 FROM reviews AS r
-                WHERE r.card_id = c.card_id AND r.rating = 1
-            ) DESC, c.card_id
+                WHERE r.deck_id = c.deck_id AND r.entity_id = c.entity_id AND r.rating = 1
+            ) DESC, c.entity_id
             """
             + limit_sql,
             parameters,
@@ -616,41 +583,39 @@ class Repository:
             parameters.append(limit)
         rows = self.connection.execute(
             """
-            SELECT c.card_id, c.target_kind, c.identity_json, c.card_json, c.due_at
+            SELECT c.deck_id, c.entity_id, c.target_kind, c.card_json, c.due_at
             FROM cards AS c
-            JOIN deck_cards AS dc ON dc.card_id = c.card_id
-            WHERE dc.deck_name = ? AND dc.active = 1 AND dc.suspended = 0
+            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
+            WHERE dc.deck_id = ? AND dc.active = 1 AND dc.suspended = 0
               AND c.due_at > ? AND c.due_at <= ?
-            ORDER BY c.due_at, c.card_id
+            ORDER BY c.due_at, c.entity_id
             """
             + limit_sql,
             parameters,
         ).fetchall()
         return [self._stored_card(row) for row in rows]
 
-    def get_card(self, card_id: str) -> StoredCard | None:
+    def get_card(self, card_key: CardKey) -> StoredCard | None:
         row = self.connection.execute(
             """
-            SELECT card_id, target_kind, identity_json, card_json, due_at
-            FROM cards WHERE card_id = ?
+            SELECT deck_id, entity_id, target_kind, card_json, due_at
+            FROM cards WHERE deck_id = ? AND entity_id = ?
             """,
-            (card_id,),
+            (card_key.deck_id, card_key.entity_id),
         ).fetchone()
         return self._stored_card(row) if row is not None else None
 
     def _stored_card(self, row: sqlite3.Row) -> StoredCard:
         if row["target_kind"] != "entity":
             raise StorageError("stored card has an invalid exercise kind")
-        card_key = self._decode_identity(row["identity_json"])
-        if row["card_id"] != card_key.digest:
-            raise StorageError(
-                f"stored card identity does not match its card hash {row['card_id']}"
-            )
+        try:
+            card_key = CardKey.exercise(row["deck_id"], row["entity_id"])
+        except (TypeError, ValidationError) as error:
+            raise StorageError("stored card identity is invalid") from error
         card_json = row["card_json"]
         if not isinstance(card_json, str):
             raise StorageError("stored card schedule is not JSON text")
         stored = StoredCard(
-            card_id=row["card_id"],
             card_key=card_key,
             card_json=card_json,
         )
@@ -671,7 +636,7 @@ class Repository:
             """
             SELECT active, suspended, suspension_reason
             FROM deck_cards
-            WHERE deck_name = ? AND active = 1
+            WHERE deck_id = ? AND active = 1
             """,
             (deck_name,),
         ).fetchall()
@@ -684,12 +649,24 @@ class Repository:
         self._validate_all_active_card_mirrors(deck_name)
 
     def _validate_all_active_card_mirrors(self, deck_name: str) -> None:
+        missing = self.connection.execute(
+            """
+            SELECT dc.deck_id, dc.entity_id
+            FROM deck_cards AS dc
+            LEFT JOIN cards AS c
+                ON c.deck_id = dc.deck_id AND c.entity_id = dc.entity_id
+            WHERE dc.deck_id = ? AND dc.active = 1 AND c.deck_id IS NULL
+            """,
+            (deck_name,),
+        ).fetchone()
+        if missing is not None:
+            raise StorageError("active deck membership has no matching stored card")
         rows = self.connection.execute(
             """
-            SELECT c.card_id, c.target_kind, c.identity_json, c.card_json, c.due_at
+            SELECT c.deck_id, c.entity_id, c.target_kind, c.card_json, c.due_at
             FROM cards AS c
-            JOIN deck_cards AS dc ON dc.card_id = c.card_id
-            WHERE dc.deck_name = ? AND dc.active = 1
+            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
+            WHERE dc.deck_id = ? AND dc.active = 1
             """,
             (deck_name,),
         ).fetchall()
@@ -698,8 +675,7 @@ class Repository:
 
     def save_review(
         self,
-        card_id: str,
-        deck_name: str,
+        card_key: CardKey,
         source_card_json: str,
         card: Card,
         review_log: ReviewLog,
@@ -711,7 +687,9 @@ class Repository:
 
         # Validate the persisted fields before the indexed write predicate can
         # misclassify a corrupt membership as reviewable.
-        self._card_membership_state(deck_name, card_id)
+        deck_name = card_key.deck_id
+        entity_id = card_key.entity_id
+        self._card_membership_state(deck_name, entity_id)
         reviewed_at = datetime_to_text(review_log.review_datetime)
         card_json = card.to_json()
         try:
@@ -732,10 +710,11 @@ class Repository:
             cursor = self.connection.execute(
                 """
                 UPDATE cards SET card_json = ?, due_at = ?, updated_at = ?
-                WHERE card_id = ? AND card_json = ? AND EXISTS (
+                WHERE deck_id = ? AND entity_id = ? AND card_json = ? AND EXISTS (
                     SELECT 1
                     FROM deck_cards AS dc
-                    WHERE dc.deck_name = ? AND dc.card_id = cards.card_id
+                    WHERE dc.deck_id = cards.deck_id AND dc.entity_id = cards.entity_id
+                      AND dc.deck_id = ? AND dc.entity_id = ?
                       AND dc.active = 1 AND dc.suspended = 0
                 )
                 """,
@@ -743,35 +722,39 @@ class Repository:
                     card_json,
                     datetime_to_text(card.due),
                     reviewed_at,
-                    card_id,
+                    deck_name,
+                    entity_id,
                     source_card_json,
                     deck_name,
+                    entity_id,
                 ),
             )
             if cursor.rowcount != 1:
                 exists = self.connection.execute(
-                    "SELECT 1 FROM cards WHERE card_id = ?",
-                    (card_id,),
+                    "SELECT 1 FROM cards WHERE deck_id = ? AND entity_id = ?",
+                    (deck_name, entity_id),
                 ).fetchone()
                 if exists is None:
                     raise StaleReviewError(
-                        f"cannot review missing card {card_id}; reload or sync before trying again"
+                        f"cannot review missing card {deck_name}/{entity_id}; reload or sync "
+                        "before trying again"
                     )
-                if not self.card_available(deck_name, card_id):
+                if not self.card_available(deck_name, entity_id):
                     raise StorageError(
-                        f"cannot review unavailable card {card_id} in deck {deck_name!r}"
+                        f"cannot review unavailable entity {entity_id} in deck {deck_name!r}"
                     )
                 raise StaleReviewError(
-                    f"cannot review stale card snapshot {card_id}; reload the card and try again"
+                    f"cannot review stale card snapshot {deck_name}/{entity_id}; reload the card "
+                    "and try again"
                 )
             self.connection.execute(
                 """
-                INSERT INTO reviews (card_id, deck_name, rating, reviewed_at, review_json)
+                INSERT INTO reviews (deck_id, entity_id, rating, reviewed_at, review_json)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (
-                    card_id,
                     deck_name,
+                    entity_id,
                     review_log.rating.value,
                     reviewed_at,
                     payload.as_json(),
@@ -797,10 +780,10 @@ class Repository:
         if payload.reviewed_at != reviewed_at or payload.rating is not rating:
             raise StorageError("stored review log does not match its indexed fields")
         try:
+            card_key = CardKey.exercise(row["deck_id"], row["entity_id"])
             return ReviewRecord(
                 review_id=row["id"],
-                card_id=row["card_id"],
-                deck_name=row["deck_name"],
+                card_key=card_key,
                 rating=rating,
                 reviewed_at=reviewed_at,
                 previous_interval_seconds=payload.previous_interval_seconds,
@@ -815,16 +798,16 @@ class Repository:
 
         rows = self.connection.execute(
             """
-            SELECT id, card_id, deck_name, rating, reviewed_at, review_json
+            SELECT id, deck_id, entity_id, rating, reviewed_at, review_json
             FROM reviews
-            WHERE deck_name = ? AND reviewed_at <= ?
+            WHERE deck_id = ? AND reviewed_at <= ?
             ORDER BY reviewed_at, id
             """,
             (deck_name, datetime_to_text(through)),
         ).fetchall()
         records: list[ReviewRecord] = []
         for row in rows:
-            self._validate_review_membership(row["deck_name"], row["card_id"])
+            self._validate_review_membership(row["deck_id"], row["entity_id"])
             records.append(self._review_record(row))
         return tuple(records)
 
@@ -840,15 +823,16 @@ class Repository:
                 COALESCE(SUM(CASE WHEN dc.suspended = 1 THEN 1 ELSE 0 END), 0)
                     AS suspended,
                 COALESCE(SUM(CASE WHEN dc.suspended = 0 AND NOT EXISTS (
-                    SELECT 1 FROM reviews AS r WHERE r.card_id = c.card_id
+                    SELECT 1 FROM reviews AS r
+                    WHERE r.deck_id = c.deck_id AND r.entity_id = c.entity_id
                 ) THEN 1 ELSE 0 END), 0) AS new,
                 COALESCE(SUM(CASE WHEN dc.suspended = 0 AND c.due_at <= ?
                     THEN 1 ELSE 0 END), 0) AS due,
                 COALESCE(SUM(CASE WHEN dc.suspended = 0 AND c.due_at > ?
                     THEN 1 ELSE 0 END), 0) AS future
             FROM cards AS c
-            JOIN deck_cards AS dc ON dc.card_id = c.card_id
-            WHERE dc.deck_name = ? AND dc.active = 1
+            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
+            WHERE dc.deck_id = ? AND dc.active = 1
             """,
             (timestamp, timestamp, deck_name),
         ).fetchone()
@@ -868,9 +852,9 @@ class Repository:
         rows = self.connection.execute(
             """
             SELECT
-                c.card_id,
+                c.deck_id,
+                c.entity_id,
                 c.target_kind,
-                c.identity_json,
                 c.card_json,
                 c.due_at,
                 dc.active,
@@ -879,26 +863,26 @@ class Repository:
                 (
                     SELECT COUNT(*)
                     FROM reviews AS r
-                    WHERE r.card_id = c.card_id
+                    WHERE r.deck_id = c.deck_id AND r.entity_id = c.entity_id
                 ) AS review_count,
                 (
                     SELECT r.reviewed_at
                     FROM reviews AS r
-                    WHERE r.card_id = c.card_id
+                    WHERE r.deck_id = c.deck_id AND r.entity_id = c.entity_id
                     ORDER BY r.reviewed_at DESC, r.id DESC
                     LIMIT 1
                 ) AS last_review_at,
                 (
                     SELECT r.rating
                     FROM reviews AS r
-                    WHERE r.card_id = c.card_id
+                    WHERE r.deck_id = c.deck_id AND r.entity_id = c.entity_id
                     ORDER BY r.reviewed_at DESC, r.id DESC
                     LIMIT 1
                 ) AS last_rating
             FROM cards AS c
-            JOIN deck_cards AS dc ON dc.card_id = c.card_id
-            WHERE dc.deck_name = ? AND dc.active = 1
-            ORDER BY c.due_at, c.card_id
+            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
+            WHERE dc.deck_id = ? AND dc.active = 1
+            ORDER BY c.due_at, c.entity_id
             """,
             (deck_name,),
         ).fetchall()
@@ -930,7 +914,6 @@ class Repository:
                 raise StorageError("stored review has an invalid rating") from error
             statuses.append(
                 CardStatus(
-                    card_id=stored.card_id,
                     card_key=stored.card_key,
                     card_json=stored.card_json,
                     fsrs_state=card.state.name.lower(),
@@ -950,26 +933,22 @@ class Repository:
     def _validate_review_logs(self, deck_name: str) -> None:
         rows = self.connection.execute(
             """
-            SELECT id, card_id, deck_name, rating, reviewed_at, review_json
+            SELECT id, deck_id, entity_id, rating, reviewed_at, review_json
             FROM reviews
-            WHERE deck_name = ? OR card_id IN (
-                SELECT card_id FROM deck_cards WHERE deck_name = ?
-            )
+            WHERE deck_id = ?
             """,
-            (deck_name, deck_name),
+            (deck_name,),
         ).fetchall()
         for row in rows:
-            if row["deck_name"] != deck_name:
-                raise StorageError("stored review has a mismatched deck membership")
-            self._validate_review_membership(row["deck_name"], row["card_id"])
+            self._validate_review_membership(row["deck_id"], row["entity_id"])
             self._review_record(row)
 
-    def _validate_review_membership(self, deck_name: object, card_id: object) -> None:
-        if not isinstance(deck_name, str) or not isinstance(card_id, str):
+    def _validate_review_membership(self, deck_name: object, entity_id: object) -> None:
+        if not isinstance(deck_name, str) or not isinstance(entity_id, str):
             raise StorageError("stored review has invalid deck or card identity")
         exists = self.connection.execute(
-            "SELECT 1 FROM deck_cards WHERE deck_name = ? AND card_id = ?",
-            (deck_name, card_id),
+            "SELECT 1 FROM deck_cards WHERE deck_id = ? AND entity_id = ?",
+            (deck_name, entity_id),
         ).fetchone()
         if exists is None:
             raise StorageError("stored review has no matching deck membership")

@@ -86,7 +86,7 @@ class StudyController:
         for row in self.card_statuses(deck, now):
             if row.status.suspended or row.status.due_at > now:
                 continue
-            generator_id = row.status.card_key.generator_id
+            generator_id = deck.generator_for_card(row.status.card_key).id
             if generator_id in due_by_generator:
                 due_by_generator[generator_id] += 1
         return tuple(
@@ -119,11 +119,7 @@ class StudyController:
                 "That card no longer has an available exercise generator.",
             )
         row = preview_rng.choice(matching)
-        generator = next(
-            generator
-            for generator in generators
-            if generator.id == row.status.card_key.generator_id
-        )
+        generator = deck.generator_for_card(row.status.card_key)
         return self._render_preview(
             deck,
             generator,
@@ -213,7 +209,7 @@ class StudyController:
     ):
         try:
             context = ExerciseGeneratorContext(deck.name, deck.entities, rng)
-            card_key = CardKey.exercise(deck.name, generator.id, entity_id)
+            card_key = CardKey.exercise(deck.name, entity_id)
             exercise = generator.generate_card(card_key, context)
             return deck.render(exercise, rng=rng)
         except (PresentationError, KeyError, TypeError, ValueError) as error:
@@ -243,7 +239,6 @@ class StudyController:
         *,
         csrf_token: str,
         deck_name: str,
-        card_id: str | None = None,
         entity_id: str | None = None,
         generator_id: str | None = None,
         suspended: bool,
@@ -255,24 +250,23 @@ class StudyController:
             deck = self.config.deck(deck_name)
         except ConfigError as error:
             raise RequestFailure(HTTPStatus.NOT_FOUND, "That deck does not exist.") from error
-        card_id = self._resolve_status_card(
+        entity_id = self._resolve_status_card(
             deck,
-            card_id=card_id,
             entity_id=entity_id,
             generator_id=generator_id,
         )
-        if not self.repository.has_membership(deck.name, card_id) or not (
-            self.repository.card_available(deck.name, card_id)
-            or self.repository.card_suspended(deck.name, card_id)
+        if not self.repository.has_membership(deck.name, entity_id) or not (
+            self.repository.card_available(deck.name, entity_id)
+            or self.repository.card_suspended(deck.name, entity_id)
         ):
             raise RequestFailure(
                 HTTPStatus.NOT_FOUND,
                 "That card is not known in this deck.",
             )
         if suspended:
-            self.study_service.suspend(deck, card_id, reason)
+            self.study_service.suspend(deck, entity_id, reason)
         else:
-            self.study_service.resume(deck, card_id)
+            self.study_service.resume(deck, entity_id)
         if self.session is not None and self.session.deck.name == deck.name:
             self.session.refresh_availability()
 
@@ -280,29 +274,19 @@ class StudyController:
         self,
         deck: Deck,
         *,
-        card_id: str | None,
         entity_id: str | None,
         generator_id: str | None,
     ) -> str:
         """Resolve a status action to a current active membership."""
 
         statuses = self.repository.card_statuses(deck.name)
-        if card_id is not None:
-            for status in statuses:
-                key = status.card_key
-                if (
-                    status.card_id == card_id
-                    and (entity_id is None or key.entity_id == entity_id)
-                    and (generator_id is None or key.generator_id == generator_id)
-                ):
-                    return card_id
-        elif entity_id is not None:
+        if entity_id is not None:
             for status in statuses:
                 key = status.card_key
                 if key.entity_id == entity_id and (
-                    generator_id is None or key.generator_id == generator_id
+                    generator_id is None or deck.generator_for_card(key).id == generator_id
                 ):
-                    return status.card_id
+                    return entity_id
         raise RequestFailure(HTTPStatus.NOT_FOUND, "That card is not known in this deck.")
 
     def end_session(self) -> None:

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from hashlib import sha256
-
 import pytest
 from hypothesis import given
 from pydantic import ValidationError
@@ -20,48 +18,14 @@ from tests.strategies import (
 
 @given(deck=valid_identity_strings, generator=valid_identity_strings, entity=valid_identity_strings)
 @PROPERTY_SETTINGS
-def test_card_key_digest_is_deterministic_and_hexadecimal(
-    deck: str, generator: str, entity: str
-) -> None:
-    # Property: the same scoped identity always yields a stable 64-character hex digest.
-    key = CardKey.exercise(deck, generator, entity)
-    assert key.digest == CardKey.exercise(deck, generator, entity).digest
-    assert len(key.digest) == 64
-    assert all(character in "0123456789abcdef" for character in key.digest)
-
-
-def test_card_key_digest_uses_an_independent_length_prefixed_encoding() -> None:
-    # Property: digest serialization includes explicit lengths, so concatenation is unambiguous.
-    key = CardKey.exercise("deck", "generator", "entity")
-    digest = sha256(b"graphcards:exercise:v1\0")
-    for value in key.identity_parts:
-        encoded = value.encode()
-        digest.update(len(encoded).to_bytes(8, "big"))
-        digest.update(encoded)
-    assert key.digest == digest.hexdigest()
-
-
-@given(value=valid_identity_strings.filter(lambda value: value != "generator"))
-@PROPERTY_SETTINGS
-def test_card_key_digest_has_length_boundaries_and_order_sensitivity(value: str) -> None:
-    # Property: changing a part or its order changes the identity, including at length boundaries.
-    key = CardKey.exercise(value, "generator", "entity")
-    assert key.digest != CardKey.exercise(value + "x", "generator", "entity").digest
-    assert key.digest != CardKey.exercise("generator", value, "entity").digest
-    assert CardKey.exercise("ab", "c", "d").digest != CardKey.exercise("a", "bc", "d").digest
-
-
-@given(deck=valid_identity_strings, generator=valid_identity_strings, entity=valid_identity_strings)
-@PROPERTY_SETTINGS
 def test_exercise_identity_scope_matches_its_card_key(
     deck: str, generator: str, entity: str
 ) -> None:
-    # Property: an Exercise may only carry the generator and target encoded in its CardKey.
-    key = CardKey.exercise(deck, generator, entity)
+    # Property: generator selection remains runtime metadata while the target stays keyed.
+    key = CardKey.exercise(deck, entity)
     exercise = Exercise(card_key=key, generator_id=generator, target_id=entity)
     assert exercise.card_key == key
-    with pytest.raises(ValidationError, match="generator ID"):
-        Exercise(card_key=key, generator_id=generator + "x", target_id=entity)
+    assert Exercise(card_key=key, generator_id=generator + "x", target_id=entity).card_key == key
     with pytest.raises(ValidationError, match="target ID"):
         Exercise(card_key=key, generator_id=generator, target_id=entity + "x")
 
@@ -71,7 +35,7 @@ def test_exercise_identity_scope_matches_its_card_key(
 def test_blank_and_control_identity_parts_are_rejected(value: str) -> None:
     # Property: blank and control-character identity components never enter domain keys.
     with pytest.raises(ValidationError):
-        CardKey.exercise(value, "generator", "entity")
+        CardKey.exercise(value, "entity")
 
 
 @given(value=json_values)
@@ -191,7 +155,7 @@ def test_entity_json_validation_rejects_malformed_and_nonfinite_values(
 
 def test_domain_models_are_frozen_and_copies_preserve_validation() -> None:
     # Property: validated domain models are frozen while model copies retain equivalent values.
-    key = CardKey.exercise("deck", "generator", "entity")
+    key = CardKey.exercise("deck", "entity")
     view = CardView(card_key=key, front="front", back="back")
     with pytest.raises(ValidationError, match="frozen"):
         view.front = "changed"  # type: ignore[misc]

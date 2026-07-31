@@ -252,7 +252,7 @@ class ClozeExerciseGenerator(ExerciseGenerator):
                 f"entity {entity_id!r}"
             )
         return ClozeExercise(
-            card_key=CardKey.exercise(context.deck_id, self.id, entity_id),
+            card_key=CardKey.exercise(context.deck_id, entity_id),
             generator_id=self.id,
             target_id=entity_id,
             cloze_id=cloze_id,
@@ -274,7 +274,7 @@ class ClozeExerciseGenerator(ExerciseGenerator):
     def render(self, exercise: Exercise, context: ExerciseGeneratorContext) -> CardView:
         if not isinstance(exercise, ClozeExercise):
             raise PresentationError(f"generator {self.id!r} cannot render this exercise type")
-        if exercise.card_key != CardKey.exercise(context.deck_id, self.id, exercise.target_id):
+        if exercise.card_key != CardKey.exercise(context.deck_id, exercise.target_id):
             raise PresentationError("cloze exercise card identity does not match generator")
         try:
             entity = context.entities[exercise.target_id]

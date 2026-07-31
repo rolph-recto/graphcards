@@ -40,32 +40,33 @@ class StudyService:
         """Generate and render all current cards at the application boundary."""
 
         return {
-            card_id: render_card(deck, card) for card_id, card in self.generate_all(deck).items()
+            entity_id: render_card(deck, card)
+            for entity_id, card in self.generate_all(deck).items()
         }
 
     def render(self, deck: Deck, stored_card: StoredCard) -> CardView:
         cards = execute_cards(deck, stored_card.card_key, rng=self.rng)
-        card = cards.get(stored_card.card_id)
+        card = cards.get(stored_card.card_key.entity_id)
         if card is None:
             raise PresentationError(
-                f"deck {deck.name!r} no longer generates card {stored_card.card_id}"
+                f"deck {deck.name!r} no longer generates entity {stored_card.card_key.entity_id!r}"
             )
         return render_card(deck, card)
 
     def suspend(
         self,
         deck: Deck,
-        card_id: str,
+        entity_id: str,
         reason: str | None = None,
     ) -> None:
         """Suspend one membership without changing its global FSRS card."""
 
-        self.repository.suspend_card(deck.name, card_id, reason)
+        self.repository.suspend_card(deck.name, entity_id, reason)
 
-    def resume(self, deck: Deck, card_id: str) -> None:
+    def resume(self, deck: Deck, entity_id: str) -> None:
         """Resume one membership at its existing global FSRS schedule."""
 
-        self.repository.resume_card(deck.name, card_id)
+        self.repository.resume_card(deck.name, entity_id)
 
     def review(
         self,
@@ -75,7 +76,9 @@ class StudyService:
         now: datetime | None = None,
     ) -> StoredCard:
         if card.card_key.deck_id != deck.name:
-            raise PresentationError(f"card {card.card_id} does not belong to deck {deck.name!r}")
+            raise PresentationError(
+                f"card {card.card_key.entity_id!r} does not belong to deck {deck.name!r}"
+            )
         review_time = datetime_as_utc(now or utc_now())
         source_card = card.card()
         previous_interval_seconds = (
@@ -97,8 +100,7 @@ class StudyService:
             source_card, rating, review_datetime=review_time
         )
         card_json = self.repository.save_review(
-            card.card_id,
-            deck.name,
+            card.card_key,
             card.card_json,
             updated_card,
             review_log,
@@ -106,7 +108,6 @@ class StudyService:
             retrievability=retrievability,
         )
         return StoredCard(
-            card_id=card.card_id,
             card_key=card.card_key,
             card_json=card_json,
         )

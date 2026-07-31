@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import random
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,7 +45,11 @@ def test_sync_counts_each_target_entity_once_and_review_path_preserves_identity(
         assert (active, created) == (3, 3)
         card = repository.active_cards(deck.name)[0]
         assert card.card_key.deck_id == deck.name
-        assert card.card_key.generator_id is not None
+        identity = repository.connection.execute(
+            "SELECT deck_id, entity_id FROM cards WHERE deck_id = ? AND entity_id = ?",
+            (deck.name, card.card_key.entity_id),
+        ).fetchone()
+        assert tuple(identity) == (deck.name, card.card_key.entity_id)
         assert service.render(deck, card).front
 
 
@@ -56,13 +59,18 @@ def test_storage_reports_corrupt_scoped_identity(deck_path: Path, tmp_path: Path
         service = StudyService(repository, FsrsSettings().create_scheduler())
         service.sync(deck)
         card = repository.active_cards(deck.name)[0]
+        repository.connection.execute("PRAGMA foreign_keys = OFF")
         repository.connection.execute(
-            "UPDATE cards SET identity_json = ? WHERE card_id = ?",
-            (json.dumps({"bad": True}), card.card_id),
+            "UPDATE cards SET entity_id = ? WHERE deck_id = ? AND entity_id = ?",
+            ("", deck.name, card.card_key.entity_id),
+        )
+        repository.connection.execute(
+            "UPDATE deck_cards SET entity_id = ? WHERE deck_id = ? AND entity_id = ?",
+            ("", deck.name, card.card_key.entity_id),
         )
         repository.connection.commit()
         try:
-            repository.get_card(card.card_id)
+            repository.active_cards(deck.name)
         except Exception as error:
             assert "identity" in str(error)
         else:

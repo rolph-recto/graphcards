@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import random
-import re
 import sqlite3
 import sys
 from collections.abc import Sequence
@@ -22,9 +21,9 @@ from graphcards.storage import CardStatus, Repository, datetime_to_text, utc_now
 from graphcards.web import run_server
 
 
-def _card_id(value: str) -> str:
-    if re.fullmatch(r"[0-9a-f]{64}", value) is None:
-        raise argparse.ArgumentTypeError("must be a 64-character lowercase hexadecimal card ID")
+def _entity_id(value: str) -> str:
+    if not value.strip():
+        raise argparse.ArgumentTypeError("must be a non-blank entity ID")
     return value
 
 
@@ -59,14 +58,14 @@ def build_parser() -> argparse.ArgumentParser:
         "suspend", help="exclude a card from one deck's study queues"
     )
     suspend_parser.add_argument("deck", help="configured deck name")
-    suspend_parser.add_argument("card_id", type=_card_id, help="full card ID from status --full")
+    suspend_parser.add_argument("entity_id", type=_entity_id, help="entity ID")
     suspend_parser.add_argument("--reason", help="optional current suspension reason")
 
     resume_parser = subparsers.add_parser(
         "resume", help="return a suspended card to one deck's study queues"
     )
     resume_parser.add_argument("deck", help="configured deck name")
-    resume_parser.add_argument("card_id", type=_card_id, help="full card ID from status --full")
+    resume_parser.add_argument("entity_id", type=_entity_id, help="entity ID")
 
     subparsers.add_parser("serve", help="open the local web study interface")
     return parser
@@ -101,7 +100,6 @@ def _print_status_table(cards: tuple[CardStatus, ...], now: datetime, output: Te
         print("(no current cards)", file=output)
         return
     headers = (
-        "CARD ID",
         "TARGET",
         "STATUS",
         "FSRS STATE",
@@ -112,7 +110,6 @@ def _print_status_table(cards: tuple[CardStatus, ...], now: datetime, output: Te
     )
     rows = [
         (
-            card.card_id,
             "entity",
             _status_label(card, now),
             card.fsrs_state,
@@ -162,26 +159,26 @@ def _run_status(config: AppConfig, deck_name: str | None, full: bool, output: Te
 def _run_suspend(
     config: AppConfig,
     deck_name: str,
-    card_id: str,
+    entity_id: str,
     reason: str | None,
     output: TextIO,
 ) -> None:
     deck = config.deck(deck_name)
     with Repository(config.state_path) as repository:
-        repository.suspend_card(deck.name, card_id, reason)
-    print(f"{deck.display_name}: suspended {card_id}", file=output)
+        repository.suspend_card(deck.name, entity_id, reason)
+    print(f"{deck.display_name}: suspended {entity_id}", file=output)
 
 
 def _run_resume(
     config: AppConfig,
     deck_name: str,
-    card_id: str,
+    entity_id: str,
     output: TextIO,
 ) -> None:
     deck = config.deck(deck_name)
     with Repository(config.state_path) as repository:
-        repository.resume_card(deck.name, card_id)
-    print(f"{deck.display_name}: resumed {card_id}", file=output)
+        repository.resume_card(deck.name, entity_id)
+    print(f"{deck.display_name}: resumed {entity_id}", file=output)
 
 
 def main(
@@ -218,9 +215,9 @@ def main(
         elif args.command == "status":
             _run_status(config, args.deck, args.full, output)
         elif args.command == "suspend":
-            _run_suspend(config, args.deck, args.card_id, args.reason, output)
+            _run_suspend(config, args.deck, args.entity_id, args.reason, output)
         elif args.command == "resume":
-            _run_resume(config, args.deck, args.card_id, output)
+            _run_resume(config, args.deck, args.entity_id, output)
         elif args.command == "serve":
             run_server(
                 config,

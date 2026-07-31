@@ -93,15 +93,15 @@ class StudySession:
     def _load_current(self) -> None:
         while self.index < len(self.cards):
             card = self.cards[self.index]
-            if not self.service.repository.card_available(self.deck.name, card.card_id):
-                if self.service.repository.card_suspended(self.deck.name, card.card_id):
+            if not self.service.repository.card_available(self.deck.name, card.card_key.entity_id):
+                if self.service.repository.card_suspended(self.deck.name, card.card_key.entity_id):
                     self.suspended_count += 1
                 self.index += 1
                 continue
             try:
                 view = self.service.render(self.deck, card)
             except PresentationError as error:
-                self.skipped.append(f"{card.card_id}: {error}")
+                self.skipped.append(f"{card.card_key.entity_id}: {error}")
                 self.index += 1
                 continue
             self.current = CurrentCard(
@@ -114,7 +114,7 @@ class StudySession:
     def _require_current(
         self,
         session_token: str,
-        card_id: str,
+        entity_id: str,
         *,
         refresh: bool = True,
     ) -> CurrentCard:
@@ -124,15 +124,15 @@ class StudySession:
             self.refresh_availability()
         if self.current is None:
             raise RequestFailure(HTTPStatus.CONFLICT, "This study session is already complete.")
-        if card_id != self.current.card.card_id:
+        if entity_id != self.current.card.card_key.entity_id:
             raise RequestFailure(
                 HTTPStatus.CONFLICT,
                 "That card is no longer current. Reload the study page and try again.",
             )
         return self.current
 
-    def reveal(self, session_token: str, card_id: str) -> None:
-        current = self._require_current(session_token, card_id)
+    def reveal(self, session_token: str, entity_id: str) -> None:
+        current = self._require_current(session_token, entity_id)
         if current.revealed:
             raise RequestFailure(
                 HTTPStatus.CONFLICT,
@@ -140,10 +140,10 @@ class StudySession:
             )
         current.revealed = True
 
-    def rate(self, session_token: str, card_id: str, rating: Rating) -> None:
+    def rate(self, session_token: str, entity_id: str, rating: Rating) -> None:
         # Keep a deleted current card in place long enough for the repository's
         # snapshot-safe review path to produce the actionable stale-card error.
-        current = self._require_current(session_token, card_id, refresh=False)
+        current = self._require_current(session_token, entity_id, refresh=False)
         if self.is_practice:
             raise RequestFailure(
                 HTTPStatus.CONFLICT,
@@ -157,7 +157,7 @@ class StudySession:
         try:
             self.service.review(self.deck, current.card, rating, utc_now())
         except StaleReviewError as error:
-            refreshed = self.service.repository.get_card(current.card.card_id)
+            refreshed = self.service.repository.get_card(current.card.card_key)
             if refreshed is None:
                 self.skipped.append("A card was removed after this study session started.")
                 self.index += 1
@@ -172,7 +172,7 @@ class StudySession:
                 message,
             ) from error
         except StorageError as error:
-            if not str(error).startswith("cannot review unavailable card"):
+            if not str(error).startswith("cannot review unavailable entity"):
                 raise
             self.refresh_availability()
             raise RequestFailure(
@@ -181,8 +181,8 @@ class StudySession:
             ) from error
         self._advance()
 
-    def next_practice(self, session_token: str, card_id: str) -> None:
-        current = self._require_current(session_token, card_id)
+    def next_practice(self, session_token: str, entity_id: str) -> None:
+        current = self._require_current(session_token, entity_id)
         if not self.is_practice:
             raise RequestFailure(
                 HTTPStatus.CONFLICT,
@@ -195,9 +195,9 @@ class StudySession:
             )
         self._advance()
 
-    def suspend(self, session_token: str, card_id: str, reason: str | None) -> None:
-        current = self._require_current(session_token, card_id)
-        self.service.suspend(self.deck, current.card.card_id, reason)
+    def suspend(self, session_token: str, entity_id: str, reason: str | None) -> None:
+        current = self._require_current(session_token, entity_id)
+        self.service.suspend(self.deck, current.card.card_key.entity_id, reason)
         self._advance(completed=False, suspended=True)
 
     def refresh_availability(self) -> None:
@@ -205,7 +205,7 @@ class StudySession:
 
         if self.current is None or self.service.repository.card_available(
             self.deck.name,
-            self.current.card.card_id,
+            self.current.card.card_key.entity_id,
         ):
             return
         self.current = None

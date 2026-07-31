@@ -206,9 +206,10 @@ All entities, generators, IDs, and references are validated before a deck can be
 Each targeted entity produces one scheduled exercise for non-cloze generators. If multiple
 generators target the same entity, the generator with the lexicographically smallest ID owns that
 non-cloze exercise; this keeps the selected type independent of declaration order. Cloze generators
-produce one exercise for each selected entity. Exercise IDs remain deterministic from the deck
-directory identity, selected generator ID, and target entity. The optional cloze ID selects the
-rendered variant but does not change the FSRS card identity.
+produce one exercise for each selected entity. Card identities remain deterministic from the deck
+directory identity and target entity. The selected generator remains runtime metadata on each
+generated exercise, so changing a generator does not change the FSRS card identity or schedule.
+The optional cloze ID selects the rendered variant but does not change the FSRS card identity.
 
 ### Odd-one-out relation cards
 

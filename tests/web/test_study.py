@@ -30,7 +30,7 @@ def test_study_requires_reveal_before_rating(web_context: tuple[object, object, 
         "/study/rate",
         data={
             "session_token": controller.session.session_token,
-            "card_id": current.card.card_id,
+            "entity_id": current.card.card_key.entity_id,
             "rating": "3",
         },
         headers={"Host": "localhost"},
@@ -38,6 +38,25 @@ def test_study_requires_reveal_before_rating(web_context: tuple[object, object, 
 
     assert response.status_code == 409
     assert b"Reveal the answer" in response.data
+
+
+def test_study_accepts_entity_ids_longer_than_512_characters(
+    web_context: tuple[object, object, object],
+) -> None:
+    client, controller, _repository = web_context
+    _start_session(client, controller, StudyMode.DUE)
+    current = controller.session.current
+    assert current is not None
+    response = client.post(
+        "/study/reveal",
+        data={
+            "session_token": controller.session.session_token,
+            "entity_id": "x" * 513,
+        },
+        headers={"Host": "localhost"},
+    )
+
+    assert response.status_code == 409
 
 
 def test_study_reveal_and_rating_persist_review(web_context: tuple[object, object, object]) -> None:
@@ -48,12 +67,12 @@ def test_study_reveal_and_rating_persist_review(web_context: tuple[object, objec
     token = controller.session.session_token
     reveal = client.post(
         "/study/reveal",
-        data={"session_token": token, "card_id": current.card.card_id},
+        data={"session_token": token, "entity_id": current.card.card_key.entity_id},
         headers={"Host": "localhost"},
     )
     rate = client.post(
         "/study/rate",
-        data={"session_token": token, "card_id": current.card.card_id, "rating": "3"},
+        data={"session_token": token, "entity_id": current.card.card_key.entity_id, "rating": "3"},
         headers={"Host": "localhost"},
     )
     history = repository.review_history("capitals", datetime.now(UTC))
@@ -72,12 +91,12 @@ def test_practice_next_does_not_create_review(web_context: tuple[object, object,
     token = controller.session.session_token
     client.post(
         "/study/reveal",
-        data={"session_token": token, "card_id": current.card.card_id},
+        data={"session_token": token, "entity_id": current.card.card_key.entity_id},
         headers={"Host": "localhost"},
     )
     next_response = client.post(
         "/study/next",
-        data={"session_token": token, "card_id": current.card.card_id},
+        data={"session_token": token, "entity_id": current.card.card_key.entity_id},
         headers={"Host": "localhost"},
     )
     history = repository.review_history("capitals", datetime.now(UTC))

@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from fsrs import Rating
 from pydantic import BaseModel, ConfigDict, Field
 
+from graphcards.references import EntityId
 from graphcards.storage import CardStatus, ReviewRecord, datetime_as_utc, datetime_to_text
 
 CARD_PAGE_SIZE = 100
@@ -77,7 +78,7 @@ class CardStatusQuery(BaseModel):
     direction: SortDirection = SortDirection.ASCENDING
     range: HistoryRange = HistoryRange.NINETY_DAYS
     tab: InfoTab = InfoTab.STATUS
-    preview_entity: str | None = Field(default=None, min_length=1, max_length=512)
+    preview_entity: EntityId | None = None
     preview_generator: str | None = Field(default=None, min_length=1, max_length=512)
 
 
@@ -194,7 +195,7 @@ def _sort_value(row: StatusCard, sort: CardSort) -> datetime | float | int | Non
 
 
 def sort_status_cards(cards: list[StatusCard], query: CardStatusQuery) -> list[StatusCard]:
-    ordered = sorted(cards, key=lambda row: row.status.card_id)
+    ordered = sorted(cards, key=lambda row: row.status.card_key.identity_parts)
     present = [row for row in ordered if _sort_value(row, query.sort) is not None]
     missing = [row for row in ordered if _sort_value(row, query.sort) is None]
     present.sort(

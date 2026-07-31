@@ -68,7 +68,6 @@ def test_cloze_schedules_selected_markers_and_renders_nested_answers(
     assert deck.render(nested_c2).front == "(The answer is [...] NOT CORRECT)"
     assert deck.render(nested_c2).back == "(The answer is Answer 1 NOT CORRECT)"
 
-    assert len({exercise.card_key.digest for exercise in exercises}) == 2
     assert len({exercise.card_key for exercise in exercises}) == 2
 
 
@@ -82,7 +81,7 @@ def test_cloze_identity_is_stored_with_one_fsrs_card_per_entity(tmp_path: Path) 
         assert "cloze_id" not in CardKey.model_fields
         assert repository.connection.execute("SELECT COUNT(*) FROM cards").fetchone()[0] == 2
         for card in cards:
-            restored = repository.get_card(card.card_id)
+            restored = repository.get_card(card.card_key)
             assert restored is not None
             assert restored.card_key == card.card_key
 
@@ -190,9 +189,5 @@ def test_cloze_cards_are_named_in_status_and_detail_views(tmp_path: Path) -> Non
         repository.close()
 
 
-def test_cloze_id_does_not_change_card_digest() -> None:
-    first = CardKey.exercise("deck", "clozes", "capital")
-    second = CardKey.exercise("deck", "clozes", "capital")
-
-    assert first.digest == second.digest
+def test_cloze_id_is_not_part_of_card_identity() -> None:
     assert "cloze_id" not in CardKey.model_fields

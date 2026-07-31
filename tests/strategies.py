@@ -160,7 +160,6 @@ def card_keys(draw: st.DrawFn, *, deck_id: str = "deck") -> CardKey:
     return CardKey.exercise(
         deck_id,
         draw(valid_identity_strings),
-        draw(valid_identity_strings),
     )
 
 
@@ -174,16 +173,8 @@ def aware_datetimes() -> st.SearchStrategy[datetime]:
     )
 
 
-def card_ids() -> st.SearchStrategy[str]:
-    return st.binary(min_size=32, max_size=32).map(lambda value: value.hex())
-
-
 def tokens() -> st.SearchStrategy[str]:
     return st.text(alphabet=SAFE_ALPHABET, min_size=1, max_size=32)
-
-
-def invalid_card_ids() -> st.SearchStrategy[str]:
-    return st.one_of(st.text(max_size=12), st.binary(max_size=31).map(lambda value: value.hex()))
 
 
 def status_queries() -> st.SearchStrategy[dict[str, object]]:

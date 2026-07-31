@@ -189,13 +189,13 @@
                     <div class="flex flex-wrap gap-1">
                       {% if row.status.suspended %}
                         <form class="grid gap-2" method="post" action="{{ url_for('resume_card', deck_name=deck.name) }}">
-                          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="card_id" value="{{ row.status.card_id }}">
+                          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="entity_id" value="{{ row.status.card_key.entity_id }}">
                           <input type="hidden" name="availability" value="{{ query.availability.value }}"><input type="hidden" name="schedule" value="{{ query.schedule.value }}"><input type="hidden" name="state" value="{{ query.state.value }}"><input type="hidden" name="sort" value="{{ query.sort.value }}"><input type="hidden" name="direction" value="{{ query.direction.value }}"><input type="hidden" name="range" value="{{ query.range.value }}">
                           <button class="min-h-7 rounded-md px-2 py-1 text-xs" type="submit">Resume</button>
                         </form>
                       {% else %}
                         <form class="grid gap-2" method="post" action="{{ url_for('suspend_card', deck_name=deck.name) }}">
-                          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="card_id" value="{{ row.status.card_id }}">
+                          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="entity_id" value="{{ row.status.card_key.entity_id }}">
                           <input type="hidden" name="availability" value="{{ query.availability.value }}"><input type="hidden" name="schedule" value="{{ query.schedule.value }}"><input type="hidden" name="state" value="{{ query.state.value }}"><input type="hidden" name="sort" value="{{ query.sort.value }}"><input type="hidden" name="direction" value="{{ query.direction.value }}"><input type="hidden" name="range" value="{{ query.range.value }}">
                           <button class="min-h-7 rounded-md px-2 py-1 text-xs" type="submit">Suspend</button>
                         </form>

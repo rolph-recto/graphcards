@@ -25,12 +25,12 @@ from graphcards.web.study import StudyMode
 from tests.strategies import (
     EXPENSIVE_PROPERTY_SETTINGS,
     PROPERTY_SETTINGS,
-    card_ids,
-    invalid_card_ids,
+    invalid_identity_strings,
     malformed_query_values,
     status_queries,
     suspension_reasons,
     tokens,
+    valid_identity_strings,
 )
 
 
@@ -90,7 +90,7 @@ def _expected_status_rows(rows: list[object], query: CardStatusQuery, now: objec
             "retrievability": row.retrievability,
         }[query.sort.value]
 
-    ordered = sorted(filtered, key=lambda row: row.status.card_id)
+    ordered = sorted(filtered, key=lambda row: row.status.card_key.identity_parts)
     present = [row for row in ordered if sort_value(row) is not None]
     missing = [row for row in ordered if sort_value(row) is None]
     present.sort(key=sort_value, reverse=query.direction.value == "desc")
@@ -128,7 +128,7 @@ def test_malformed_or_unauthorized_web_submissions_are_rejected(
     if endpoint == "/study/reveal":
         session = _start_session(client, controller)
         assert session.current is not None
-        data = {**data, "card_id": session.current.card.card_id}
+        data = {**data, "entity_id": session.current.card.card_key.entity_id}
     else:
         data = {
             "csrf_token": data["csrf_token"],
@@ -151,21 +151,21 @@ def test_study_rejects_wrong_card_and_repeated_reveal(
     session = _start_session(client, controller)
     assert session.current is not None
     token = session.session_token
-    card_id = session.current.card.card_id
+    entity_id = session.current.card.card_key.entity_id
 
     wrong_card = client.post(
         "/study/reveal",
-        data={"session_token": token, "card_id": "0" * 64},
+        data={"session_token": token, "entity_id": "missing-entity"},
         headers={"Host": "localhost"},
     )
     first_reveal = client.post(
         "/study/reveal",
-        data={"session_token": token, "card_id": card_id},
+        data={"session_token": token, "entity_id": entity_id},
         headers={"Host": "localhost"},
     )
     repeated_reveal = client.post(
         "/study/reveal",
-        data={"session_token": token, "card_id": card_id},
+        data={"session_token": token, "entity_id": entity_id},
         headers={"Host": "localhost"},
     )
 
@@ -194,7 +194,10 @@ def test_study_refresh_preserves_state_but_leaving_ends_session(
     assert (
         client.post(
             "/study/reveal",
-            data={"session_token": session.session_token, "card_id": current.card.card_id},
+            data={
+                "session_token": session.session_token,
+                "entity_id": current.card.card_key.entity_id,
+            },
             headers={"Host": "localhost"},
         ).status_code
         == 303
@@ -209,7 +212,10 @@ def test_study_refresh_preserves_state_but_leaving_ends_session(
     assert (
         client.post(
             "/study/reveal",
-            data={"session_token": session.session_token, "card_id": current.card.card_id},
+            data={
+                "session_token": session.session_token,
+                "entity_id": current.card.card_key.entity_id,
+            },
             headers={"Host": "localhost"},
         ).status_code
         == 409
@@ -222,12 +228,12 @@ def test_status_actions_reject_invalid_csrf_without_mutation(
 ) -> None:
     # Property: invalid CSRF tokens prevent status actions and leave card state unchanged.
     client, _controller, repository = web_context
-    card_id = repository.active_cards("capitals")[0].card_id
+    entity_id = repository.active_cards("capitals")[0].card_key.entity_id
     before = repository.card_statuses("capitals")
 
     response = client.post(
         "/decks/capitals/cards/suspend",
-        data={"csrf_token": "wrong", "card_id": card_id, "reason": "bad token"},
+        data={"csrf_token": "wrong", "entity_id": entity_id, "reason": "bad token"},
         headers={"Host": "localhost"},
     )
 
@@ -255,10 +261,8 @@ def test_status_endpoint_supports_a_second_page(
     deck = controller.config.deck("capitals")
     generated = controller.study_service.generate_all(deck)
     extras = {
-        key.digest: SemanticCard(card_key=key)
-        for key in (
-            CardKey.exercise("capitals", "property", f"extra-{index}") for index in range(110)
-        )
+        key.entity_id: SemanticCard(card_key=key)
+        for key in (CardKey.exercise("capitals", f"extra-{index}") for index in range(110))
     }
     repository.sync_deck("capitals", {**generated, **extras}, utc_now())
     response = client.get(
@@ -268,8 +272,7 @@ def test_status_endpoint_supports_a_second_page(
     assert response.status_code == 200
     expected_page_size = len(generated) + len(extras) - 100
     assert (
-        len(re.findall(rb'name="card_id" value="([0-9a-f]{64})"', response.data))
-        == expected_page_size
+        len(re.findall(rb'name="entity_id" value="([^"]+)"', response.data)) == expected_page_size
     )
 
 
@@ -285,7 +288,7 @@ def test_generated_status_filters_sort_and_paginate_without_server_errors(
     deck = controller.config.deck("capitals")
     initial_cards = repository.active_cards("capitals")
     controller.study_service.review(deck, initial_cards[0], Rating.Good, utc_now())
-    repository.suspend_card("capitals", initial_cards[1].card_id, "paused")
+    repository.suspend_card("capitals", initial_cards[1].card_key.entity_id, "paused")
     now = utc_now()
     rows = list(controller.card_statuses(deck, now))
     before_request = repository.card_statuses("capitals")
@@ -301,9 +304,9 @@ def test_generated_status_filters_sort_and_paginate_without_server_errors(
         page_rows = ordered[(query.page - 1) * 100 : query.page * 100]
         actual_ids = [
             value.decode()
-            for value in re.findall(rb'name="card_id" value="([0-9a-f]{64})"', response.data)
+            for value in re.findall(rb'name="entity_id" value="([^"]+)"', response.data)
         ]
-        assert actual_ids == [row.status.card_id for row in page_rows]
+        assert actual_ids == [row.status.card_key.entity_id for row in page_rows]
     else:
         assert response.status_code == 404
     assert repository.card_statuses("capitals") == before_request
@@ -404,8 +407,7 @@ def test_history_ranges_include_only_reviews_in_the_selected_window(selected: Hi
     records = (
         ReviewRecord(
             review_id=1,
-            card_id="old",
-            deck_name="deck",
+            card_key=CardKey.exercise("deck", "old"),
             rating=Rating.Good,
             reviewed_at=now - timedelta(days=100),
             previous_interval_seconds=None,
@@ -414,8 +416,7 @@ def test_history_ranges_include_only_reviews_in_the_selected_window(selected: Hi
         ),
         ReviewRecord(
             review_id=3,
-            card_id="old-previous",
-            deck_name="deck",
+            card_key=CardKey.exercise("deck", "old-previous"),
             rating=Rating.Good,
             reviewed_at=now - timedelta(days=101),
             previous_interval_seconds=None,
@@ -424,8 +425,7 @@ def test_history_ranges_include_only_reviews_in_the_selected_window(selected: Hi
         ),
         ReviewRecord(
             review_id=2,
-            card_id="recent",
-            deck_name="deck",
+            card_key=CardKey.exercise("deck", "recent"),
             rating=Rating.Easy,
             reviewed_at=now - timedelta(days=1),
             previous_interval_seconds=86400,
@@ -463,12 +463,12 @@ def test_non_urlencoded_forms_are_rejected_before_mutation(
     assert repository.status("capitals", utc_now()) == before
 
 
-@given(card_id=invalid_card_ids())
+@given(entity_id=invalid_identity_strings)
 @EXPENSIVE_PROPERTY_SETTINGS
 def test_invalid_study_ids_do_not_mutate_state(
-    web_context: tuple[object, object, Repository], card_id: str
+    web_context: tuple[object, object, Repository], entity_id: str
 ) -> None:
-    # Property: malformed card IDs return 400 without changing study or review state.
+    # Property: malformed entity IDs return 400 without changing study or review state.
     client, controller, repository = web_context
     _reset_web_context(controller, repository)
     session = _start_session(client, controller)
@@ -476,17 +476,21 @@ def test_invalid_study_ids_do_not_mutate_state(
     current = session.current
     before_index = session.index
     before_complete = session.complete
-    before = {card.card_id: card.card_json for card in repository.active_cards("capitals")}
+    before = {
+        card.card_key.entity_id: card.card_json for card in repository.active_cards("capitals")
+    }
     response = client.post(
         "/study/reveal",
         data={
             "session_token": session.session_token,
-            "card_id": card_id,
+            "entity_id": entity_id,
         },
         headers={"Host": "localhost"},
     )
     assert response.status_code == 400
-    assert {card.card_id: card.card_json for card in repository.active_cards("capitals")} == before
+    assert {
+        card.card_key.entity_id: card.card_json for card in repository.active_cards("capitals")
+    } == before
     assert repository.review_history("capitals", utc_now()) == ()
     assert session.current is current
     assert current.revealed is False
@@ -507,7 +511,7 @@ def test_invalid_study_tokens_do_not_mutate_state(
     current = session.current
     response = client.post(
         "/study/reveal",
-        data={"session_token": token, "card_id": current.card.card_id},
+        data={"session_token": token, "entity_id": current.card.card_key.entity_id},
         headers={"Host": "localhost"},
     )
     assert response.status_code == 403
@@ -521,22 +525,22 @@ def test_inactive_membership_status_actions_are_not_mutating(
     # Property: actions against inactive memberships return 404 and preserve their database row.
     client, controller, repository = web_context
     _reset_web_context(controller, repository)
-    card_id = repository.active_cards("capitals")[0].card_id
+    entity_id = repository.active_cards("capitals")[0].card_key.entity_id
     repository.sync_deck("capitals", {}, utc_now())
     before = repository.connection.execute(
-        "SELECT suspended, suspension_reason FROM deck_cards WHERE deck_name = ? AND card_id = ?",
-        ("capitals", card_id),
+        "SELECT suspended, suspension_reason FROM deck_cards WHERE deck_id = ? AND entity_id = ?",
+        ("capitals", entity_id),
     ).fetchone()
     for endpoint in ("suspend", "resume"):
         response = client.post(
             f"/decks/capitals/cards/{endpoint}",
-            data={"csrf_token": controller.csrf_token, "card_id": card_id},
+            data={"csrf_token": controller.csrf_token, "entity_id": entity_id},
             headers={"Host": "localhost"},
         )
         assert response.status_code == 404
     after = repository.connection.execute(
-        "SELECT suspended, suspension_reason FROM deck_cards WHERE deck_name = ? AND card_id = ?",
-        ("capitals", card_id),
+        "SELECT suspended, suspension_reason FROM deck_cards WHERE deck_id = ? AND entity_id = ?",
+        ("capitals", entity_id),
     ).fetchone()
     assert after == before
 
@@ -551,13 +555,13 @@ def test_valid_reveal_rate_lifecycle_records_exactly_one_review(
     _reset_web_context(controller, repository)
     session = _start_session(client, controller)
     assert session.current is not None
-    card_id = session.current.card.card_id
+    entity_id = session.current.card.card_key.entity_id
     token = session.session_token
 
     assert (
         client.post(
             "/study/rate",
-            data={"session_token": token, "card_id": card_id, "rating": rating.value},
+            data={"session_token": token, "entity_id": entity_id, "rating": rating.value},
             headers={"Host": "localhost"},
         ).status_code
         == 409
@@ -565,7 +569,7 @@ def test_valid_reveal_rate_lifecycle_records_exactly_one_review(
     assert (
         client.post(
             "/study/reveal",
-            data={"session_token": stale_token, "card_id": card_id},
+            data={"session_token": stale_token, "entity_id": entity_id},
             headers={"Host": "localhost"},
         ).status_code
         == 403
@@ -573,7 +577,7 @@ def test_valid_reveal_rate_lifecycle_records_exactly_one_review(
     assert (
         client.post(
             "/study/reveal",
-            data={"session_token": token, "card_id": card_id},
+            data={"session_token": token, "entity_id": entity_id},
             headers={"Host": "localhost"},
         ).status_code
         == 303
@@ -581,7 +585,7 @@ def test_valid_reveal_rate_lifecycle_records_exactly_one_review(
     assert (
         client.post(
             "/study/rate",
-            data={"session_token": token, "card_id": card_id, "rating": rating.value},
+            data={"session_token": token, "entity_id": entity_id, "rating": rating.value},
             headers={"Host": "localhost"},
         ).status_code
         == 303
@@ -590,7 +594,7 @@ def test_valid_reveal_rate_lifecycle_records_exactly_one_review(
     assert (
         client.post(
             "/study/rate",
-            data={"session_token": token, "card_id": card_id, "rating": rating.value},
+            data={"session_token": token, "entity_id": entity_id, "rating": rating.value},
             headers={"Host": "localhost"},
         ).status_code
         == 409
@@ -612,17 +616,20 @@ def test_rating_after_concurrent_suspension_is_a_controlled_conflict(
     assert (
         client.post(
             "/study/reveal",
-            data={"session_token": session.session_token, "card_id": current.card.card_id},
+            data={
+                "session_token": session.session_token,
+                "entity_id": current.card.card_key.entity_id,
+            },
             headers={"Host": "localhost"},
         ).status_code
         == 303
     )
-    repository.suspend_card("capitals", current.card.card_id, "concurrent")
+    repository.suspend_card("capitals", current.card.card_key.entity_id, "concurrent")
     response = client.post(
         "/study/rate",
         data={
             "session_token": session.session_token,
-            "card_id": current.card.card_id,
+            "entity_id": current.card.card_key.entity_id,
             "rating": rating.value,
         },
         headers={"Host": "localhost"},
@@ -639,11 +646,11 @@ def test_generated_status_form_values_never_create_reviews(
     # Property: generated suspension form values never create review history and validate safely.
     client, controller, repository = web_context
     _reset_web_context(controller, repository)
-    card_id = repository.active_cards("capitals")[0].card_id
+    entity_id = repository.active_cards("capitals")[0].card_key.entity_id
     before = repository.card_statuses("capitals")
     response = client.post(
         "/decks/capitals/cards/suspend",
-        data={"csrf_token": controller.csrf_token, "card_id": card_id, "reason": reason},
+        data={"csrf_token": controller.csrf_token, "entity_id": entity_id, "reason": reason},
         headers={"Host": "localhost"},
     )
     valid_reason = len(reason) <= 500 and not any(
@@ -653,7 +660,9 @@ def test_generated_status_form_values_never_create_reviews(
     assert repository.review_history("capitals", utc_now()) == ()
     if valid_reason:
         status = next(
-            item for item in repository.card_statuses("capitals") if item.card_id == card_id
+            item
+            for item in repository.card_statuses("capitals")
+            if item.card_key.entity_id == entity_id
         )
         assert status.suspended is True
         page = client.get("/decks/capitals/cards", headers={"Host": "localhost"})
@@ -663,21 +672,21 @@ def test_generated_status_form_values_never_create_reviews(
         assert repository.card_statuses("capitals") == before
 
 
-@given(card_id=card_ids())
+@given(entity_id=valid_identity_strings)
 @EXPENSIVE_PROPERTY_SETTINGS
-def test_unknown_valid_shape_card_ids_are_controlled_client_errors(
-    web_context: tuple[object, object, Repository], card_id: str
+def test_unknown_entity_ids_are_controlled_client_errors(
+    web_context: tuple[object, object, Repository], entity_id: str
 ) -> None:
-    # Property: unknown but well-shaped card IDs return 404 without mutating status state.
+    # Property: unknown entity IDs return 404 without mutating status state.
     client, controller, repository = web_context
     _reset_web_context(controller, repository)
-    known = {card.card_id for card in repository.active_cards("capitals")}
-    if card_id in known:
+    known = {card.card_key.entity_id for card in repository.active_cards("capitals")}
+    if entity_id in known:
         return
     before = repository.card_statuses("capitals")
     response = client.post(
         "/decks/capitals/cards/suspend",
-        data={"csrf_token": controller.csrf_token, "card_id": card_id},
+        data={"csrf_token": controller.csrf_token, "entity_id": entity_id},
         headers={"Host": "localhost"},
     )
     assert response.status_code == 404

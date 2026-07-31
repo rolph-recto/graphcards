@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from werkzeug.exceptions import HTTPException, InternalServerError
 
 from graphcards.errors import ConfigError, GraphCardsError
+from graphcards.references import EntityId
 from graphcards.storage import normalize_suspension_reason, utc_now
 from graphcards.web.controller import StudyController
 from graphcards.web.status import (
@@ -72,7 +73,7 @@ class _RevealSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     session_token: str = Field(min_length=1, max_length=256)
-    card_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    entity_id: EntityId
 
 
 class _RatingSubmission(_RevealSubmission):
@@ -92,8 +93,7 @@ class _StatusActionSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     csrf_token: str = Field(min_length=1, max_length=256)
-    card_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    entity_id: str | None = Field(default=None, min_length=1, max_length=512)
+    entity_id: EntityId | None = None
     generator_id: str | None = Field(default=None, min_length=1, max_length=512)
     availability: AvailabilityFilter = AvailabilityFilter.ALL
     schedule: ScheduleFilter = ScheduleFilter.ALL
@@ -104,7 +104,7 @@ class _StatusActionSubmission(BaseModel):
 
     @model_validator(mode="after")
     def require_card_reference(self) -> _StatusActionSubmission:
-        if self.card_id is None and self.entity_id is None:
+        if self.entity_id is None:
             raise ValueError("a card reference is required")
         return self
 
@@ -354,7 +354,7 @@ def create_flask_app(controller: StudyController) -> Flask:
             _RevealSubmission,
             "The study form is invalid.",
         )
-        _session().reveal(submission.session_token, submission.card_id)
+        _session().reveal(submission.session_token, submission.entity_id)
         return redirect(url_for("study"), code=HTTPStatus.SEE_OTHER)
 
     @app.post("/study/rate")
@@ -365,7 +365,7 @@ def create_flask_app(controller: StudyController) -> Flask:
         )
         _session().rate(
             submission.session_token,
-            submission.card_id,
+            submission.entity_id,
             Rating(submission.rating),
         )
         return redirect(url_for("study"), code=HTTPStatus.SEE_OTHER)
@@ -376,7 +376,7 @@ def create_flask_app(controller: StudyController) -> Flask:
             _RevealSubmission,
             "The study form is invalid.",
         )
-        _session().next_practice(submission.session_token, submission.card_id)
+        _session().next_practice(submission.session_token, submission.entity_id)
         return redirect(url_for("study"), code=HTTPStatus.SEE_OTHER)
 
     @app.post("/study/suspend")
@@ -387,7 +387,7 @@ def create_flask_app(controller: StudyController) -> Flask:
         )
         _session().suspend(
             submission.session_token,
-            submission.card_id,
+            submission.entity_id,
             submission.reason,
         )
         return redirect(url_for("study"), code=HTTPStatus.SEE_OTHER)
@@ -401,7 +401,6 @@ def create_flask_app(controller: StudyController) -> Flask:
         _controller().set_suspension(
             csrf_token=submission.csrf_token,
             deck_name=deck_name,
-            card_id=submission.card_id,
             entity_id=submission.entity_id,
             generator_id=submission.generator_id,
             suspended=True,
@@ -421,7 +420,6 @@ def create_flask_app(controller: StudyController) -> Flask:
         _controller().set_suspension(
             csrf_token=submission.csrf_token,
             deck_name=deck_name,
-            card_id=submission.card_id,
             entity_id=submission.entity_id,
             generator_id=submission.generator_id,
             suspended=False,

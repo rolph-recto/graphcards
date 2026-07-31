@@ -61,7 +61,7 @@ def test_multiple_choice_rendering_preserves_generated_choice_order(
 
 
 def test_multiple_choice_exercise_rejects_invalid_semantic_data() -> None:
-    key = CardKey.exercise("deck", "choice", "target")
+    key = CardKey.exercise("deck", "target")
 
     with pytest.raises(ValidationError, match="target must be one of its choices"):
         MultipleChoiceExercise(
@@ -74,7 +74,7 @@ def test_multiple_choice_exercise_rejects_invalid_semantic_data() -> None:
 
 def test_renderer_rejects_an_incompatible_semantic_exercise(deck: Deck) -> None:
     basic = next(generator for generator in deck.generators if generator.type == "basic")
-    key = CardKey.exercise(deck.name, "choices", "france")
+    key = CardKey.exercise(deck.name, "france")
     exercise = MultipleChoiceExercise(
         card_key=key,
         generator_id="choices",

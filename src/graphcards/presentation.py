@@ -19,7 +19,7 @@ def execute_cards(
     if card_key is None:
         return deck.generate_all(rng=rng)
     exercise = deck.generate(card_key, rng=rng)
-    return {exercise.card_key.digest: exercise}
+    return {exercise.card_key.entity_id: exercise}
 
 
 def render_card(deck: Deck, card: Card) -> CardView:

@@ -568,7 +568,7 @@ class ExerciseGenerator(FrozenModel, ABC):
             raise PresentationError(
                 f"generator {self.id!r} does not generate an exercise for entity {entity_id!r}"
             )
-        return CardKey.exercise(deck_id, self.id, entity_id)
+        return CardKey.exercise(deck_id, entity_id)
 
     def generate_card(self, card_key: CardKey, context: ExerciseGeneratorContext) -> Exercise:
         """Generate the semantic exercise identified by one scheduled card key."""
@@ -929,25 +929,35 @@ class Deck:
         context = ExerciseGeneratorContext(self.name, self.entities, random_source)
         generated: dict[str, Card] = {}
         for (entity_id, _cloze_id), generator in self._generators_by_key().items():
-            card_key = CardKey.exercise(self.name, generator.id, entity_id)
+            card_key = CardKey.exercise(self.name, entity_id)
             exercise = generator.generate_card(card_key, context)
-            card_id = exercise.card_key.digest
-            existing = generated.get(card_id)
+            entity_id = exercise.card_key.entity_id
+            existing = generated.get(entity_id)
             if existing is not None and existing.card_key != exercise.card_key:
-                raise PresentationError("SHA-256 collision between generated exercises")
-            generated[card_id] = exercise
+                raise PresentationError("duplicate entity identity between generated exercises")
+            generated[entity_id] = exercise
         return generated
 
     def generate(self, card_key: CardKey, *, rng: random.Random | None = None) -> Exercise:
-        if card_key.deck_id != self.name or card_key.generator_id is None:
-            raise PresentationError(f"card {card_key.digest} does not belong to deck {self.name!r}")
+        selected = self.generator_for_card(card_key)
         context = ExerciseGeneratorContext(self.name, self.entities, rng or random.Random())
-        selected = self._generators_by_key().get((card_key.entity_id, None))
-        if selected is None or selected.id != card_key.generator_id:
-            raise PresentationError(
-                f"deck {self.name!r} no longer generates card {card_key.digest}"
-            )
         return selected.generate_card(card_key, context)
+
+    def generator_for_card(self, card_key: CardKey) -> ExerciseGenerator:
+        """Return the currently selected runtime generator for a stored card key."""
+
+        if card_key.deck_id != self.name:
+            raise PresentationError(
+                f"card {card_key.deck_id}/{card_key.entity_id} does not belong to deck "
+                f"{self.name!r}"
+            )
+        selected = self._generators_by_key().get((card_key.entity_id, None))
+        if selected is None:
+            raise PresentationError(
+                f"deck {self.name!r} no longer generates card "
+                f"{card_key.deck_id}/{card_key.entity_id}"
+            )
+        return selected
 
     def render(self, exercise: Exercise, *, rng: random.Random | None = None) -> CardView:
         try:
