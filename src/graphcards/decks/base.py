@@ -132,7 +132,7 @@ class _SafeTemplateEnvironment(SandboxedEnvironment):
 
 
 _TEMPLATE_ENVIRONMENT = _SafeTemplateEnvironment(
-    autoescape=False,
+    autoescape=True,
     keep_trailing_newline=True,
     trim_blocks=False,
     lstrip_blocks=False,

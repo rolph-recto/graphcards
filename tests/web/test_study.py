@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import json
+import random
 from datetime import UTC, datetime
+from pathlib import Path
 
+from graphcards.config import load_config
+from graphcards.storage import Repository
+from graphcards.web.app import EXPECTED_HOST_CONFIG, create_flask_app
+from graphcards.web.controller import StudyController
 from graphcards.web.study import StudyMode
 
 
@@ -145,3 +152,69 @@ def test_study_pages_and_static_assets_keep_the_session(
     assert study.status_code == 200
     assert stylesheet.status_code == 200
     assert controller.session is not None
+
+
+def test_study_renders_html_from_jinja_card_templates(tmp_path: Path) -> None:
+    deck_path = tmp_path / "html" / "deck.json"
+    deck_path.parent.mkdir()
+    deck_path.write_text(
+        json.dumps(
+            {
+                "entities": [{"id": "target", "front": "Target", "back": "<b>Unsafe</b>"}],
+                "exercises": [
+                    {
+                        "id": "basic",
+                        "type": "basic",
+                        "entities": ["target"],
+                        "front_template": "<strong>{{ entity.front }}</strong>",
+                        "back_template": "<em>{{ entity.back }}</em>",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "graphcards.toml"
+    config_path.write_text(
+        f'state_path = "{tmp_path / "state.sqlite3"}"\ndecks = ["{deck_path}"]\n',
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    repository = Repository(config.state_path)
+    controller = StudyController(config, repository, random.Random(0))
+    app = create_flask_app(controller)
+    app.config[EXPECTED_HOST_CONFIG] = "localhost"
+    try:
+        client = app.test_client()
+        start = client.post(
+            "/sessions",
+            data={
+                "csrf_token": controller.csrf_token,
+                "deck_name": "html",
+                "mode": StudyMode.DUE.value,
+                "days": "1",
+                "limit": "1",
+            },
+            headers={"Host": "localhost"},
+        )
+        assert start.status_code == 303
+
+        study = client.get("/study", headers={"Host": "localhost"})
+        assert b"<strong>Target</strong>" in study.data
+        assert b"&lt;strong&gt;Target&lt;/strong&gt;" not in study.data
+
+        current = controller.session.current
+        assert current is not None
+        reveal = client.post(
+            "/study/reveal",
+            data={
+                "session_token": controller.session.session_token,
+                "entity_id": current.card.card_key.entity_id,
+            },
+            headers={"Host": "localhost"},
+        )
+        assert reveal.status_code == 303
+        revealed = client.get("/study", headers={"Host": "localhost"})
+        assert b"<em>&lt;b&gt;Unsafe&lt;/b&gt;</em>" in revealed.data
+    finally:
+        repository.close()

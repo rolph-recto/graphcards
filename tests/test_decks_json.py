@@ -353,6 +353,37 @@ def test_common_relation_custom_templates_receive_only_semantic_context(
     assert deck.render(card, rng=random.Random(99)).back == "b|target"
 
 
+def test_jinja_templates_keep_html_and_escape_inserted_values(tmp_path: Path, write_deck) -> None:
+    deck = Deck.load(
+        write_deck(
+            tmp_path / "html" / "deck.json",
+            {
+                "entities": [
+                    {
+                        "id": "target",
+                        "label": "<b>Unsafe</b>",
+                    }
+                ],
+                "exercises": [
+                    {
+                        "id": "basic",
+                        "type": "basic",
+                        "entities": ["target"],
+                        "front_template": "<strong>{{ entity.label }}</strong>",
+                        "back_template": "<em>{{ entity.label }}</em>",
+                    }
+                ],
+            },
+        )
+    )
+
+    card = next(iter(deck.generate_all().values()))
+    view = deck.render(card)
+
+    assert view.front == "<strong>&lt;b&gt;Unsafe&lt;/b&gt;</strong>"
+    assert view.back == "<em>&lt;b&gt;Unsafe&lt;/b&gt;</em>"
+
+
 def test_common_relation_preflight_covers_every_related_entity_under_cap(
     tmp_path: Path, write_deck
 ) -> None:

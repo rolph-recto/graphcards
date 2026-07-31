@@ -21,10 +21,10 @@
   {% if preview and query.preview_entity %}
     <section class="exercise-preview" aria-labelledby="preview-title">
       <h2 id="preview-title">Exercise preview</h2>
-      <div class="prompt">{{ preview.front }}</div>
+      <div class="prompt">{{ preview.front|safe }}</div>
       <div class="answer" aria-live="polite">
         <span class="answer-label">Answer</span>
-        <div class="answer-text">{{ preview.back }}</div>
+        <div class="answer-text">{{ preview.back|safe }}</div>
       </div>
       <p class="text-neutral-500">Preview only; no review or scheduling state was changed.</p>
     </section>
@@ -126,8 +126,8 @@
         <aside class="exercise-preview exercise-preview-panel" aria-labelledby="exercise-preview-title">
           <h2 id="exercise-preview-title">Exercise preview</h2>
           {% if preview and query.preview_generator %}
-            <div class="prompt">{{ preview.front }}</div>
-            <div class="answer" aria-live="polite"><span class="answer-label">Answer</span><div class="answer-text">{{ preview.back }}</div></div>
+            <div class="prompt">{{ preview.front|safe }}</div>
+            <div class="answer" aria-live="polite"><span class="answer-label">Answer</span><div class="answer-text">{{ preview.back|safe }}</div></div>
           {% else %}
             <p class="text-neutral-500">Choose Generate exercise for a generator to preview an exercise here.</p>
           {% endif %}

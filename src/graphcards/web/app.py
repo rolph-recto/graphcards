@@ -245,7 +245,8 @@ def create_flask_app(controller: StudyController) -> Flask:
     def add_security_headers(response: Response) -> Response:
         response.headers["Cache-Control"] = "no-store"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'none'; style-src 'self'; script-src 'self'; form-action 'self'; "
+            "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; "
+            "form-action 'self'; "
             "base-uri 'none'; frame-ancestors 'none'"
         )
         response.headers["Referrer-Policy"] = "no-referrer"

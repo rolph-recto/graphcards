@@ -27,12 +27,12 @@
         <p class="mb-4 text-xs font-bold uppercase tracking-wider text-neutral-500">
           {{ session.mode.label }} · Card {{ session.index + 1 }} of {{ session.cards|length }}
         </p>
-        <div class="prompt">{{ current.front }}</div>
+        <div class="prompt">{{ current.front|safe }}</div>
 
         {% if current.revealed %}
           <div class="answer" aria-live="polite">
             <span class="answer-label">Answer</span>
-            <div class="answer-text">{{ current.back }}</div>
+            <div class="answer-text">{{ current.back|safe }}</div>
           </div>
           {% if session.is_practice %}
             <form method="post" action="{{ url_for('next_practice') }}">

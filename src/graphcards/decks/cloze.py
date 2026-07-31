@@ -291,10 +291,10 @@ class ClozeExerciseGenerator(ExerciseGenerator):
                 card_key=exercise.card_key,
                 front=_render_template(self.front_template, template_context)
                 if self.front_template is not None
-                else front,
+                else _render_template("{{ value }}", {"value": front}),
                 back=_render_template(self.back_template, template_context)
                 if self.back_template is not None
-                else back,
+                else _render_template("{{ value }}", {"value": back}),
             )
         except PresentationError:
             raise
