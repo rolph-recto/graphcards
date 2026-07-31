@@ -96,5 +96,5 @@ def initialize_workspace(directory: Path, template: str | None = None) -> Path:
 
     for destination, (_relative, resource) in zip(destinations, resources, strict=True):
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(resource.read_text(encoding="utf-8"), encoding="utf-8")
+        destination.write_bytes(resource.read_bytes())
     return root

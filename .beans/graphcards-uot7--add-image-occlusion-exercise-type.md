@@ -1,11 +1,11 @@
 ---
 # graphcards-uot7
 title: Add image occlusion exercise type
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-07-31T00:35:44Z
-updated_at: 2026-07-31T01:15:42Z
+updated_at: 2026-07-31T01:44:47Z
 ---
 
 Add an Anki-inspired image occlusion exercise type. Users should view an image with hidden marked regions and recall the hidden content.
@@ -13,14 +13,14 @@ Add an Anki-inspired image occlusion exercise type. Users should view an image w
 ## Plan
 
 - [x] Inspect the current exercise model, storage, authoring flow, review flow, and test patterns.
-- [ ] Define the image occlusion data model and validation rules.
-- [ ] Add authoring support for an image and one or more rectangular occlusion regions.
-- [ ] Add review support that hides one target region and checks the users answer.
-- [ ] Add progress, scoring, and next-card behavior that match existing exercise types.
-- [ ] Add user-facing error handling for invalid images, regions, and stored data.
-- [ ] Add behavior tests for model, authoring, review, persistence, and edge cases.
-- [ ] Update the Tailwind-built stylesheet and user documentation if needed.
-- [ ] Run the required checks: pytest with warnings as errors, Ruff check, Ruff format check, and uv build.
+- [x] Define the image occlusion data model and validation rules.
+- [x] Add authoring support for an image and one or more rectangular occlusion regions.
+- [x] Add review support that hides one target region and checks the users answer.
+- [x] Add progress, scoring, and next-card behavior that match existing exercise types.
+- [x] Add user-facing error handling for invalid images, regions, and stored data.
+- [x] Add behavior tests for model, authoring, review, persistence, and edge cases.
+- [x] Update the Tailwind-built stylesheet and user documentation if needed.
+- [x] Run the required checks: pytest with warnings as errors, Ruff check, Ruff format check, and uv build.
 
 ## Scope and Design
 
@@ -56,11 +56,11 @@ Add an Anki-inspired image occlusion exercise type. Users should view an image w
 
 ## Delivery Order
 
-- [ ] Add occlusion target entities and occlusion placement models.
-- [ ] Add the image occlusion generator and target reference checks.
-- [ ] Add safe asset serving and structured study rendering.
-- [ ] Add examples, tests, and documentation.
-- [ ] Run pytest with warnings as errors, Ruff check, Ruff format check, and uv build.
+- [x] Add occlusion target entities and occlusion placement models.
+- [x] Add the image occlusion generator and target reference checks.
+- [x] Add safe asset serving and structured study rendering.
+- [x] Add examples, tests, and documentation.
+- [x] Run pytest with warnings as errors, Ruff check, Ruff format check, and uv build.
 
 ## Notes
 
@@ -110,4 +110,8 @@ The renderer must validate the numeric placement values and escape text. The stu
 - [x] Allow same-origin images in the web content security policy.
 - [x] Add tests for HTML output, value escaping, and study-page rendering.
 
-The image-specific generator, asset route, and image overlay styles remain in the unchecked delivery steps.
+The image-specific generator, asset route, and image overlay styles are complete.
+
+## Summary of Changes
+
+Implemented the image occlusion exercise type with normalized rectangular targets, one FSRS card per target entity, escaped Jinja HTML rendering, safe deck-scoped image serving, Tailwind overlay styles, JSON/TOML/YAML examples, documentation, and behavior tests. Required checks pass.

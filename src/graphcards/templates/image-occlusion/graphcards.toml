@@ -1,0 +1,2 @@
+state_path = ".graphcards/state.sqlite3"
+decks = ["deck.toml"]

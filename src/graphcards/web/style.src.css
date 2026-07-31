@@ -97,6 +97,50 @@
     @apply text-xl whitespace-pre-wrap;
   }
 
+  .image-occlusion {
+    @apply m-0 max-w-full leading-none;
+  }
+
+  .image-occlusion__canvas {
+    @apply relative block w-full max-w-full overflow-hidden rounded-lg border border-neutral-200;
+  }
+
+  .image-occlusion__canvas img {
+    @apply block h-auto max-w-full;
+  }
+
+  .image-occlusion__mask,
+  .image-occlusion__answer {
+    @apply absolute block;
+  }
+
+  .image-occlusion__mask-layer {
+    @apply absolute inset-0 h-full w-full;
+  }
+
+  .image-occlusion__mask {
+    fill: #171717;
+    stroke: #171717;
+    stroke-width: 0.4;
+  }
+
+  .image-occlusion__mask-text {
+    fill: white;
+    font-size: 4px;
+    font-weight: 700;
+    text-anchor: middle;
+    dominant-baseline: middle;
+  }
+
+  .image-occlusion__answer {
+    @apply grid place-items-center overflow-hidden border-2 border-neutral-900 bg-white/95 p-1
+      text-center text-sm font-semibold text-neutral-900;
+  }
+
+  .image-occlusion__answer-text {
+    @apply m-0 text-xl whitespace-pre-wrap;
+  }
+
   .generator-list {
     @apply grid gap-3 md:col-span-2;
   }

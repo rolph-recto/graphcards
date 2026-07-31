@@ -15,6 +15,11 @@ from graphcards.decks.common_relation import (
     CommonRelationExercise,
     CommonRelationExerciseGenerator,
 )
+from graphcards.decks.image_occlusion import (
+    ImageOcclusionExercise,
+    ImageOcclusionExerciseGenerator,
+    ImageOcclusionPlacement,
+)
 from graphcards.decks.missing_sequence_item import (
     MissingSequenceItemExercise,
     MissingSequenceItemExerciseGenerator,
@@ -59,6 +64,9 @@ __all__ = [
     "ExerciseGeneratorContext",
     "MultipleChoiceExercise",
     "MultipleChoiceExerciseGenerator",
+    "ImageOcclusionExercise",
+    "ImageOcclusionExerciseGenerator",
+    "ImageOcclusionPlacement",
     "MissingSequenceItemExercise",
     "MissingSequenceItemExerciseGenerator",
     "OddOneOutExercise",

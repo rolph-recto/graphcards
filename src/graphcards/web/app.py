@@ -5,10 +5,20 @@ from __future__ import annotations
 import math
 import sqlite3
 from http import HTTPStatus
+from pathlib import Path
 from typing import cast
 from urllib.parse import parse_qs, urlencode
 
-from flask import Flask, Response, current_app, redirect, render_template, request, url_for
+from flask import (
+    Flask,
+    Response,
+    current_app,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    url_for,
+)
 from fsrs import Rating
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from werkzeug.exceptions import HTTPException, InternalServerError
@@ -47,6 +57,15 @@ CONTROLLER_EXTENSION = "graphcards_controller"
 EXPECTED_HOST_CONFIG = "GRAPHCARDS_EXPECTED_HOST"
 _MAX_FIELDS = 32
 _ASCII_HEX_DIGITS = frozenset(b"0123456789abcdefABCDEF")
+_IMAGE_MEDIA_TYPES = {
+    ".avif": "image/avif",
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
 _STUDY_ENDPOINTS = frozenset(
     {
         "study",
@@ -54,6 +73,7 @@ _STUDY_ENDPOINTS = frozenset(
         "rate",
         "next_practice",
         "suspend_study_card",
+        "deck_asset",
         "static",
     }
 )
@@ -217,6 +237,33 @@ def _detail_url(deck_name: str, entity_id: str, query: CardStatusQuery) -> str:
     return f"{url_for('card_detail', deck_name=deck_name, entity_id=entity_id)}?{urlencode(values)}"
 
 
+def _deck_asset_path(deck_path: Path, image_path: str) -> tuple[Path, str]:
+    """Resolve one supported raster asset below the deck directory."""
+
+    if "\\" in image_path:
+        raise RequestFailure(HTTPStatus.NOT_FOUND, "That image does not exist.")
+    relative_path = Path(image_path)
+    if relative_path.is_absolute() or any(part in {"", ".", ".."} for part in relative_path.parts):
+        raise RequestFailure(HTTPStatus.NOT_FOUND, "That image does not exist.")
+    media_type = _IMAGE_MEDIA_TYPES.get(relative_path.suffix.casefold())
+    if media_type is None:
+        raise RequestFailure(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "That image type is not supported.")
+    deck_directory = deck_path.parent.resolve()
+    resolved = (deck_directory / relative_path).resolve()
+    try:
+        resolved.relative_to(deck_directory)
+    except ValueError as error:
+        raise RequestFailure(HTTPStatus.NOT_FOUND, "That image does not exist.") from error
+    try:
+        if not resolved.is_file():
+            raise RequestFailure(HTTPStatus.NOT_FOUND, "That image does not exist.")
+        with resolved.open("rb"):
+            pass
+    except OSError as error:
+        raise RequestFailure(HTTPStatus.NOT_FOUND, "That image could not be read.") from error
+    return resolved, media_type
+
+
 def create_flask_app(controller: StudyController) -> Flask:
     """Create one Flask application around a synchronized study controller."""
 
@@ -348,6 +395,16 @@ def create_flask_app(controller: StudyController) -> Flask:
             completion_title=completion_title,
             completion_summary=completion_text,
         )
+
+    @app.get("/decks/<path:deck_name>/assets/<path:image_path>")
+    def deck_asset(deck_name: str, image_path: str) -> Response:
+        current = _controller()
+        try:
+            deck = current.config.deck(deck_name)
+        except ConfigError as error:
+            raise RequestFailure(HTTPStatus.NOT_FOUND, "That deck does not exist.") from error
+        path, media_type = _deck_asset_path(deck.path, image_path)
+        return send_file(path, mimetype=media_type, conditional=False)
 
     @app.post("/study/reveal")
     def reveal() -> Response:

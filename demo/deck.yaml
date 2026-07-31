@@ -1,0 +1,22 @@
+name: Image occlusion study
+entities:
+  - id: sun
+    answer: Sun
+  - id: earth
+    answer: Earth
+exercises:
+  - id: solar-system
+    type: image_occlusion
+    image_path: assets/solar-system.jpg
+    image_alt: The solar system
+    occlusions:
+      - target_id: sun
+        x: 0.00
+        y: 0.25
+        width: 0.05
+        height: 0.50
+      - target_id: earth
+        x: 0.16
+        y: 0.42
+        width: 0.04
+        height: 0.16
