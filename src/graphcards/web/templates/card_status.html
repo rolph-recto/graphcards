@@ -103,7 +103,7 @@
     </section>
   {% elif tab.value == "generators" %}
     <section aria-label="Exercise Generators">
-      <div class="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
+      <div class="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
         <div class="generator-list">
           {% if generators %}
             {% for generator in generators %}
@@ -176,7 +176,7 @@
                 <tr class="status-card">
                   <td>
                     <code class="block max-w-sm font-mono text-xs wrap-anywhere text-neutral-600">
-                      <a aria-label="More details for {{ row.identity }}" href="{{ detail_urls[row.entity_id] }}">
+                      <a class="underline" aria-label="More details for {{ row.identity }}" href="{{ detail_urls[row.entity_id] }}">
                       {{ row.identity }}
                       </a>
                     </code>

@@ -14,10 +14,12 @@ from graphcards.errors import ConfigError, PresentationError
 from graphcards.models import CardKey
 from graphcards.storage import DeckStatus, Repository, utc_now
 from graphcards.web.status import (
+    CardReviewView,
     GeneratorRow,
     HistoryRange,
     HistoryView,
     StatusCard,
+    card_review_views,
     history_view,
 )
 from graphcards.web.study import RequestFailure, StudyMode, StudySession
@@ -233,6 +235,22 @@ class StudyController:
             now,
             self.config.display_timezone,
         )
+
+    def card_review_history(
+        self,
+        deck: Deck,
+        entity_id: str,
+        now: datetime,
+    ) -> tuple[CardReviewView, ...]:
+        """Return every immutable review event for one active card."""
+
+        self.entity_status(deck, entity_id, now)
+        records = tuple(
+            record
+            for record in self.repository.review_history(deck.name, now)
+            if record.card_key.entity_id == entity_id
+        )
+        return card_review_views(records, now, self.config.display_timezone)
 
     def set_suspension(
         self,

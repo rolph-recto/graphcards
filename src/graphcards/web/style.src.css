@@ -142,7 +142,7 @@
   }
 
   .generator-list {
-    @apply grid gap-3 md:col-span-2;
+    @apply grid gap-3;
   }
 
   .generator-card {

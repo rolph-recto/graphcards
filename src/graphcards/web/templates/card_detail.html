@@ -14,47 +14,128 @@
     </div>
   </header>
 
-  <section class="mt-6" aria-labelledby="generator-title">
+  <section class="mb-6 rounded-xl border border-neutral-200 bg-neutral-50 p-4" aria-labelledby="card-state-title">
     <header class="mb-4">
-      <h2 class="mb-1 text-2xl" id="generator-title">Exercise Generators</h2>
+      <h2 class="mb-1" id="card-state-title">Card state</h2>
+      <p class="text-sm text-neutral-500">Current FSRS scheduling and availability.</p>
     </header>
-    <div class="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
-      <div class="generator-list">
-        {% if generators %}
-        {% for generator in generators %}
-          <article class="generator-card">
-            <div>
-              <h3>{{ generator.id }}</h3>
-              <p class="text-neutral-500">Type: {{ generator.type }}{% if generator.type == "cloze" %} · {{ generator.scheduled_keys(deck.entities)|length }} selected cloze(s){% endif %}</p>
-            </div>
-            <form method="get" action="{{ url_for('card_detail', deck_name=deck.name, entity_id=entity_id) }}">
-              <input type="hidden" name="page" value="{{ query.page }}">
-              <input type="hidden" name="availability" value="{{ query.availability.value }}">
-              <input type="hidden" name="schedule" value="{{ query.schedule.value }}">
-              <input type="hidden" name="state" value="{{ query.state.value }}">
-              <input type="hidden" name="sort" value="{{ query.sort.value }}">
-              <input type="hidden" name="direction" value="{{ query.direction.value }}">
-              <input type="hidden" name="range" value="{{ query.range.value }}">
-              <input type="hidden" name="tab" value="{{ query.tab.value }}">
-              <input type="hidden" name="preview_generator" value="{{ generator.id }}">
-              <button type="submit">Generate exercise</button>
-            </form>
-          </article>
-        {% endfor %}
-        {% else %}
-          <p class="rounded-xl border border-neutral-200 p-8 text-center text-neutral-600">This card has no configured exercise generators.</p>
-        {% endif %}
+    <dl class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <div>
+        <dt class="text-xs font-semibold uppercase tracking-wider text-neutral-500">Availability</dt>
+        <dd class="mt-1 font-semibold">{% if card.status.suspended %}Suspended{% else %}Available{% endif %}</dd>
       </div>
-      <aside class="exercise-preview exercise-preview-panel" aria-labelledby="exercise-preview-title">
-        <h2 id="exercise-preview-title">Exercise preview</h2>
-        {% if preview and query.preview_generator %}
-          <div class="prompt">{{ preview.front|safe }}</div>
-          <div class="answer" aria-live="polite"><span class="answer-label">Answer</span><div class="answer-text">{{ preview.back|safe }}</div></div>
-          <p class="text-neutral-500">Preview only; no review or scheduling state was changed.</p>
-        {% else %}
-          <p class="text-neutral-500">Choose Generate exercise for a generator to preview an exercise here.</p>
-        {% endif %}
-      </aside>
-    </div>
+      <div>
+        <dt class="text-xs font-semibold uppercase tracking-wider text-neutral-500">FSRS state</dt>
+        <dd class="mt-1 font-semibold">{{ card.fsrs_label }}</dd>
+      </div>
+      <div>
+        <dt class="text-xs font-semibold uppercase tracking-wider text-neutral-500">Schedule</dt>
+        <dd class="mt-1 font-semibold">{{ card.badges|join(" · ") }}</dd>
+      </div>
+      <div>
+        <dt class="text-xs font-semibold uppercase tracking-wider text-neutral-500">Reviews</dt>
+        <dd class="mt-1 font-semibold">{{ card.status.review_count }}</dd>
+      </div>
+      <div>
+        <dt class="text-xs font-semibold uppercase tracking-wider text-neutral-500">Next review</dt>
+        <dd class="mt-1 font-semibold" title="{{ card.next_review.display }}">{{ card.next_review.relative }}</dd>
+      </div>
+      <div>
+        <dt class="text-xs font-semibold uppercase tracking-wider text-neutral-500">Last review</dt>
+        <dd class="mt-1 font-semibold"{% if card.last_review %} title="{{ card.last_review.display }}"{% endif %}>{% if card.last_review %}{{ card.last_review.relative }}{% else %}—{% endif %}</dd>
+      </div>
+      <div>
+        <dt class="text-xs font-semibold uppercase tracking-wider text-neutral-500">Stability</dt>
+        <dd class="mt-1 font-semibold">{{ card.stability }}</dd>
+      </div>
+      <div>
+        <dt class="text-xs font-semibold uppercase tracking-wider text-neutral-500">Difficulty</dt>
+        <dd class="mt-1 font-semibold">{{ card.difficulty }}</dd>
+      </div>
+      <div>
+        <dt class="text-xs font-semibold uppercase tracking-wider text-neutral-500">Retrievability</dt>
+        <dd class="mt-1 font-semibold">{{ card.retrievability }}</dd>
+      </div>
+    </dl>
   </section>
+
+  <nav class="my-6 flex flex-wrap gap-1.5 border-b border-neutral-200" aria-label="Card detail tabs">
+    <a class="px-3.5 py-2.5 text-sm font-semibold no-underline{% if tab.value == 'history' %} border-b-2 border-neutral-900 text-neutral-900{% else %} text-neutral-600{% endif %}" href="{{ tab_urls.history }}"{% if tab.value == "history" %} aria-current="page"{% endif %}>Review History</a>
+    <a class="px-3.5 py-2.5 text-sm font-semibold no-underline{% if tab.value == 'generators' %} border-b-2 border-neutral-900 text-neutral-900{% else %} text-neutral-600{% endif %}" href="{{ tab_urls.generators }}"{% if tab.value == "generators" %} aria-current="page"{% endif %}>Exercise Generators</a>
+  </nav>
+
+  {% if tab.value == "history" %}
+    <section id="review-history" aria-labelledby="review-history-title">
+      <header class="mb-4">
+        <h2 class="mb-1" id="review-history-title">Review History</h2>
+        <p class="text-sm text-neutral-500">All reviews for this card.</p>
+      </header>
+      {% if reviews %}
+        <div class="overflow-x-auto rounded-xl border border-neutral-200 bg-white">
+          <table class="status-table">
+            <thead>
+              <tr><th>Date</th><th>Rating</th><th>Previous interval</th><th>Next interval</th><th>Retrievability</th></tr>
+            </thead>
+            <tbody>
+              {% for review in reviews %}
+                <tr>
+                  <td class="whitespace-nowrap" title="{{ review.reviewed_at.exact }}">{{ review.reviewed_at.display }}</td>
+                  <td class="font-semibold">{{ review.rating }}</td>
+                  <td>{{ review.previous_interval }}</td>
+                  <td>{{ review.scheduled_interval }}</td>
+                  <td>{{ review.retrievability }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p class="rounded-xl border border-neutral-200 p-8 text-center text-neutral-600">This card has no review history yet.</p>
+      {% endif %}
+    </section>
+  {% else %}
+    <section aria-labelledby="generator-title">
+      <header class="mb-4">
+        <h2 class="mb-1 text-2xl" id="generator-title">Exercise Generators</h2>
+      </header>
+      <div class="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
+        <div class="generator-list">
+          {% if generators %}
+          {% for generator in generators %}
+            <article class="generator-card">
+              <div>
+                <h3>{{ generator.id }}</h3>
+                <p class="text-neutral-500">Type: {{ generator.type }}{% if generator.type == "cloze" %} · {{ generator.scheduled_keys(deck.entities)|length }} selected cloze(s){% endif %}</p>
+              </div>
+              <form method="get" action="{{ url_for('card_detail', deck_name=deck.name, entity_id=entity_id) }}">
+                <input type="hidden" name="page" value="{{ query.page }}">
+                <input type="hidden" name="availability" value="{{ query.availability.value }}">
+                <input type="hidden" name="schedule" value="{{ query.schedule.value }}">
+                <input type="hidden" name="state" value="{{ query.state.value }}">
+                <input type="hidden" name="sort" value="{{ query.sort.value }}">
+                <input type="hidden" name="direction" value="{{ query.direction.value }}">
+                <input type="hidden" name="range" value="{{ query.range.value }}">
+                <input type="hidden" name="tab" value="{{ query.tab.value }}">
+                <input type="hidden" name="preview_generator" value="{{ generator.id }}">
+                <button type="submit">Generate exercise</button>
+              </form>
+            </article>
+          {% endfor %}
+          {% else %}
+            <p class="rounded-xl border border-neutral-200 p-8 text-center text-neutral-600">This card has no configured exercise generators.</p>
+          {% endif %}
+        </div>
+        <aside class="exercise-preview exercise-preview-panel" aria-labelledby="exercise-preview-title">
+          <h2 id="exercise-preview-title">Exercise preview</h2>
+          {% if preview and query.preview_generator %}
+            <div class="prompt">{{ preview.front|safe }}</div>
+            <div class="answer" aria-live="polite"><span class="answer-label">Answer</span><div class="answer-text">{{ preview.back|safe }}</div></div>
+            <p class="text-neutral-500">Preview only; no review or scheduling state was changed.</p>
+          {% else %}
+            <p class="text-neutral-500">Choose Generate exercise for a generator to preview an exercise here.</p>
+          {% endif %}
+        </aside>
+      </div>
+    </section>
+  {% endif %}
 {% endblock %}

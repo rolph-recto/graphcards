@@ -36,6 +36,8 @@ from graphcards.web.status import (
     SORT_OPTIONS,
     STATE_OPTIONS,
     AvailabilityFilter,
+    CardDetailQuery,
+    CardDetailTab,
     CardSort,
     CardStatusQuery,
     FsrsStateFilter,
@@ -233,6 +235,19 @@ def _tab_url(deck_name: str, query: CardStatusQuery, tab: InfoTab) -> str:
 def _detail_url(deck_name: str, entity_id: str, query: CardStatusQuery) -> str:
     values = query.model_dump(mode="json", exclude_none=True)
     values.pop("preview_entity", None)
+    values.pop("preview_generator", None)
+    values["tab"] = CardDetailTab.GENERATORS.value
+    return f"{url_for('card_detail', deck_name=deck_name, entity_id=entity_id)}?{urlencode(values)}"
+
+
+def _detail_tab_url(
+    deck_name: str,
+    entity_id: str,
+    query: CardDetailQuery,
+    tab: CardDetailTab,
+) -> str:
+    values = query.model_dump(mode="json", exclude_none=True)
+    values["tab"] = tab.value
     values.pop("preview_generator", None)
     return f"{url_for('card_detail', deck_name=deck_name, entity_id=entity_id)}?{urlencode(values)}"
 
@@ -495,22 +510,23 @@ def create_flask_app(controller: StudyController) -> Flask:
         except ConfigError as error:
             raise RequestFailure(HTTPStatus.NOT_FOUND, "That deck does not exist.") from error
         try:
-            query = CardStatusQuery.model_validate(_query_data())
+            query = CardDetailQuery.model_validate(_query_data())
         except ValidationError as error:
             raise RequestFailure(
                 HTTPStatus.BAD_REQUEST,
                 "The card-detail request is invalid.",
             ) from error
-        if query.preview_entity is not None:
-            raise RequestFailure(
-                HTTPStatus.BAD_REQUEST,
-                "The card-detail request is invalid.",
-            )
         now = utc_now()
-        current.entity_status(deck, entity_id, now)
+        status = current.entity_status(deck, entity_id, now)
+        card = status_row(status, now, current.config.display_timezone)
         generators = current.generators_for_entity(deck, entity_id)
         preview = None
         if query.preview_generator is not None:
+            if query.tab is not CardDetailTab.GENERATORS:
+                raise RequestFailure(
+                    HTTPStatus.BAD_REQUEST,
+                    "The exercise preview request is invalid.",
+                )
             preview = current.preview_generator_for_entity(
                 deck,
                 entity_id,
@@ -520,14 +536,27 @@ def create_flask_app(controller: StudyController) -> Flask:
             "card_detail.html",
             deck=deck,
             entity_id=entity_id,
+            card=card,
             generators=generators,
             query=query,
+            tab=query.tab,
+            tab_urls={
+                CardDetailTab.REVIEW_HISTORY: _detail_tab_url(
+                    deck.name,
+                    entity_id,
+                    query,
+                    CardDetailTab.REVIEW_HISTORY,
+                ),
+                CardDetailTab.GENERATORS: _detail_tab_url(
+                    deck.name,
+                    entity_id,
+                    query,
+                    CardDetailTab.GENERATORS,
+                ),
+            },
+            reviews=current.card_review_history(deck, entity_id, now),
             preview=preview,
-            back_url=_status_url(
-                deck.name,
-                query.model_copy(update={"tab": InfoTab.STATUS}),
-                query.page,
-            ),
+            back_url=_status_url(deck.name, query.status_query(), query.page),
         )
 
     @app.get("/decks/<path:deck_name>/cards")

@@ -197,6 +197,9 @@ def test_exercise_previews_are_rendered_without_mutating_state(
     assert b"Exercise preview" in generator_preview.data
     assert b"choices" in generator_preview.data
     assert b'aria-current="page">Exercise Generators' in generator_preview.data
+    assert (
+        b'<div class="grid grid-cols-1 items-start gap-4 md:grid-cols-2">' in generator_preview.data
+    )
     assert repository.card_statuses("capitals") == before_status
     assert repository.review_history("capitals", utc_now()) == before_history
     assert controller.rng.getstate() == rng_state
@@ -315,7 +318,7 @@ def test_card_detail_preserves_status_filters_and_invalid_action_paths_stay_405(
             "sort": "review_count",
             "direction": "desc",
             "range": "30d",
-            "tab": "status",
+            "tab": "generators",
             "preview_generator": "basics",
         },
         headers={"Host": "localhost"},
@@ -323,14 +326,17 @@ def test_card_detail_preserves_status_filters_and_invalid_action_paths_stay_405(
     suspend = client.get("/decks/capitals/cards/suspend", headers={"Host": "localhost"})
     resume = client.get("/decks/capitals/cards/resume", headers={"Host": "localhost"})
 
-    expected_query = (
+    expected_detail_query = (
         b"page=1&amp;availability=all&amp;schedule=all&amp;state=all&amp;sort=review_count&amp;"
-        b"direction=desc&amp;range=30d&amp;tab=status"
+        b"direction=desc&amp;range=30d&amp;tab=generators"
     )
+    expected_status_query = expected_detail_query.replace(b"tab=generators", b"tab=status")
     assert status.status_code == 200
-    assert b'href="/decks/capitals/cards/detail/france?' + expected_query + b'"' in status.data
+    assert (
+        b'href="/decks/capitals/cards/detail/france?' + expected_detail_query + b'"' in status.data
+    )
     assert detail.status_code == 200
-    assert b'href="/decks/capitals/cards?' + expected_query + b'"' in detail.data
+    assert b'href="/decks/capitals/cards?' + expected_status_query + b'"' in detail.data
     assert b'name="sort" value="review_count"' in detail.data
     assert b'name="direction" value="desc"' in detail.data
     assert b'name="range" value="30d"' in detail.data
@@ -347,7 +353,7 @@ def test_card_detail_preserves_status_filters_and_invalid_action_paths_stay_405(
                 b'name="sort" value="review_count"',
                 b'name="direction" value="desc"',
                 b'name="range" value="30d"',
-                b'name="tab" value="status"',
+                b'name="tab" value="generators"',
                 b'name="preview_generator" value="basics"',
             )
         )
@@ -355,9 +361,55 @@ def test_card_detail_preserves_status_filters_and_invalid_action_paths_stay_405(
     )
     assert preview.status_code == 200
     assert b'id="exercise-preview-title"' in preview.data
-    assert b'href="/decks/capitals/cards?' + expected_query + b'"' in preview.data
+    assert b'href="/decks/capitals/cards?' + expected_status_query + b'"' in preview.data
     assert suspend.status_code == 405
     assert resume.status_code == 405
+
+
+def test_card_detail_shows_state_and_card_review_history_tabs(
+    web_context: tuple[object, object, object],
+) -> None:
+    client, controller, repository = web_context
+    deck = controller.config.deck("capitals")
+    france = next(
+        card for card in repository.active_cards("capitals") if card.card_key.entity_id == "france"
+    )
+    controller.study_service.review(deck, france, Rating.Good, utc_now())
+
+    history = client.get(
+        "/decks/capitals/cards/detail/france?tab=history",
+        headers={"Host": "localhost"},
+    )
+    generators = client.get(
+        "/decks/capitals/cards/detail/france?tab=generators",
+        headers={"Host": "localhost"},
+    )
+    invalid_preview = client.get(
+        "/decks/capitals/cards/detail/france?tab=history&preview_generator=basics",
+        headers={"Host": "localhost"},
+    )
+
+    assert history.status_code == 200
+    assert b'id="card-state-title">Card state' in history.data
+    assert b"Availability" in history.data
+    assert b"Available" in history.data
+    assert b"FSRS state" in history.data
+    assert b"Reviews" in history.data
+    assert b'aria-current="page">Review History' in history.data
+    assert b'id="review-history"' in history.data
+    assert b"All reviews for this card." in history.data
+    assert b"Good" in history.data
+    assert b"Generate exercise" not in history.data
+
+    assert generators.status_code == 200
+    assert b'aria-current="page">Exercise Generators' in generators.data
+    assert b"Generate exercise" in generators.data
+    assert b"Review History" in generators.data
+    assert b"md:grid-cols-2" in generators.data
+    assert invalid_preview.status_code == 400
+
+    status = client.get("/decks/capitals/cards", headers={"Host": "localhost"})
+    assert b'<a class="underline" aria-label="More details for france"' in status.data
 
 
 def test_shared_preview_panels_keep_generator_sections_unchanged(

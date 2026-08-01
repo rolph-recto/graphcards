@@ -67,6 +67,11 @@ class InfoTab(StrEnum):
     GENERATORS = "generators"
 
 
+class CardDetailTab(StrEnum):
+    REVIEW_HISTORY = "history"
+    GENERATORS = "generators"
+
+
 class CardStatusQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -80,6 +85,32 @@ class CardStatusQuery(BaseModel):
     tab: InfoTab = InfoTab.STATUS
     preview_entity: EntityId | None = None
     preview_generator: str | None = Field(default=None, min_length=1, max_length=512)
+
+
+class CardDetailQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    page: int = Field(default=1, ge=1)
+    availability: AvailabilityFilter = AvailabilityFilter.ALL
+    schedule: ScheduleFilter = ScheduleFilter.ALL
+    state: FsrsStateFilter = FsrsStateFilter.ALL
+    sort: CardSort = CardSort.NEXT_REVIEW
+    direction: SortDirection = SortDirection.ASCENDING
+    range: HistoryRange = HistoryRange.NINETY_DAYS
+    tab: CardDetailTab = CardDetailTab.GENERATORS
+    preview_generator: str | None = Field(default=None, min_length=1, max_length=512)
+
+    def status_query(self) -> CardStatusQuery:
+        return CardStatusQuery(
+            page=self.page,
+            availability=self.availability,
+            schedule=self.schedule,
+            state=self.state,
+            sort=self.sort,
+            direction=self.direction,
+            range=self.range,
+            tab=InfoTab.STATUS,
+        )
 
 
 @dataclass(frozen=True)
@@ -165,6 +196,16 @@ class HistoryView:
     buckets: tuple[HistoryBucket, ...]
     volume_maximum: int
     ratings: tuple[RatingView, ...]
+
+
+@dataclass(frozen=True)
+class CardReviewView:
+    review_id: int
+    reviewed_at: DateView
+    rating: str
+    previous_interval: str
+    scheduled_interval: str
+    retrievability: str
 
 
 def schedule_matches(row: StatusCard, query: CardStatusQuery, now: datetime) -> bool:
@@ -441,6 +482,39 @@ def history_view(
         volume_maximum=max((bucket.count for bucket in buckets), default=1) or 1,
         ratings=tuple(rating_views),
     )
+
+
+def card_review_views(
+    records: tuple[ReviewRecord, ...],
+    now: datetime,
+    timezone: ZoneInfo,
+) -> tuple[CardReviewView, ...]:
+    """Format every review record for one card, newest review first."""
+
+    views: list[CardReviewView] = []
+    for record in reversed(records):
+        reviewed_at = cast(DateView, _date_view(record.reviewed_at, now, timezone))
+        views.append(
+            CardReviewView(
+                review_id=record.review_id,
+                reviewed_at=reviewed_at,
+                rating=_rating_label(record.rating),
+                previous_interval=(
+                    _duration_label(record.previous_interval_seconds)
+                    if record.previous_interval_seconds is not None
+                    else "—"
+                ),
+                scheduled_interval=(
+                    _duration_label(record.scheduled_interval_seconds)
+                    if record.scheduled_interval_seconds is not None
+                    else "—"
+                ),
+                retrievability=(
+                    f"{record.retrievability:.1%}" if record.retrievability is not None else "—"
+                ),
+            )
+        )
+    return tuple(views)
 
 
 def pagination(
