@@ -22,5 +22,4 @@ Markers can be nested. For example:
 Selecting `c1` hides the complete nested answer. Selecting `c2` keeps the outer text visible and
 hides only `c2`.
 
-The same deck content can use JSON, TOML, or YAML. The template includes all three deck files;
-`graphcards.toml` uses `deck.json` by default.
+The same deck content can use JSON, TOML, or YAML. The template includes all three deck files.

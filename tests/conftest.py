@@ -69,7 +69,10 @@ def write_config() -> Callable[..., Path]:
         fsrs: dict[str, object] | None = None,
     ) -> Path:
         deck_values = ", ".join(json.dumps(str(deck)) for deck in decks)
-        lines = [f"decks = [{deck_values}]"]
+        lines = [
+            'templates_paths = ["templates"]',
+            f"decks = [{deck_values}]",
+        ]
         if fsrs:
             lines.append("[fsrs]")
             for key, value in fsrs.items():

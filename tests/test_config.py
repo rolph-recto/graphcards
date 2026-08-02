@@ -7,6 +7,7 @@ import pytest
 
 from graphcards.config import load_config
 from graphcards.errors import ConfigError
+from graphcards.scaffold import available_templates
 
 
 def test_paths_are_relative_to_config_file(
@@ -32,6 +33,62 @@ def test_empty_config_is_valid(tmp_path: Path) -> None:
 
     assert config.decks == ()
     assert config.display_timezone.key == "UTC"
+    assert config.templates_paths == ((tmp_path / "templates").resolve(),)
+
+
+def test_template_paths_preserve_order_and_resolve_from_config(tmp_path: Path) -> None:
+    absolute = tmp_path / "absolute-templates"
+    path = tmp_path / "profile" / "config.toml"
+    path.parent.mkdir()
+    path.write_text(
+        'templates_paths = ["relative-templates", ' + f'"{absolute}"]\n', encoding="utf-8"
+    )
+
+    config = load_config(path)
+
+    assert config.templates_paths == (
+        (path.parent / "relative-templates").resolve(),
+        absolute.resolve(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ('templates_paths = "templates"\n', "templates_paths must be a non-empty list"),
+        ("templates_paths = []\n", "at least one directory"),
+        ("templates_paths = [1]\n", "each templates_paths entry"),
+        ('templates_paths = ["templates", "./templates"]\n', "duplicate directory"),
+    ],
+)
+def test_invalid_template_paths_are_rejected(tmp_path: Path, body: str, message: str) -> None:
+    path = tmp_path / "invalid.toml"
+    path.write_text(body, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(path)
+
+
+def test_missing_template_directories_are_valid_but_produce_no_templates(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('templates_paths = ["missing"]\n', encoding="utf-8")
+
+    config = load_config(path)
+
+    assert config.templates_paths == ((tmp_path / "missing").resolve(),)
+    assert available_templates(config.templates_paths) == ()
+
+
+def test_existing_template_file_is_rejected(tmp_path: Path) -> None:
+    template_file = tmp_path / "templates-file"
+    template_file.write_text("not a directory", encoding="utf-8")
+    path = tmp_path / "config.toml"
+    path.write_text('templates_paths = ["templates-file"]\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="templates_paths entry must be a directory"):
+        load_config(path)
+    with pytest.raises(ConfigError, match="template path is not a directory"):
+        available_templates((template_file,))
 
 
 @pytest.mark.parametrize(

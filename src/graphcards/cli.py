@@ -11,11 +11,16 @@ from pathlib import Path
 from typing import TextIO
 
 from graphcards.app import StudyService
-from graphcards.config import AppConfig, load_config
+from graphcards.config import AppConfig, default_config_path, load_config
 from graphcards.decks import Deck
 from graphcards.errors import GraphCardsError
 from graphcards.presentation import execute_cards
-from graphcards.scaffold import available_templates, initialize_workspace
+from graphcards.scaffold import (
+    TEMPLATE_FORMATS,
+    available_templates,
+    initialize_user_setup,
+    initialize_workspace,
+)
 from graphcards.storage import CardStatus, DeckFileStateStore, datetime_to_text, utc_now
 from graphcards.web import run_server
 
@@ -31,15 +36,32 @@ def build_parser() -> argparse.ArgumentParser:
         prog="graphcards", description="Learn entity-backed exercises with FSRS scheduling"
     )
     parser.add_argument(
-        "-c", "--config", default="graphcards.toml", help="project TOML file (default: %(default)s)"
+        "-c",
+        "--config",
+        default=str(default_config_path()),
+        help="user-wide GraphCards TOML file (default: %(default)s)",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    init_parser = subparsers.add_parser("init", help="create a study workspace")
+    init_parser = subparsers.add_parser("init", help="create a deck")
     init_parser.add_argument("directory")
-    init_parser.add_argument("--template", help="create a bundled workspace template")
+    init_parser.add_argument("--template", help="create a deck from a bundled template")
+    init_parser.add_argument(
+        "--format",
+        dest="deck_format",
+        choices=TEMPLATE_FORMATS,
+        default="json",
+        help="deck format to copy (default: %(default)s)",
+    )
+    init_parser.add_argument("-c", "--config", dest="config", default=argparse.SUPPRESS)
 
-    subparsers.add_parser("templates", help="list bundled workspace templates")
+    templates_parser = subparsers.add_parser("templates", help="list configured templates")
+    templates_parser.add_argument("-c", "--config", dest="config", default=argparse.SUPPRESS)
+
+    setup_parser = subparsers.add_parser(
+        "setup", help="create the user-wide configuration and template library"
+    )
+    setup_parser.add_argument("-c", "--config", dest="config", default=argparse.SUPPRESS)
 
     for command, help_text in (
         ("validate", "validate JSON/TOML/YAML deck study content"),
@@ -231,19 +253,32 @@ def main(
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "setup":
+            config_path = initialize_user_setup(Path(args.config))
+            print(f"Created user-wide GraphCards setup in {config_path.parent}", file=output)
+            return 0
+
         if args.command == "init":
-            directory = initialize_workspace(Path(args.directory), args.template)
+            config = load_config(args.config)
+            directory = initialize_workspace(
+                Path(args.directory),
+                args.template,
+                args.deck_format,
+                config.templates_paths,
+            )
             if args.template:
                 print(
-                    f"Created GraphCards workspace from template {args.template!r} in {directory}",
+                    f"Created GraphCards deck from template {args.template!r} "
+                    f"({args.deck_format}) in {directory}",
                     file=output,
                 )
             else:
-                print(f"Created empty GraphCards workspace in {directory}", file=output)
+                print(f"Created empty GraphCards directory in {directory}", file=output)
             return 0
 
         if args.command == "templates":
-            for name in available_templates():
+            config = load_config(args.config)
+            for name in available_templates(config.templates_paths):
                 print(name, file=output)
             return 0
 

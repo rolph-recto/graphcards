@@ -429,3 +429,6 @@ class StudyService:
             card_key=card.card_key,
             card_json=card_json,
         )
+
+
+__all__ = ["StudyService"]

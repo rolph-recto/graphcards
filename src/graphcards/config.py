@@ -1,4 +1,4 @@
-"""Pydantic models and TOML loading for a GraphCards workspace."""
+"""Pydantic models and TOML loading for GraphCards user configuration."""
 
 from __future__ import annotations
 
@@ -24,6 +24,15 @@ from pydantic import (
 from graphcards.decks import Deck
 from graphcards.errors import ConfigError
 from graphcards.models import FrozenModel
+
+
+def default_config_path() -> Path:
+    """Return the default user-wide GraphCards configuration path."""
+
+    try:
+        return Path("~/.graphcards/config.toml").expanduser()
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise ConfigError(f"could not resolve default configuration path: {error}") from error
 
 
 def _number(value: object) -> float:
@@ -60,11 +69,47 @@ class FsrsSettings(FrozenModel):
             raise ConfigError(f"invalid FSRS settings: {error}") from error
 
 
+def _resolve_template_paths(value: object, info: ValidationInfo) -> tuple[Path, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("templates_paths must be a non-empty list of directories")
+    if not value:
+        raise ValueError("templates_paths must contain at least one directory")
+
+    context = info.context if isinstance(info.context, dict) else {}
+    base = context.get("base")
+    resolved: list[Path] = []
+    for entry in value:
+        if not isinstance(entry, (str, Path)) or not str(entry).strip():
+            raise ValueError("each templates_paths entry must be a non-empty directory path")
+        try:
+            path = Path(entry).expanduser()
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            raise ValueError(f"could not resolve template directory {entry}: {error}") from error
+        if not path.is_absolute() and isinstance(base, Path):
+            path = base / path
+        try:
+            path = path.resolve()
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            raise ValueError(f"could not resolve template directory {entry}: {error}") from error
+        if path.exists() and not path.is_dir():
+            raise ValueError(f"templates_paths entry must be a directory: {path}")
+        if path in resolved:
+            raise ValueError(f"templates_paths contains duplicate directory: {path}")
+        resolved.append(path)
+    return tuple(resolved)
+
+
 class AppConfig(FrozenModel):
     model_config = FrozenModel.model_config | ConfigDict(arbitrary_types_allowed=True)
     display_timezone: ZoneInfo = Field(default_factory=lambda: ZoneInfo("UTC"))
     decks: tuple[Deck, ...] = ()
+    templates_paths: tuple[Path, ...] = Field(default=(Path("templates"),), validate_default=True)
     fsrs: FsrsSettings = Field(default_factory=FsrsSettings)
+
+    @field_validator("templates_paths", mode="before")
+    @classmethod
+    def resolve_template_directories(cls, value: object, info: ValidationInfo) -> tuple[Path, ...]:
+        return _resolve_template_paths(value, info)
 
     @field_validator("decks", mode="before")
     @classmethod
@@ -112,13 +157,16 @@ class AppConfig(FrozenModel):
         raise ConfigError(f"unknown deck {name!r}; configured decks: {available}")
 
 
-def load_config(path: str | Path = "graphcards.toml") -> AppConfig:
-    """Load and validate one workspace configuration."""
+def load_config(path: str | Path | None = None) -> AppConfig:
+    """Load and validate one user-wide configuration file."""
 
+    config_input = default_config_path() if path is None else path
     try:
-        config_path = Path(path).expanduser().resolve()
+        config_path = Path(config_input).expanduser().resolve()
     except (OSError, RuntimeError, TypeError, ValueError) as error:
-        raise ConfigError(f"could not resolve configuration path {path}: {error}") from error
+        raise ConfigError(
+            f"could not resolve configuration path {config_input}: {error}"
+        ) from error
     try:
         with config_path.open("rb") as config_file:
             data: dict[str, Any] = tomllib.load(config_file)
@@ -140,3 +188,6 @@ def load_config(path: str | Path = "graphcards.toml") -> AppConfig:
         raise ConfigError(f"invalid configuration in {config_path}: {error}") from error
     config.fsrs.create_scheduler()
     return config
+
+
+__all__ = ["AppConfig", "FsrsSettings", "default_config_path", "load_config"]

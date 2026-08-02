@@ -1,9 +1,0 @@
-display_timezone = "UTC"
-decks = ["deck.json"]
-
-[fsrs]
-desired_retention = 0.9
-maximum_interval = 36500
-learning_steps_minutes = [1, 10]
-relearning_steps_minutes = [10]
-enable_fuzzing = true

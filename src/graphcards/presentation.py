@@ -26,3 +26,6 @@ def render_card(deck: Deck, card: Card) -> CardView:
     """Render a validated semantic exercise through its owning deck."""
 
     return deck.render(card)  # type: ignore[arg-type]
+
+
+__all__ = ["execute_cards", "render_card"]

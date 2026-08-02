@@ -1,412 +1,79 @@
 # GraphCards
 
-GraphCards is a local flashcard program backed by FSRS. Each configured deck is one complete JSON,
-TOML, or YAML file; `graphcards.toml` contains runtime settings and the list of deck files to load.
+GraphCards is a local flashcard application for entity-backed exercises. It loads JSON, TOML, or
+YAML decks, generates semantic cards, and stores FSRS study state in each deck file. The
+application runs locally and includes a Flask web study interface.
 
-## Workspace configuration
+## Install
 
-```toml
-display_timezone = "UTC"
-decks = ["decks/capitals/deck.toml", "decks/planets/deck.json"]
-```
-
-The directory name is the stable deck identity. The optional `name` in a deck file is display
-metadata only. RDF sources, SPARQL queries, and per-deck kinds are not configuration fields
-anymore. JSON, TOML, and YAML decks can be mixed in one workspace, and paths are relative to the
-workspace configuration file.
-
-## Deck content
-
-```json
-{
-  "name": "Capitals",
-  "entities": [
-    {"id": "france", "front": "France", "back": "Paris"},
-    {"id": "germany", "front": "Germany", "back": "Berlin"},
-    {"id": "italy", "label": "Rome"}
-  ],
-  "exercises": [
-    {"id": "basic", "type": "basic", "entities": ["france"]},
-    {
-      "id": "choice",
-      "type": "multiple_choice",
-      "max_choices": 3,
-      "choices": {"germany": ["france", "italy"]},
-      "front_template": "{{ target.front|default(target.prompt)|default(target.question)|default(target.id) }} — {% for choice in choice_entities %}{{ choice.label|default(choice.back)|default(choice.answer)|default(choice.id) }}{% if not loop.last %} / {% endif %}{% endfor %}",
-      "back_template": "Answer: {{ target.back|default(target.answer)|default(target.id) }}"
-    }
-  ]
-}
-```
-
-Entity records require unique non-blank IDs and may contain any nested JSON-compatible data.
-Generator records are strict. Basic generators schedule the listed entities. Multiple-choice
-generators list each target entity’s exhaustive distractor choices inline; the target is always the
-correct answer, and random choice selection/order does not participate in identity. `max_choices`
-is an upper bound on rendered choices; the target is always included. Missing-sequence-item groups are
-metadata, while their members are the scheduled targets in declared order. A member can belong to
-only one group in a generator. Missing-sequence-item `window_size` is the total number of visible rows,
-centered around the target; `0` shows the complete ordered group.
-Scrambled-list generators map each target entity to an ordered list of related entities. The default
-front shows the target and a shuffled list. The default back shows the configured order. The shuffle
-is stored in the semantic exercise, so rendering does not shuffle the list again.
-Analogy generators map each target entity to a list of source entities. The default template renders
-the selected source and target `front`/`back` values as an “A is to B as C is to ?” exercise.
-Each generator may override its type’s `front_template` and `back_template` in either deck format; omitted
-templates use the built-in renderer defaults. Templates receive entity references with arbitrary
-nested data and structural information only: basic (`entity: Entity`), multiple-choice
-(`target: Entity`, `choice_entities: tuple[Entity, ...]`), missing-sequence-item (`target: Entity`,
-`ordered_entities: tuple[Entity, ...]`, `rows: tuple[dict[str, object], ...]` with `position`,
-`entity`, and `is_target`, plus `omitted_before: bool` and `omitted_after: bool`), and analogy
-(`source: Entity`, `target: Entity`), and scrambled-list (`target: Entity`,
-`scrambled_entities: tuple[Entity, ...]`, `ordered_entities: tuple[Entity, ...]`). Entity references expose `.id` and every ordinary top-level
-record field directly. Cloze templates receive `entity`, `cloze_id`, `front`, and `back`; the
-pre-rendered `front` and `back` values apply the selected marker visibility rules. A source field
-named `data` is also exposed directly when present; `data` is never an
-aggregate mapping. Templates choose which fields to render and use Jinja `default`/`is defined`
-semantics to fall back when optional fields are missing. Templates are sandboxed, compiled,
-and checked for unknown variables while loading the complete deck; whitespace in template sources
-and rendered views is preserved.
-Generated multiple-choice exercises record the selected and ordered entity IDs in `choices`;
-rendering only resolves those references into entity objects and never reselects them.
-
-### Daily limits and queue scheduling
-
-Each deck may set strict per-local-day limits in any supported deck format:
-
-```json
-"daily_limits": {
-  "new_cards_per_day": 20,
-  "reviews_per_day": 200
-}
-```
-
-These are the defaults when `daily_limits` is omitted. Open the browser's **Deck status** tab to
-save a per-deck override without editing the deck file. The browser, CLI, and study planner use
-the workspace `display_timezone` for the local day. Practice sessions do not change FSRS state,
-review history, or either daily budget.
-
-Deck files may provide strict defaults for the order of the study queues. The settings use
-supported choices instead of a free-form expression:
-
-```json
-{
-  "scheduling": {
-    "new_review_order": "reviews_first",
-    "interday_learning_review_order": "learning_first",
-    "new_card_gather_order": "deck",
-    "new_card_sort_order": "order_gathered",
-    "review_sort_order": "due_date"
-  }
-}
-```
-
-The web deck page has a Deck status tab with controls for these five settings. The values are
-validated and stored in each deck file's `review_state.settings` object, so a saved setting
-overrides the deck-file default after a restart. The study planner applies the settings to learning, relearning, review,
-and new-card selection. The status tab shows the resulting queue counts and order. GraphCards does
-not support free-form queue expressions, shared presets, or temporary Today-only overrides.
-
-### Cloze exercises
-
-Cloze generators store complete sentences in the entity field named by `cloze_field`. Mark each
-answer with a stable ID and select entities as strings or as objects with a `cloze_ids` list:
-
-```json
-{
-  "entities": [
-    {
-      "id": "capital",
-      "sentence": "The capital of [[c1::France]] is [[c2::Paris]]."
-    },
-    {
-      "id": "nested",
-      "sentence": "([[c1::The answer is [[c2::Answer 1]] NOT CORRECT]])"
-    }
-  ],
-  "exercises": [
-    {
-      "id": "clozes",
-      "type": "cloze",
-      "cloze_field": "sentence",
-      "entities": ["capital", {"id": "nested", "cloze_ids": ["c2"]}]
-    }
-  ]
-}
-```
-
-The generator creates one FSRS card for each selected entity. For an entity with multiple selected
-cloze IDs, the first selected ID in declaration order is the stable rendered variant for that
-entity. The front hides only that cloze and shows the other clozes. The back shows all clozes. Nested markers are
-supported: hiding `c1` hides its complete nested answer, while hiding `c2` hides only `c2` inside
-the visible outer text. The cloze ID selects the rendered variant but does not change the entity's
-FSRS card identity. See `graphcards init --template cloze` for JSON, TOML, and YAML examples.
-
-### Image occlusion exercises
-
-Image occlusion generators use one deck-relative raster image and one or more rectangular
-occlusions. Each occlusion target is an entity, so each target gets one FSRS card. Coordinates are
-normalized numbers from `0` to `1`; `x` and `y` are the top-left corner, and `width` and `height`
-must be positive and stay inside the image:
-
-```json
-{
-  "entities": [
-    {"id": "heart", "answer": "Heart"},
-    {"id": "lungs", "answer": "Lungs"}
-  ],
-  "exercises": [
-    {
-      "id": "anatomy",
-      "type": "image_occlusion",
-      "image_path": "assets/anatomy.png",
-      "image_alt": "Anatomy diagram",
-      "occlusions": [
-        {"target_id": "heart", "x": 0.3, "y": 0.4, "width": 0.2, "height": 0.15},
-        {"target_id": "lungs", "x": 0.5, "y": 0.35, "width": 0.25, "height": 0.2}
-      ]
-    }
-  ]
-}
-```
-
-The front hides the current target rectangle. The back displays only the target entity's `answer`,
-then the normal reveal and self-rating flow applies. Custom Jinja templates receive
-`image_url`, `image_alt`, `target`, and `placement`; the image URL is generated by GraphCards and
-is safe for the configured deck. Inserted values are autoescaped. Use
-`graphcards init --template image-occlusion` for JSON, TOML, and YAML deck examples with a
-NASA/Lunar and Planetary Institute solar-system size image asset. The NASA image shows the
-planets in correct order and relative sizes; distances are not to scale.
-
-Named entity groups can remove repetition across generators. Define an ordered, non-empty group at
-the deck level and use its ID as a whole-list alias wherever a generator expects a list of entity
-IDs:
-
-```json
-{
-  "groups": [
-    {"id": "european-countries", "entities": ["france", "germany", "italy"]}
-  ],
-  "exercises": [
-    {"id": "basics", "type": "basic", "entities": "european-countries"}
-  ]
-}
-```
-
-Aliases are supported by `basic.entities`, multiple-choice `choices` values, missing-sequence-item group
-member values, scrambled-list group values, analogy `sources` values, and common-relation `relations`
-values. Each field must
-use either a list of concrete entity IDs or one group ID string; group IDs cannot appear inside
-lists, so `["france", "european-countries"]` is invalid. Group IDs must be unique, must not collide
-with entity IDs, and group definitions cannot contain other group IDs. Expansion preserves the
-declared group order, while generators continue to validate the resulting concrete IDs.
-
-### Common-relation completion
-
-Common-relation generators map each scheduled target directly to an ordered list of related entity
-IDs. The target key is the stable card identity and answer:
-
-```json
-{
-  "id": "common-locations",
-  "type": "common_relation",
-  "min_examples": 2,
-  "max_related": 0,
-  "relations": {
-    "europe": ["france", "germany", "italy"]
-  }
-}
-```
-
-Each target produces one scheduled exercise and therefore one stable card identity, even when the
-generated subset changes. Relationship wording is presentation-specific and can be supplied by a
-custom template.
-Groups must contain at least `min_examples` distinct related IDs (default `2`). `max_related` is
-zero for all related IDs, or selects exactly `min(max_related, group size)` distinct IDs; a cap
-below `min_examples` is invalid. Selection uses the generation RNG and restores declaration order
-before storing the IDs in the semantic exercise payload, so rendering is stateless and does not
-sample or reorder.
-
-Default labels use `label`, then `back`, then `answer`, then `id` for target and related entities.
-Custom templates receive only `target` and `related_entities`; the default front displays one
-`related — ?` line per related entity. The default back displays only the target label.
-
-### Scrambled-list ordering
-
-Scrambled-list generators use the same map-of-lists shape as missing-sequence-item generators, but
-each map key is the target entity and each list is that target's ordered related entities:
-
-```json
-{
-  "id": "planet-order",
-  "type": "scrambled_list",
-  "groups": {
-    "solar-system": ["mercury", "venus", "earth", "mars"]
-  }
-}
-```
-
-Each target needs at least two unique related entities and cannot appear in its own list. Custom
-templates receive `target`, `scrambled_entities`, and `ordered_entities`.
-
-### Temporal comparison
-
-Temporal-comparison generators map each group entity to an ordered list of event entity IDs. The
-declared list order is the event position, starting at `1`:
-
-```json
-{
-  "id": "event-comparisons",
-  "type": "temporal_comparison",
-  "groups": {
-    "european-events": ["magna-carta", "bouvines", "paris-treaty"]
-  }
-}
-```
-
-The group entity must exist in the deck and each event can belong to only one group. Every group
-must contain at least two distinct events. Each event produces one card. Generation selects a
-different event from the same group and stores both event IDs and positions in the semantic
-exercise. Rendering does not select a new event.
-
-The default front asks whether the target happened before or after the selected comparison event.
-The answer is `before` when the target position is lower and `after` when it is higher. Exact dates
-and precision grading are out of scope. Custom templates receive `target`, `comparison`, `group`,
-`target_position`, `comparison_position`, and `answer`.
-
-All entities, generators, IDs, and references are validated before a deck can be synchronized.
-Each targeted entity produces one scheduled exercise for non-cloze generators. If multiple
-generators target the same entity, the generator with the lexicographically smallest ID owns that
-non-cloze exercise; this keeps the selected type independent of declaration order. Cloze generators
-produce one exercise for each selected entity. Card identities remain deterministic from the deck
-directory identity and target entity. The selected generator remains runtime metadata on each
-generated exercise, so changing a generator does not change the FSRS card identity or schedule.
-The optional cloze ID selects the rendered variant but does not change the FSRS card identity.
-
-### Odd-one-out relation cards
-
-The `odd_one_out` generator uses explicit entity lists in the deck document. It does not load RDF
-files or execute SPARQL queries. Each relation map key is an existing target entity and the stable
-card identity.
-
-```json
-{
-  "id": "locations",
-  "type": "odd_one_out",
-  "min_candidates": 3,
-  "max_candidates": 0,
-  "relations": {
-    "europe": {
-      "common": ["france", "germany", "italy"],
-      "odd": ["egypt", "japan"]
-    }
-  }
-}
-```
-
-The `common` and `odd` lists must contain declared, unique entity IDs, and the lists must be
-exclusive. The generator selects exactly one entity from the explicit `odd` pool for each exercise;
-it does not infer odd entities from the entities that are absent from `common`. The default minimum
-is three displayed candidates, including the selected odd entity. `max_candidates` is zero for all
-common entities plus the selected odd entity; a positive cap samples common entities and always
-keeps the selected odd entity. The generated order is stored in the semantic exercise, so
-rendering does not sample or reorder.
-
-Each relation produces one card whose entity ID is the target entity. Default templates show the
-target and candidate entities on the front and the odd entity on the back. Custom templates receive
-`target`, `common_entities`, `candidate_entities`, and `odd_entity`.
-
-### TOML authoring
-
-TOML decks use `[[entities]]` and `[[exercises]]` arrays of tables. Generator maps such as
-`choices`, `groups`, `sources`, and `relations` are nested TOML tables. Reusable entity groups use
-`[[groups]]` tables:
-
-```toml
-name = "Capital study"
-
-[[entities]]
-id = "france"
-front = "France"
-back = "Paris"
-
-[[entities]]
-id = "germany"
-front = "Germany"
-back = "Berlin"
-
-[[groups]]
-id = "western-europe"
-entities = ["france", "germany"]
-
-[[exercises]]
-id = "basics"
-type = "basic"
-entities = "western-europe"
-```
-
-A mixed workspace can list all supported formats:
-
-```toml
-decks = ["decks/capitals/deck.toml", "decks/planets/deck.json", "decks/languages/deck.yaml"]
-```
-
-Deck metadata must remain JSON-compatible. TOML native dates and times are rejected so JSON and
-TOML documents validate the same domain model. File suffixes choose the parser; unsupported
-extensions are rejected without inspecting their contents.
-
-### YAML authoring
-
-YAML decks use sequences for repeated `entities` and `exercises`, and mappings for generator data
-such as `choices`, `groups`, `sources`, and `relations`. Reusable entity groups are a top-level
-sequence of mappings:
-
-```yaml
-name: Capital study
-entities:
-  - id: france
-    front: France
-    back: Paris
-  - id: germany
-    front: Germany
-    back: Berlin
-groups:
-  - id: western-europe
-    entities: [france, germany]
-exercises:
-  - id: basics
-    type: basic
-    entities: western-europe
-```
-
-YAML loading uses a safe parser. Mapping keys must be unique strings, exactly one document is
-allowed, and custom tags, merge keys, anchors, and aliases are rejected. YAML dates, sets, binary
-values, non-finite numbers, and other non-JSON-native values are rejected; use quoted strings when
-you need to preserve a value such as a date as text. The `.yaml` and `.yml` suffixes are
-case-insensitive, and suffixes select the parser without content sniffing.
-
-## Commands
+Install a built wheel in a Python 3.14 environment:
 
 ```console
-graphcards --config graphcards.toml validate
-graphcards --config graphcards.toml sync
-graphcards --config graphcards.toml status --full
-graphcards --config graphcards.toml serve
+python -m pip install dist/graphcards-*.whl
 ```
 
-`init --template` creates one of the bundled deck examples. GraphCards stores FSRS schedules,
-suspensions, review history, and saved queue settings in the deck file's optional `review_state`
-object. A write uses the deck's existing JSON, TOML, or YAML format and replaces the file
-atomically. The generated exercise text is always regenerated from the current deck.
+The installed package includes the built-in deck templates and the `graphcards` console script.
 
-The web deck page is opened through the `View Deck Info` link. It provides separate Deck status,
-Card Status, Review History, and Exercise Generators tabs. Deck status shows queue counts and
-saved queue scheduling controls. Card Status is a compact table of entity, review,
-next-review, and FSRS data; use `More details` to open one entity's detail page while preserving
-the current filters. The detail page lists every associated generator and shows the selected
-non-persistent exercise in a shared preview panel on the right. The Exercise Generators tab uses
-the same shared right-side preview panel, including for generators with no due cards, without
-changing review or scheduling state or modifying generator sections. Review History applies its
-date range as soon as it changes, and browser
-suspension no longer requests or displays a reason; existing stored reasons remain compatible
-with the deck file.
+## First study session
+
+Create the user-wide configuration and template library once:
+
+```console
+graphcards setup
+graphcards templates
+```
+
+Create one deck in a chosen directory. Initialization copies one selected deck format and any
+required assets. It does not copy a README, a `templates/` directory, or a user configuration:
+
+```console
+graphcards init ~/graphcards-study/capitals --template capitals --format json
+```
+
+Add the deck to `~/.graphcards/config.toml`:
+
+```toml
+templates_paths = ["templates"]
+decks = ["../graphcards-study/capitals/deck.json"]
+```
+
+Then validate, synchronize, inspect status, and start the local web interface:
+
+```console
+graphcards validate
+graphcards sync
+graphcards status
+graphcards serve
+```
+
+Use `--config PATH` for another user profile or for a test configuration. Relative
+`templates_paths` and `decks` entries are resolved from that configuration file. The first
+template directory that contains a matching name wins.
+
+## Decks
+
+A deck contains entities and exercise generators. The supported generator types are `basic`,
+`multiple_choice`, `missing_sequence_item`, `scrambled_list`, `analogy`, `cloze`,
+`image_occlusion`, `common_relation`, `odd_one_out`, and `temporal_comparison`.
+
+See the documentation for deck examples, generator references, extension guidance, and the
+supported Python API:
+
+- [Documentation index](docs/index.md)
+- [Getting started](docs/tutorials/getting-started.md)
+- [Add entities and generators](docs/tutorials/add-entities-and-generators.md)
+- [Create an exercise type](docs/how-to/create-exercise-type.md)
+- [API reference](docs/reference/api.md)
+
+## Development
+
+GraphCards uses `uv`. Run the complete local checks with:
+
+```console
+uv run pytest -W error
+uv run ruff check .
+uv run ruff format --check .
+uv build
+```
+
+GraphCards is distributed under the [MIT License](LICENSE).
