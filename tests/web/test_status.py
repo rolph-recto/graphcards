@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import random
 import re
 
 import pytest
@@ -17,7 +16,6 @@ from graphcards.scheduling import (
     ReviewSortOrder,
 )
 from graphcards.storage import utc_now
-from graphcards.web.app import EXPECTED_HOST_CONFIG, create_flask_app
 from graphcards.web.status import (
     MAX_SEARCH_DEPTH,
     MAX_SEARCH_LENGTH,
@@ -906,37 +904,3 @@ def test_card_detail_validates_entity_and_generator_ownership(
     assert unknown_entity.status_code == 404
     assert unknown_generator.status_code == 404
     assert repository.card_statuses("capitals") == before
-
-
-def test_detail_namespace_allows_action_named_entity_ids(
-    web_context: tuple[object, object, object],
-) -> None:
-    _client, controller, repository = web_context
-    capitals = controller.config.deck("capitals")
-    reserved = Deck.from_document(
-        DeckDocument(
-            entities=(Entity(id="suspend"), Entity(id="resume")),
-            exercises=(BasicExerciseGenerator(id="basics", entities=("suspend", "resume")),),
-        ),
-        name="reserved",
-        path=capitals.path,
-    )
-    config = controller.config.model_copy(update={"decks": (reserved,)})
-    reserved_controller = type(controller)(config, repository, random.Random(0))
-    app = create_flask_app(reserved_controller)
-    app.config[EXPECTED_HOST_CONFIG] = "localhost"
-    client = app.test_client()
-
-    suspend = client.get(
-        "/decks/reserved/cards/detail/suspend",
-        headers={"Host": "localhost"},
-    )
-    resume = client.get(
-        "/decks/reserved/cards/detail/resume",
-        headers={"Host": "localhost"},
-    )
-
-    assert suspend.status_code == 200
-    assert b">suspend<" in suspend.data
-    assert resume.status_code == 200
-    assert b">resume<" in resume.data

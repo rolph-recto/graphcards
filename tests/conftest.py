@@ -9,7 +9,7 @@ import pytest
 
 from graphcards.config import load_config
 from graphcards.decks import Deck
-from graphcards.storage import Repository
+from graphcards.storage import DeckFileStateStore
 from graphcards.web.app import EXPECTED_HOST_CONFIG, create_flask_app
 from graphcards.web.controller import StudyController
 
@@ -68,12 +68,8 @@ def write_config() -> Callable[..., Path]:
         *,
         fsrs: dict[str, object] | None = None,
     ) -> Path:
-        state_path = path.parent / "state.sqlite3"
         deck_values = ", ".join(json.dumps(str(deck)) for deck in decks)
-        lines = [
-            f"state_path = {json.dumps(str(state_path))}",
-            f"decks = [{deck_values}]",
-        ]
+        lines = [f"decks = [{deck_values}]"]
         if fsrs:
             lines.append("[fsrs]")
             for key, value in fsrs.items():
@@ -90,17 +86,17 @@ def write_config() -> Callable[..., Path]:
 @pytest.fixture
 def web_context(
     deck_path: Path, tmp_path: Path, write_config: Callable
-) -> tuple[object, StudyController, Repository]:
+) -> tuple[object, StudyController, DeckFileStateStore]:
     config_path = write_config(tmp_path / "graphcards.toml", [deck_path])
     config = load_config(config_path)
-    repository = Repository(config.state_path)
-    controller = StudyController(config, repository, random.Random(0))
+    state_store = DeckFileStateStore(config.decks)
+    controller = StudyController(config, state_store, random.Random(0))
     app = create_flask_app(controller)
     app.config[EXPECTED_HOST_CONFIG] = "localhost"
     try:
-        yield app.test_client(), controller, repository
+        yield app.test_client(), controller, state_store
     finally:
-        repository.close()
+        state_store.close()
 
 
 @pytest.fixture

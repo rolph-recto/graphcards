@@ -1,19 +1,28 @@
-"""SQLite persistence for global FSRS cards, deck membership, and reviews."""
+"""Atomic review-state persistence for JSON, TOML, and YAML deck files."""
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import hashlib
 import json
 import math
-import sqlite3
-import unicodedata
+import os
+import random
+import tempfile
+import threading
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+import tomlkit
 from fsrs import Card, Rating, ReviewLog
-from pydantic import ConfigDict, Field, StrictFloat, StrictInt, ValidationError, field_validator
+from pydantic import Field, StrictInt, ValidationError, field_validator
+from yaml import safe_dump
 
-from graphcards.errors import DailyLimitError, StaleReviewError, StorageError
+from graphcards.errors import DailyLimitError, StaleReviewError, StateConflictError, StorageError
 from graphcards.models import Card as SemanticCard
 from graphcards.models import CardKey, FrozenModel, validation_message
 from graphcards.scheduling import (
@@ -27,58 +36,61 @@ from graphcards.scheduling import (
     queue_order,
     queue_selection_capacities,
 )
+from graphcards.state import (
+    MAX_SUSPENSION_REASON_LENGTH,
+    EntityState,
+    FsrsCardState,
+    ReviewEvent,
+    ReviewState,
+    SavedDeckSettings,
+)
 
-SCHEMA_VERSION = 8
-_PREVIOUS_SCHEMA_VERSION = 7
-MAX_SUSPENSION_REASON_LENGTH = 500
-_UNSAFE_REASON_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
-
-
-def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON field {key!r}")
-        result[key] = value
-    return result
+if TYPE_CHECKING:
+    from graphcards.decks import Deck
 
 
 def normalize_suspension_reason(value: object) -> object:
-    """Canonicalize user reason text and reject terminal control characters."""
+    """Normalize a user-facing suspension reason."""
 
-    if not isinstance(value, str):
-        return value
-    normalized = value.strip()
-    if not normalized:
-        return None
-    if any(
-        unicodedata.category(character) in _UNSAFE_REASON_CATEGORIES for character in normalized
-    ):
-        raise ValueError(
-            "suspension reason cannot contain control characters, format controls, "
-            "or line separators"
-        )
-    return normalized
+    try:
+        return EntityState.model_validate(
+            {
+                "fsrs": {
+                    "card_id": 1,
+                    "state": 1,
+                    "step": 0,
+                    "due": "1970-01-01T00:00:00Z",
+                },
+                "suspended": True,
+                "suspension_reason": value,
+            }
+        ).suspension_reason
+    except ValidationError as error:
+        raise ValueError(validation_message(error)) from error
 
 
 def utc_now() -> datetime:
+    """Return the current timezone-aware UTC instant."""
+
     return datetime.now(UTC)
 
 
 def datetime_as_utc(value: datetime) -> datetime:
+    """Require an aware timestamp and normalize it to UTC."""
+
     if value.tzinfo is None or value.utcoffset() is None:
         raise StorageError("datetime values must be timezone-aware")
     return value.astimezone(UTC)
 
 
 def datetime_to_text(value: datetime) -> str:
-    """Encode timestamps in the one sortable UTC representation used by SQLite."""
+    """Encode a timestamp in one stable UTC representation."""
 
     return datetime_as_utc(value).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _datetime_from_text(value: object) -> datetime:
-    """Decode and validate timestamps read from storage."""
+    """Decode and validate a canonical UTC timestamp from persisted state."""
 
     if not isinstance(value, str):
         raise StorageError("stored timestamp is not text")
@@ -93,7 +105,7 @@ def _datetime_from_text(value: object) -> datetime:
 
 
 def _strict_count(value: object, label: str) -> int:
-    """Validate a SQLite count before it crosses the storage boundary."""
+    """Validate one count before it crosses the storage boundary."""
 
     if type(value) is not int or value < 0:
         raise StorageError(f"stored {label} count is invalid")
@@ -101,8 +113,12 @@ def _strict_count(value: object, label: str) -> int:
 
 
 class StoredCard(FrozenModel):
+    """One FSRS card snapshot returned by the deck-file store."""
+
     card_key: CardKey
     card_json: str
+    snapshot_digest: str | None = None
+    state_revision: StrictInt | None = None
 
     def card(self) -> Card:
         try:
@@ -111,14 +127,17 @@ class StoredCard(FrozenModel):
             if card.last_review is not None:
                 datetime_as_utc(card.last_review)
             for value in (card.stability, card.difficulty):
-                if value is not None and (not math.isfinite(value) or value < 0):
+                if value is not None and (not math.isfinite(value) or value <= 0):
                     raise ValueError("FSRS numeric field is invalid")
+            FsrsCardState.from_card(card)
             return card
         except (json.JSONDecodeError, KeyError, OverflowError, TypeError, ValueError) as error:
             raise StorageError("stored card schedule is invalid") from error
 
 
 class DeckStatus(FrozenModel):
+    """Summary counts for one deck's current generated membership."""
+
     available: StrictInt = Field(ge=0)
     suspended: StrictInt = Field(ge=0)
     new: StrictInt = Field(ge=0)
@@ -130,19 +149,19 @@ class DeckStatus(FrozenModel):
 
     @property
     def queues(self) -> QueueCounts:
-        """Return the due-card counts grouped by queue."""
+        """Return counts grouped by study queue."""
 
         return self.queue_counts
 
     @property
     def settings(self) -> DeckSchedulingSettings:
-        """Return the validated settings used for this status snapshot."""
+        """Return the validated settings used by this status snapshot."""
 
         return self.scheduling
 
 
 class DeckQueueStatus(DeckStatus):
-    """Deck status with daily-limit accounting for legacy callers and CLI output."""
+    """Deck status with daily-limit accounting."""
 
     hidden_counts: QueueCounts = Field(default_factory=QueueCounts)
     daily_usage: DailyUsage
@@ -173,7 +192,7 @@ class DeckQueueStatus(DeckStatus):
 
 
 class CardStatus(FrozenModel):
-    """Card-level schedule details used by the full status view."""
+    """Card-level schedule details used by CLI and web status views."""
 
     card_key: CardKey
     card_json: str
@@ -188,22 +207,26 @@ class CardStatus(FrozenModel):
     suspended: bool
     suspension_reason: str | None
     queue: QueueKind = QueueKind.NEW
+    snapshot_digest: str | None = None
+    state_revision: StrictInt | None = None
 
     @property
     def queue_kind(self) -> QueueKind:
         return self.queue
 
     def stored_card(self) -> StoredCard:
-        """Rebuild the complete stored card used for read-only FSRS calculations."""
+        """Rebuild the complete card snapshot used by review operations."""
 
         return StoredCard(
             card_key=self.card_key,
             card_json=self.card_json,
+            snapshot_digest=self.snapshot_digest,
+            state_revision=self.state_revision,
         )
 
 
 class SuspensionUpdate(FrozenModel):
-    """Validated current suspension metadata for one deck membership."""
+    """Validated suspension metadata for one mutation."""
 
     reason: str | None = Field(default=None, max_length=MAX_SUSPENSION_REASON_LENGTH)
 
@@ -213,64 +236,8 @@ class SuspensionUpdate(FrozenModel):
         return normalize_suspension_reason(value)
 
 
-class ReviewPayload(FrozenModel):
-    """Validated immutable data stored in one review JSON document."""
-
-    model_config = FrozenModel.model_config | ConfigDict(
-        populate_by_name=True,
-        serialize_by_alias=True,
-    )
-
-    fsrs_card_id: StrictInt = Field(alias="card_id")
-    rating: Rating
-    reviewed_at: datetime = Field(alias="review_datetime")
-    review_duration: StrictInt | None = Field(default=None, ge=0)
-    previous_interval_seconds: StrictFloat | None = Field(
-        default=None,
-        gt=0,
-        allow_inf_nan=False,
-    )
-    scheduled_interval_seconds: StrictFloat | None = Field(
-        default=None,
-        gt=0,
-        allow_inf_nan=False,
-    )
-    retrievability: StrictFloat | None = Field(
-        default=None,
-        ge=0,
-        le=1,
-        allow_inf_nan=False,
-    )
-
-    @field_validator("rating", mode="before")
-    @classmethod
-    def require_strict_rating(cls, value: object) -> object:
-        if isinstance(value, (str, bool)):
-            raise ValueError("rating must be an integer")
-        return value
-
-    @field_validator("reviewed_at", mode="before")
-    @classmethod
-    def require_datetime_value(cls, value: object) -> object:
-        if isinstance(value, (bool, int, float)):
-            raise ValueError("review_datetime must be a timestamp string")
-        return value
-
-    @field_validator("reviewed_at")
-    @classmethod
-    def normalize_reviewed_at(cls, value: datetime) -> datetime:
-        return datetime_as_utc(value)
-
-    def as_json(self) -> str:
-        return json.dumps(
-            self.model_dump(mode="json", by_alias=True),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-
-
 class ReviewRecord(FrozenModel):
-    """One immutable review event decoded and checked against its SQL mirrors."""
+    """Review history data exposed to the presentation layer."""
 
     review_id: int = Field(gt=0)
     card_key: CardKey
@@ -281,299 +248,510 @@ class ReviewRecord(FrozenModel):
     retrievability: float | None
 
 
-class Repository:
-    """Own the schema and transactional persistence operations."""
+class _StateSnapshot(FrozenModel):
+    digest: str
+    revision: int | None
 
-    def __init__(self, path: Path) -> None:
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as error:
-            raise StorageError(
-                f"could not prepare state database directory {path.parent}"
-            ) from error
-        self.path = path
-        try:
-            self.connection = sqlite3.connect(path)
-        except sqlite3.Error as error:
-            raise StorageError(f"could not open state database {path}") from error
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON")
-        try:
-            self._initialize_schema()
-        except sqlite3.Error as error:
-            self.connection.close()
-            raise StorageError("state database schema is corrupt") from error
 
-    def __enter__(self) -> Repository:
+class DeckFileStateStore:
+    """Read and atomically mutate review state embedded in deck files.
+
+    One store can serve all configured decks. The deck directory remains the runtime identity;
+    the state document is always read from and written back to the deck's existing extension.
+    """
+
+    _thread_locks: dict[Path, threading.Lock] = {}
+    _thread_locks_guard = threading.Lock()
+
+    def __init__(self, decks: Deck | Iterable[Deck] | Mapping[str, Deck] | None = None) -> None:
+        self._decks: dict[str, Deck] = {}
+        if decks is not None:
+            if isinstance(decks, Mapping):
+                values = decks.values()
+            elif hasattr(decks, "name") and hasattr(decks, "path"):
+                values = (decks,)
+            else:
+                values = decks
+            for deck in values:
+                self._decks[deck.name] = deck
+        self._snapshots: dict[str, _StateSnapshot] = {}
+
+    def __enter__(self) -> DeckFileStateStore:
         return self
 
     def __exit__(self, *_args: object) -> None:
         self.close()
 
     def close(self) -> None:
-        self.connection.close()
+        """Close the no-op store lifecycle used by the server and CLI."""
 
-    def _initialize_schema(self) -> None:
-        current = self.connection.execute("PRAGMA user_version").fetchone()[0]
-        if current not in (0, _PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION):
-            raise StorageError(
-                f"unsupported state schema version {current}; move or delete the database "
-                "and recreate state"
-            )
-        if current == 0:
-            self.connection.executescript(
-                """
-                CREATE TABLE cards (
-                    deck_id TEXT NOT NULL,
-                    entity_id TEXT NOT NULL,
-                    target_kind TEXT NOT NULL CHECK (target_kind = 'entity'),
-                    card_json TEXT NOT NULL,
-                    due_at TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (deck_id, entity_id)
-                );
-                CREATE INDEX cards_due_at_idx ON cards(due_at);
-
-                CREATE TABLE deck_cards (
-                    deck_id TEXT NOT NULL,
-                    entity_id TEXT NOT NULL,
-                    active INTEGER NOT NULL CHECK (active IN (0, 1)),
-                    suspended INTEGER NOT NULL DEFAULT 0 CHECK (suspended IN (0, 1)),
-                    suspension_reason TEXT CHECK (
-                        suspension_reason IS NULL OR (
-                            length(suspension_reason) BETWEEN 1 AND 500
-                            AND suspension_reason = trim(suspension_reason)
-                        )
-                    ),
-                    last_seen_at TEXT NOT NULL,
-                    PRIMARY KEY (deck_id, entity_id),
-                    FOREIGN KEY (deck_id, entity_id)
-                        REFERENCES cards(deck_id, entity_id)
-                );
-                CREATE INDEX deck_cards_active_idx ON deck_cards(deck_id, active);
-                CREATE INDEX deck_cards_queue_idx
-                    ON deck_cards(deck_id, active, suspended, entity_id);
-
-                CREATE TABLE reviews (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    deck_id TEXT NOT NULL,
-                    entity_id TEXT NOT NULL,
-                    rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 4),
-                    reviewed_at TEXT NOT NULL,
-                    review_json TEXT NOT NULL,
-                    FOREIGN KEY (deck_id, entity_id)
-                        REFERENCES cards(deck_id, entity_id)
-                );
-                CREATE INDEX reviews_card_idx ON reviews(deck_id, entity_id, reviewed_at);
-                CREATE TABLE deck_settings (
-                    deck_id TEXT PRIMARY KEY,
-                    new_cards_per_day INTEGER NOT NULL DEFAULT 20 CHECK (
-                        new_cards_per_day BETWEEN 0 AND 100000
-                    ),
-                    reviews_per_day INTEGER NOT NULL DEFAULT 200 CHECK (
-                        reviews_per_day BETWEEN 0 AND 100000
-                    ),
-                    new_review_order TEXT NOT NULL DEFAULT 'reviews_first',
-                    interday_learning_review_order TEXT NOT NULL DEFAULT 'learning_first',
-                    new_card_gather_order TEXT NOT NULL DEFAULT 'deck',
-                    new_card_sort_order TEXT NOT NULL DEFAULT 'order_gathered',
-                    review_sort_order TEXT NOT NULL DEFAULT 'due_date'
-                );
-                PRAGMA user_version = 8;
-                """
-            )
-            current = SCHEMA_VERSION
-        elif current == _PREVIOUS_SCHEMA_VERSION:
+    def _resolve_deck(self, value: Deck | str | Path) -> Deck:
+        if hasattr(value, "name") and hasattr(value, "path"):
+            deck = value
+            self._decks[deck.name] = deck
+            return deck
+        if isinstance(value, Path):
             try:
-                with self.connection:
-                    self.connection.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS deck_settings (
-                            deck_id TEXT PRIMARY KEY,
-                            new_cards_per_day INTEGER NOT NULL DEFAULT 20 CHECK (
-                                new_cards_per_day BETWEEN 0 AND 100000
-                            ),
-                            reviews_per_day INTEGER NOT NULL DEFAULT 200 CHECK (
-                                reviews_per_day BETWEEN 0 AND 100000
-                            ),
-                            new_review_order TEXT NOT NULL DEFAULT 'reviews_first',
-                            interday_learning_review_order TEXT NOT NULL DEFAULT 'learning_first',
-                            new_card_gather_order TEXT NOT NULL DEFAULT 'deck',
-                            new_card_sort_order TEXT NOT NULL DEFAULT 'order_gathered',
-                            review_sort_order TEXT NOT NULL DEFAULT 'due_date'
-                        )
-                        """
-                    )
-                    self.connection.execute("PRAGMA user_version = 8")
-            except sqlite3.Error as error:
-                raise StorageError("state schema migration failed") from error
-            current = SCHEMA_VERSION
-        try:
-            with self.connection:
-                self.connection.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS reviews_deck_time_idx
-                    ON reviews(deck_id, reviewed_at, id)
-                    """
-                )
-                self.connection.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS deck_cards_queue_idx
-                    ON deck_cards(deck_id, active, suspended, entity_id)
-                    """
-                )
-                self.connection.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS deck_settings (
-                        deck_id TEXT PRIMARY KEY,
-                        new_cards_per_day INTEGER NOT NULL DEFAULT 20 CHECK (
-                            new_cards_per_day BETWEEN 0 AND 100000
-                        ),
-                        reviews_per_day INTEGER NOT NULL DEFAULT 200 CHECK (
-                            reviews_per_day BETWEEN 0 AND 100000
-                        ),
-                        new_review_order TEXT NOT NULL DEFAULT 'reviews_first',
-                        interday_learning_review_order TEXT NOT NULL DEFAULT 'learning_first',
-                        new_card_gather_order TEXT NOT NULL DEFAULT 'deck',
-                        new_card_sort_order TEXT NOT NULL DEFAULT 'order_gathered',
-                        review_sort_order TEXT NOT NULL DEFAULT 'due_date'
-                    )
-                    """
-                )
-                setting_columns = {
-                    row["name"]
-                    for row in self.connection.execute("PRAGMA table_info(deck_settings)")
-                }
-                missing_columns = (
-                    ("new_cards_per_day", "INTEGER NOT NULL DEFAULT 20"),
-                    ("reviews_per_day", "INTEGER NOT NULL DEFAULT 200"),
-                    ("new_review_order", "TEXT NOT NULL DEFAULT 'reviews_first'"),
-                    (
-                        "interday_learning_review_order",
-                        "TEXT NOT NULL DEFAULT 'learning_first'",
-                    ),
-                    ("new_card_gather_order", "TEXT NOT NULL DEFAULT 'deck'"),
-                    ("new_card_sort_order", "TEXT NOT NULL DEFAULT 'order_gathered'"),
-                    ("review_sort_order", "TEXT NOT NULL DEFAULT 'due_date'"),
-                )
-                for column, definition in missing_columns:
-                    if column not in setting_columns:
-                        self.connection.execute(
-                            f"ALTER TABLE deck_settings ADD COLUMN {column} {definition}"
-                        )
-        except sqlite3.Error as error:
-            raise StorageError("state schema is incomplete or corrupt") from error
+                from graphcards.decks import Deck as DeckType
+
+                deck = DeckType.load(value)
+            except Exception as error:
+                raise StorageError(f"could not load deck file {value}") from error
+            self._decks[deck.name] = deck
+            return deck
+        if isinstance(value, str) and value in self._decks:
+            return self._decks[value]
+        available = ", ".join(sorted(self._decks)) or "none"
+        raise StorageError(f"unknown deck {value!r}; configured decks: {available}")
 
     @staticmethod
-    def _settings_values(settings: DeckSchedulingSettings) -> tuple[str, ...]:
-        return (
-            settings.new_review_order.value,
-            settings.interday_learning_review_order.value,
-            settings.new_card_gather_order.value,
-            settings.new_card_sort_order.value,
-            settings.review_sort_order.value,
+    def _digest(raw: bytes) -> str:
+        return hashlib.sha256(raw).hexdigest()
+
+    @classmethod
+    def _lock_for(cls, path: Path) -> threading.Lock:
+        with cls._thread_locks_guard:
+            return cls._thread_locks.setdefault(path, threading.Lock())
+
+    @classmethod
+    @contextlib.contextmanager
+    def _file_lock(cls, path: Path):
+        """Acquire a process and OS lock beside one deck file."""
+
+        lock = cls._lock_for(path)
+        lock_path = path.with_name(f".{path.name}.graphcards.lock")
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with lock, lock_path.open("a+", encoding="utf-8") as lock_file:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        except OSError as error:
+            raise StorageError(f"could not lock deck file {path}") from error
+
+    @staticmethod
+    def _read_bytes(path: Path) -> bytes:
+        try:
+            return path.read_bytes()
+        except OSError as error:
+            raise StorageError(f"could not read deck file {path}") from error
+
+    def _load_current(self, deck: Deck) -> tuple[Deck, bytes, str]:
+        raw = self._read_bytes(deck.path)
+        try:
+            from graphcards.decks import Deck as DeckType
+
+            current = DeckType.load(deck.path)
+        except StorageError:
+            raise
+        except Exception as error:
+            raise StorageError(f"could not load deck file {deck.path}: {error}") from error
+        return current, raw, self._digest(raw)
+
+    @staticmethod
+    def _state_or_error(deck: Deck, current: Deck) -> ReviewState:
+        state = current.document.review_state
+        if state is None:
+            raise StorageError(
+                f"deck {deck.display_name!r} has no review state; synchronize the deck first"
+            )
+        return state
+
+    def _read_state(self, value: Deck | str | Path) -> tuple[Deck, ReviewState, str]:
+        deck = self._resolve_deck(value)
+        current, raw, digest = self._load_current(deck)
+        state = self._state_or_error(deck, current)
+        self._snapshots[deck.name] = _StateSnapshot(digest=digest, revision=state.revision)
+        self._decks[deck.name] = current
+        return current, state, digest
+
+    def _expected_snapshot(
+        self,
+        deck: Deck,
+        expected_digest: str | None,
+        expected_revision: int | None,
+    ) -> _StateSnapshot | None:
+        known = self._snapshots.get(deck.name)
+        if expected_digest is not None:
+            return _StateSnapshot(digest=expected_digest, revision=expected_revision)
+        return known
+
+    @staticmethod
+    def _conflict(
+        deck: Deck, expected: _StateSnapshot, actual_digest: str, actual_revision: int | None
+    ) -> StateConflictError:
+        expected_revision_text = (
+            str(expected.revision) if expected.revision is not None else "unknown"
+        )
+        actual_revision_text = str(actual_revision) if actual_revision is not None else "unknown"
+        return StateConflictError(
+            f"deck file {deck.path} changed; reload the deck before writing "
+            f"(revision {expected_revision_text} is not {actual_revision_text})"
         )
 
     @staticmethod
-    def _settings_from_row(row: sqlite3.Row) -> DeckSchedulingSettings:
+    def _initial_state(
+        cards: Mapping[str, SemanticCard],
+        now: datetime,
+    ) -> ReviewState:
+        entities: dict[str, EntityState] = {}
+        for entity_id, semantic_card in cards.items():
+            if entity_id != semantic_card.card_key.entity_id:
+                raise StorageError(f"card key {entity_id} does not match its entity identity")
+            try:
+                card_state = FsrsCardState.from_card(Card(due=now))
+                entities[entity_id] = EntityState(
+                    fsrs=card_state,
+                    last_seen_at=now,
+                )
+            except (TypeError, ValueError, ValidationError) as error:
+                raise StorageError("could not initialize FSRS card state") from error
         try:
-            return DeckSchedulingSettings(
-                new_review_order=row["new_review_order"],
-                interday_learning_review_order=row["interday_learning_review_order"],
-                new_card_gather_order=row["new_card_gather_order"],
-                new_card_sort_order=row["new_card_sort_order"],
-                review_sort_order=row["review_sort_order"],
+            return ReviewState(revision=1, entities=entities)
+        except ValidationError as error:
+            raise StorageError("could not initialize review state") from error
+
+    @staticmethod
+    def _document_values(document: object) -> dict[str, object]:
+        try:
+            return document.model_dump(
+                mode="json",
+                by_alias=True,
+                exclude_none=True,
+                serialize_as_any=True,
             )
         except (TypeError, ValueError, ValidationError) as error:
-            raise StorageError("stored deck scheduling settings are invalid") from error
+            raise StorageError("review state cannot be serialized") from error
+
+    @staticmethod
+    def _serialize(path: Path, values: Mapping[str, object]) -> bytes:
+        try:
+            extension = path.suffix.lower()
+            if extension == ".json":
+                text = json.dumps(
+                    values,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            elif extension == ".toml":
+                text = tomlkit.dumps(values)
+            elif extension in {".yaml", ".yml"}:
+                text = safe_dump(
+                    values,
+                    allow_unicode=True,
+                    default_flow_style=False,
+                    sort_keys=False,
+                )
+            else:
+                raise ValueError(f"unsupported deck file extension {path.suffix!r}")
+            return (text.rstrip("\n") + "\n").encode("utf-8")
+        except (TypeError, ValueError, UnicodeError) as error:
+            raise StorageError(f"could not serialize deck file {path}") from error
+
+    @staticmethod
+    def _sync_directory(directory: Path) -> None:
+        try:
+            descriptor = os.open(directory, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(descriptor)
+        except OSError:
+            return
+        finally:
+            os.close(descriptor)
+
+    @classmethod
+    def _atomic_write(cls, path: Path, document: object) -> str:
+        values = cls._document_values(document)
+        payload = cls._serialize(path, values)
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary_file:
+                temporary = Path(temporary_file.name)
+                temporary_file.write(payload)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            os.replace(temporary, path)
+            temporary = None
+            cls._sync_directory(path.parent)
+        except (OSError, UnicodeError) as error:
+            raise StorageError(f"could not atomically write deck file {path}") from error
+        finally:
+            if temporary is not None:
+                with contextlib.suppress(OSError):
+                    temporary.unlink()
+        return cls._digest(payload)
+
+    def _write_state(
+        self,
+        deck: Deck,
+        current: Deck,
+        state: ReviewState,
+        raw: bytes,
+        expected: _StateSnapshot | None,
+    ) -> tuple[ReviewState, str]:
+        actual_digest = self._digest(raw)
+        actual_revision = (
+            current.document.review_state.revision if current.document.review_state else None
+        )
+        if expected is not None and (
+            actual_digest != expected.digest
+            or (expected.revision is not None and expected.revision != actual_revision)
+        ):
+            raise self._conflict(deck, expected, actual_digest, actual_revision)
+        try:
+            document = current.document.model_copy(update={"review_state": state})
+        except (TypeError, ValueError, ValidationError) as error:
+            raise StorageError("review state cannot be attached to the deck document") from error
+        digest = self._atomic_write(deck.path, document)
+        self._decks[deck.name] = current
+        self._snapshots[deck.name] = _StateSnapshot(digest=digest, revision=state.revision)
+        return state, digest
+
+    def _mutate(
+        self,
+        value: Deck | str | Path,
+        change: Callable[[Deck, ReviewState], tuple[ReviewState, Any]],
+        *,
+        expected_digest: str | None = None,
+        expected_revision: int | None = None,
+        allow_initialize: bool = False,
+        now: datetime | None = None,
+        stale_review: bool = False,
+    ) -> Any:
+        deck = self._resolve_deck(value)
+        expected = self._expected_snapshot(deck, expected_digest, expected_revision)
+        with self._file_lock(deck.path):
+            current, raw, _digest = self._load_current(deck)
+            state = current.document.review_state
+            if state is None:
+                if not allow_initialize:
+                    self._state_or_error(deck, current)
+                if expected is not None and (
+                    self._digest(raw) != expected.digest or expected.revision is not None
+                ):
+                    raise self._conflict(deck, expected, self._digest(raw), None)
+                generated = current.generate_all(rng=random.Random(0))
+                state = self._initial_state(generated, datetime_as_utc(now or utc_now()))
+            else:
+                if expected is not None:
+                    actual_digest = self._digest(raw)
+                    if actual_digest != expected.digest or (
+                        expected.revision is not None and expected.revision != state.revision
+                    ):
+                        if (
+                            stale_review
+                            and expected.revision is not None
+                            and expected.revision != state.revision
+                        ):
+                            raise StaleReviewError(
+                                "cannot review stale card snapshot; reload the card and try again"
+                            )
+                        raise self._conflict(deck, expected, actual_digest, state.revision)
+            try:
+                changed, result = change(current, state)
+                if changed.revision != state.revision:
+                    raise StorageError("review-state mutation changed its revision unexpectedly")
+                changed = changed.model_copy(update={"revision": state.revision + 1})
+            except StorageError:
+                raise
+            except (TypeError, ValueError, ValidationError) as error:
+                raise StorageError(f"could not validate review-state mutation: {error}") from error
+            _state, _new_digest = self._write_state(deck, current, changed, raw, None)
+            return result
+
+    def sync_deck(
+        self,
+        value: Deck | str,
+        cards: Mapping[str, SemanticCard],
+        now: datetime,
+        scheduling: DeckSchedulingSettings | None = None,
+        daily_limits: DailyLimits | None = None,
+    ) -> tuple[int, int]:
+        """Reconcile current generated entities while retaining removed state."""
+
+        del scheduling, daily_limits
+        deck = self._resolve_deck(value)
+        now = datetime_as_utc(now)
+        expected = self._snapshots.get(deck.name)
+        generated = dict(cards)
+        for entity_id, card in generated.items():
+            if entity_id != card.card_key.entity_id:
+                raise StorageError(f"card key {entity_id} does not match its entity identity")
+            if card.card_key.deck_id != deck.name:
+                raise StorageError(f"card key {entity_id} does not belong to deck {deck.name!r}")
+        with self._file_lock(deck.path):
+            current, raw, digest = self._load_current(deck)
+            if expected is not None and digest != expected.digest:
+                raise self._conflict(
+                    deck,
+                    expected,
+                    digest,
+                    current.document.review_state.revision
+                    if current.document.review_state
+                    else None,
+                )
+            state = current.document.review_state
+            if state is None:
+                state = self._initial_state(generated, now)
+                created = len(generated)
+                self._write_state(deck, current, state, raw, None)
+                return len(generated), created
+            entities = dict(state.entities)
+            created = 0
+            for entity_id, semantic_card in generated.items():
+                del semantic_card
+                existing = entities.get(entity_id)
+                if existing is None:
+                    card_state = FsrsCardState.from_card(Card(due=now))
+                    entities[entity_id] = EntityState(fsrs=card_state, last_seen_at=now)
+                    created += 1
+                else:
+                    entities[entity_id] = existing.model_copy(update={"last_seen_at": now})
+            try:
+                updated = ReviewState(
+                    version=state.version,
+                    revision=state.revision + 1,
+                    entities=entities,
+                    reviews=state.reviews,
+                    settings=state.settings,
+                )
+            except ValidationError as error:
+                raise StorageError("stored review state is invalid") from error
+            self._write_state(deck, current, updated, raw, None)
+            return len(generated), created
+
+    def _active_ids(self, deck: Deck) -> tuple[str, ...]:
+        try:
+            return tuple(deck.target_entity_ids)
+        except (AttributeError, TypeError, ValueError) as error:
+            raise StorageError("deck generated entity identities are invalid") from error
+
+    @staticmethod
+    def _reviews_for(state: ReviewState, entity_id: str | None = None) -> tuple[ReviewEvent, ...]:
+        return tuple(
+            event for event in state.reviews if entity_id is None or event.entity_id == entity_id
+        )
+
+    def _stored_card(
+        self,
+        deck: Deck,
+        entity_id: str,
+        entity_state: EntityState,
+        digest: str,
+        revision: int,
+    ) -> StoredCard:
+        try:
+            card = entity_state.fsrs.to_card()
+            card_key = CardKey.exercise(deck.name, entity_id)
+            return StoredCard(
+                card_key=card_key,
+                card_json=card.to_json(),
+                snapshot_digest=digest,
+                state_revision=revision,
+            )
+        except (TypeError, ValueError, ValidationError, OverflowError) as error:
+            raise StorageError("stored card schedule is invalid") from error
+
+    def _active_records(
+        self,
+        value: Deck | str,
+        *,
+        include_suspended: bool,
+    ) -> tuple[Deck, ReviewState, str, tuple[tuple[StoredCard, EntityState], ...]]:
+        deck, state, digest = self._read_state(value)
+        records: list[tuple[StoredCard, EntityState]] = []
+        for entity_id in self._active_ids(deck):
+            entity_state = state.entities.get(entity_id)
+            if entity_state is None:
+                raise StorageError(
+                    f"deck {deck.display_name!r} has no state for current entity {entity_id!r}; "
+                    "synchronize the deck"
+                )
+            if include_suspended or not entity_state.suspended:
+                records.append(
+                    (
+                        self._stored_card(deck, entity_id, entity_state, digest, state.revision),
+                        entity_state,
+                    )
+                )
+        return deck, state, digest, tuple(records)
 
     def deck_settings(
         self,
-        deck_name: str,
+        value: Deck | str,
         defaults: DeckSchedulingSettings | None = None,
     ) -> DeckSchedulingSettings:
-        """Return persisted settings or the validated deck-file defaults."""
-
-        row = self.connection.execute(
-            """
-            SELECT deck_id, new_review_order, interday_learning_review_order,
-                   new_card_gather_order, new_card_sort_order, review_sort_order
-            FROM deck_settings
-            WHERE deck_id = ?
-            """,
-            (deck_name,),
-        ).fetchone()
-        if row is None:
-            return defaults or DeckSchedulingSettings()
-        return self._settings_from_row(row)
+        deck, state, _digest = self._read_state(value)
+        if state.settings is not None and state.settings.queue_settings is not None:
+            return state.settings.queue_settings
+        return defaults or deck.scheduling
 
     def get_deck_settings(
         self,
-        deck_name: str,
+        value: Deck | str,
         defaults: DeckSchedulingSettings | None = None,
     ) -> DeckSchedulingSettings:
-        """Alias for the explicit read operation used by service callers."""
+        return self.deck_settings(value, defaults)
 
-        return self.deck_settings(deck_name, defaults)
+    def daily_limits(
+        self,
+        value: Deck | str,
+        defaults: DailyLimits | None = None,
+    ) -> DailyLimits:
+        deck, state, _digest = self._read_state(value)
+        if state.settings is not None and state.settings.daily_limits is not None:
+            return state.settings.daily_limits
+        return defaults or deck.daily_limits
 
-    @staticmethod
-    def _daily_limits_from_row(row: sqlite3.Row) -> DailyLimits:
-        try:
-            return DailyLimits(
-                new_cards_per_day=row["new_cards_per_day"],
-                reviews_per_day=row["reviews_per_day"],
-            )
-        except (TypeError, ValueError, ValidationError) as error:
-            raise StorageError("stored daily limit settings are invalid") from error
-
-    def daily_limits(self, deck_name: str, defaults: DailyLimits | None = None) -> DailyLimits:
-        """Return persisted daily limits or validated deck-file defaults."""
-
-        try:
-            fallback = DailyLimits.model_validate(defaults or DailyLimits())
-            row = self.connection.execute(
-                """
-                SELECT new_cards_per_day, reviews_per_day
-                FROM deck_settings
-                WHERE deck_id = ?
-                """,
-                (deck_name,),
-            ).fetchone()
-        except (sqlite3.Error, TypeError, ValueError, ValidationError) as error:
-            raise StorageError("could not read daily limit settings") from error
-        return fallback if row is None else self._daily_limits_from_row(row)
-
-    def set_daily_limits(self, deck_name: str, limits: DailyLimits) -> DailyLimits:
-        """Persist validated daily limits for one deck."""
-
+    def set_daily_limits(
+        self,
+        value: Deck | str,
+        limits: DailyLimits,
+        *,
+        expected_digest: str | None = None,
+        expected_revision: int | None = None,
+    ) -> DailyLimits:
         try:
             validated = DailyLimits.model_validate(limits)
         except (TypeError, ValueError, ValidationError) as error:
             raise StorageError("daily limit settings are invalid") from error
-        try:
-            with self.connection:
-                self.connection.execute(
-                    """
-                    INSERT INTO deck_settings (deck_id, new_cards_per_day, reviews_per_day)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(deck_id) DO UPDATE SET
-                        new_cards_per_day = excluded.new_cards_per_day,
-                        reviews_per_day = excluded.reviews_per_day
-                    """,
-                    (deck_name, validated.new_cards_per_day, validated.reviews_per_day),
-                )
-        except sqlite3.Error as error:
-            raise StorageError("could not save daily limit settings") from error
-        return validated
+
+        def change(_deck: Deck, state: ReviewState) -> tuple[ReviewState, DailyLimits]:
+            current = state.settings or SavedDeckSettings()
+            return (
+                state.model_copy(
+                    update={"settings": current.model_copy(update={"daily_limits": validated})}
+                ),
+                validated,
+            )
+
+        return self._mutate(
+            value,
+            change,
+            expected_digest=expected_digest,
+            expected_revision=expected_revision,
+            allow_initialize=True,
+        )
 
     def set_deck_settings(
         self,
-        deck_name: str,
+        value: Deck | str,
         settings: DeckSchedulingSettings,
+        *,
+        expected_digest: str | None = None,
+        expected_revision: int | None = None,
     ) -> DeckSchedulingSettings:
-        """Persist one complete, validated deck setting record."""
-
         try:
             validated = (
                 settings
@@ -582,386 +760,225 @@ class Repository:
             )
         except (TypeError, ValueError, ValidationError) as error:
             raise StorageError("deck scheduling settings are invalid") from error
-        with self.connection:
-            self.connection.execute(
-                """
-                INSERT INTO deck_settings (
-                    deck_id, new_review_order, interday_learning_review_order,
-                    new_card_gather_order, new_card_sort_order, review_sort_order
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(deck_id) DO UPDATE SET
-                    new_review_order = excluded.new_review_order,
-                    interday_learning_review_order = excluded.interday_learning_review_order,
-                    new_card_gather_order = excluded.new_card_gather_order,
-                    new_card_sort_order = excluded.new_card_sort_order,
-                    review_sort_order = excluded.review_sort_order
-                """,
-                (deck_name, *self._settings_values(validated)),
-            )
-        return validated
 
-    def _ensure_deck_settings(
-        self,
-        deck_name: str,
-        defaults: DeckSchedulingSettings,
-        daily_defaults: DailyLimits | None = None,
-    ) -> None:
-        try:
-            validated_daily = DailyLimits.model_validate(daily_defaults or DailyLimits())
-        except (TypeError, ValueError, ValidationError) as error:
-            raise StorageError("daily limit defaults are invalid") from error
-        row = self.connection.execute(
-            "SELECT * FROM deck_settings WHERE deck_id = ?",
-            (deck_name,),
-        ).fetchone()
-        if row is not None:
-            self._settings_from_row(row)
-            self._daily_limits_from_row(row)
-            return
-        self.connection.execute(
-            """
-            INSERT INTO deck_settings (
-                deck_id, new_cards_per_day, reviews_per_day,
-                new_review_order, interday_learning_review_order,
-                new_card_gather_order, new_card_sort_order, review_sort_order
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                deck_name,
-                validated_daily.new_cards_per_day,
-                validated_daily.reviews_per_day,
-                *self._settings_values(defaults),
-            ),
+        def change(_deck: Deck, state: ReviewState) -> tuple[ReviewState, DeckSchedulingSettings]:
+            current = state.settings or SavedDeckSettings()
+            return (
+                state.model_copy(
+                    update={"settings": current.model_copy(update={"queue_settings": validated})}
+                ),
+                validated,
+            )
+
+        return self._mutate(
+            value,
+            change,
+            expected_digest=expected_digest,
+            expected_revision=expected_revision,
+            allow_initialize=True,
         )
 
-    def sync_deck(
+    def _membership_state(
         self,
-        deck_name: str,
-        cards: dict[str, SemanticCard],
-        now: datetime,
-        scheduling: DeckSchedulingSettings | None = None,
-        daily_limits: DailyLimits | None = None,
-    ) -> tuple[int, int]:
-        """Atomically reconcile one deck while preserving global card schedules."""
+        value: Deck | str,
+        entity_id: str,
+    ) -> tuple[Deck, ReviewState, str, EntityState, bool]:
+        deck, state, digest = self._read_state(value)
+        entity_state = state.entities.get(entity_id)
+        if entity_state is None:
+            raise StorageError(f"entity {entity_id} is not known in deck {deck.name!r}")
+        active = entity_id in set(self._active_ids(deck))
+        return deck, state, digest, entity_state, active
 
-        now = datetime_as_utc(now)
-        timestamp = datetime_to_text(now)
-        created = 0
-        with self.connection:
-            if scheduling is not None:
-                self._ensure_deck_settings(deck_name, scheduling, daily_limits)
-            # Membership is rebuilt for this deck only. The cards table is deliberately
-            # untouched here so removed cards retain their FSRS state and review history.
-            self.connection.execute(
-                "UPDATE deck_cards SET active = 0 WHERE deck_id = ?", (deck_name,)
-            )
-            for entity_id, semantic_card in cards.items():
-                card_key = semantic_card.card_key
-                if entity_id != card_key.entity_id:
-                    raise StorageError(f"card key {entity_id} does not match its entity identity")
-                if card_key.deck_id != deck_name:
-                    raise StorageError(
-                        f"card key {entity_id} does not belong to deck {deck_name!r}"
-                    )
-                existing = self.connection.execute(
-                    """
-                    SELECT deck_id, entity_id, target_kind, card_json, due_at
-                    FROM cards WHERE deck_id = ? AND entity_id = ?
-                    """,
-                    (deck_name, entity_id),
-                ).fetchone()
-                if existing is None:
-                    card = Card(due=now)
-                    self.connection.execute(
-                        """
-                        INSERT INTO cards (
-                            deck_id, entity_id, target_kind, card_json, due_at,
-                            created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            deck_name,
-                            entity_id,
-                            "entity",
-                            card.to_json(),
-                            datetime_to_text(card.due),
-                            timestamp,
-                            timestamp,
-                        ),
-                    )
-                    created += 1
-                else:
-                    stored = self._stored_card(existing)
-                    if stored.card_key != card_key:
-                        raise StorageError(
-                            f"stored identity for {deck_name}/{entity_id} does not match "
-                            "generated exercises"
-                        )
-                self.connection.execute(
-                    """
-                    INSERT INTO deck_cards (deck_id, entity_id, active, last_seen_at)
-                    VALUES (?, ?, 1, ?)
-                    ON CONFLICT(deck_id, entity_id) DO UPDATE SET
-                        active = 1,
-                        last_seen_at = excluded.last_seen_at
-                    """,
-                    (deck_name, entity_id, timestamp),
-                )
-        return len(cards), created
-
-    def suspend_card(self, deck_name: str, entity_id: str, reason: str | None = None) -> None:
-        """Suspend one known deck membership without changing its global schedule."""
-
+    def has_membership(self, value: Deck | str, entity_id: str) -> bool:
         try:
-            update = SuspensionUpdate(reason=reason)
-        except ValidationError as error:
-            raise StorageError(validation_message(error)) from error
-        with self.connection:
-            cursor = self.connection.execute(
-                """
-                UPDATE deck_cards
-                SET suspended = 1, suspension_reason = ?
-                WHERE deck_id = ? AND entity_id = ? AND active = 1
-                """,
-                (update.reason, deck_name, entity_id),
-            )
-            if cursor.rowcount != 1:
-                raise StorageError(
-                    f"entity {entity_id} is not a known member of deck {deck_name!r}"
-                )
+            _deck, _state, _digest, _entity, active = self._membership_state(value, entity_id)
+        except StorageError:
+            return False
+        return active
 
-    def resume_card(self, deck_name: str, entity_id: str) -> None:
-        """Resume one known deck membership and clear its current reason."""
-
-        with self.connection:
-            cursor = self.connection.execute(
-                """
-                UPDATE deck_cards
-                SET suspended = 0, suspension_reason = NULL
-                WHERE deck_id = ? AND entity_id = ? AND active = 1
-                """,
-                (deck_name, entity_id),
-            )
-            if cursor.rowcount != 1:
-                raise StorageError(
-                    f"entity {entity_id} is not a known member of deck {deck_name!r}"
-                )
-
-    def suspend_cards(
-        self,
-        deck_name: str,
-        entity_ids: tuple[str, ...],
-        reason: str | None = None,
-    ) -> None:
-        """Suspend several active memberships atomically."""
-
+    def card_available(self, value: Deck | str, entity_id: str) -> bool:
         try:
-            update = SuspensionUpdate(reason=reason)
-        except ValidationError as error:
-            raise StorageError(validation_message(error)) from error
-        self._update_memberships(deck_name, entity_ids, suspended=True, reason=update.reason)
+            _deck, _state, _digest, entity, active = self._membership_state(value, entity_id)
+        except StorageError:
+            return False
+        return active and not entity.suspended
 
-    def resume_cards(self, deck_name: str, entity_ids: tuple[str, ...]) -> None:
-        """Resume several active memberships atomically."""
-
-        self._update_memberships(deck_name, entity_ids, suspended=False, reason=None)
+    def card_suspended(self, value: Deck | str, entity_id: str) -> bool:
+        try:
+            _deck, _state, _digest, entity, active = self._membership_state(value, entity_id)
+        except StorageError:
+            return False
+        return active and entity.suspended
 
     def _update_memberships(
         self,
-        deck_name: str,
+        value: Deck | str,
         entity_ids: tuple[str, ...],
         *,
         suspended: bool,
         reason: str | None,
+        expected_digest: str | None = None,
+        expected_revision: int | None = None,
     ) -> None:
         if not entity_ids or len(entity_ids) != len(set(entity_ids)):
             raise StorageError("card selection must contain unique entities")
-        placeholders = ", ".join("?" for _ in entity_ids)
-        with self.connection:
-            rows = self.connection.execute(
-                f"""
-                SELECT entity_id
-                FROM deck_cards
-                WHERE deck_id = ? AND active = 1 AND entity_id IN ({placeholders})
-                """,
-                (deck_name, *entity_ids),
-            ).fetchall()
-            if {row["entity_id"] for row in rows} != set(entity_ids):
+        try:
+            update = SuspensionUpdate(reason=reason)
+        except ValidationError as error:
+            raise StorageError(validation_message(error)) from error
+
+        def change(deck: Deck, state: ReviewState) -> tuple[ReviewState, None]:
+            active_ids = set(self._active_ids(deck))
+            if not set(entity_ids).issubset(active_ids):
                 raise StorageError("one or more selected cards is no longer active")
-            if suspended:
-                cursor = self.connection.execute(
-                    f"""
-                    UPDATE deck_cards
-                    SET suspended = 1, suspension_reason = ?
-                    WHERE deck_id = ? AND active = 1 AND entity_id IN ({placeholders})
-                    """,
-                    (reason, deck_name, *entity_ids),
+            entities = dict(state.entities)
+            for entity_id in entity_ids:
+                existing = entities.get(entity_id)
+                if existing is None:
+                    raise StorageError("one or more selected cards is not known")
+                entities[entity_id] = existing.model_copy(
+                    update={
+                        "suspended": suspended,
+                        "suspension_reason": update.reason if suspended else None,
+                    }
                 )
-            else:
-                cursor = self.connection.execute(
-                    f"""
-                    UPDATE deck_cards
-                    SET suspended = 0, suspension_reason = NULL
-                    WHERE deck_id = ? AND active = 1 AND entity_id IN ({placeholders})
-                    """,
-                    (deck_name, *entity_ids),
-                )
-            if cursor.rowcount != len(entity_ids):
-                raise StorageError("card selection changed during the update")
+            return state.model_copy(update={"entities": entities}), None
+
+        self._mutate(
+            value,
+            change,
+            expected_digest=expected_digest,
+            expected_revision=expected_revision,
+            allow_initialize=True,
+        )
+
+    def suspend_card(
+        self,
+        value: Deck | str,
+        entity_id: str,
+        reason: str | None = None,
+        *,
+        expected_digest: str | None = None,
+        expected_revision: int | None = None,
+    ) -> None:
+        self._update_memberships(
+            value,
+            (entity_id,),
+            suspended=True,
+            reason=reason,
+            expected_digest=expected_digest,
+            expected_revision=expected_revision,
+        )
+
+    def resume_card(
+        self,
+        value: Deck | str,
+        entity_id: str,
+        *,
+        expected_digest: str | None = None,
+        expected_revision: int | None = None,
+    ) -> None:
+        self._update_memberships(
+            value,
+            (entity_id,),
+            suspended=False,
+            reason=None,
+            expected_digest=expected_digest,
+            expected_revision=expected_revision,
+        )
+
+    def suspend_cards(
+        self,
+        value: Deck | str,
+        entity_ids: tuple[str, ...],
+        reason: str | None = None,
+        *,
+        expected_digest: str | None = None,
+        expected_revision: int | None = None,
+    ) -> None:
+        self._update_memberships(
+            value,
+            entity_ids,
+            suspended=True,
+            reason=reason,
+            expected_digest=expected_digest,
+            expected_revision=expected_revision,
+        )
+
+    def resume_cards(
+        self,
+        value: Deck | str,
+        entity_ids: tuple[str, ...],
+        *,
+        expected_digest: str | None = None,
+        expected_revision: int | None = None,
+    ) -> None:
+        self._update_memberships(
+            value,
+            entity_ids,
+            suspended=False,
+            reason=None,
+            expected_digest=expected_digest,
+            expected_revision=expected_revision,
+        )
+
+    def active_cards(self, value: Deck | str) -> list[StoredCard]:
+        """Return current, available deck members in due order."""
+
+        _deck, _state, _digest, records = self._active_records(value, include_suspended=False)
+        return [card for card, _entity in sorted(records, key=self._card_sort_key)]
 
     @staticmethod
-    def _membership_state(
-        active: object,
-        suspended: object,
-        reason: object,
-    ) -> tuple[bool, bool, str | None]:
-        if type(active) is not int or active not in (0, 1):
-            raise StorageError("stored deck membership has an invalid active state")
-        if type(suspended) is not int or suspended not in (0, 1):
-            raise StorageError("stored deck membership has an invalid suspension state")
-        if reason is not None and (
-            not isinstance(reason, str)
-            or not reason
-            or len(reason) > MAX_SUSPENSION_REASON_LENGTH
-            or reason != reason.strip()
-            or any(
-                unicodedata.category(character) in _UNSAFE_REASON_CATEGORIES for character in reason
-            )
-        ):
-            raise StorageError("stored deck membership has an invalid suspension reason")
-        if not suspended and reason is not None:
-            raise StorageError("stored resumed deck membership still has a suspension reason")
-        return bool(active), bool(suspended), reason
+    def _card_sort_key(record: tuple[StoredCard, EntityState]) -> tuple[datetime, str]:
+        card, _entity = record
+        return datetime_as_utc(card.card().due), card.card_key.entity_id
 
-    def card_available(self, deck_name: str, entity_id: str) -> bool:
-        """Return whether a known membership may currently enter a study queue."""
-
-        state = self._card_membership_state(deck_name, entity_id)
-        if state is None:
-            return False
-        active, suspended, _reason = state
-        return active and not suspended
-
-    def card_suspended(self, deck_name: str, entity_id: str) -> bool:
-        """Return whether a current membership is suspended."""
-
-        state = self._card_membership_state(deck_name, entity_id)
-        if state is None:
-            return False
-        active, suspended, _reason = state
-        return active and suspended
-
-    def has_membership(self, deck_name: str, entity_id: str) -> bool:
-        return self._card_membership_state(deck_name, entity_id) is not None
-
-    def _card_membership_state(
-        self,
-        deck_name: str,
-        entity_id: str,
-    ) -> tuple[bool, bool, str | None] | None:
-        row = self.connection.execute(
-            """
-            SELECT active, suspended, suspension_reason
-            FROM deck_cards
-            WHERE deck_id = ? AND entity_id = ?
-            """,
-            (deck_name, entity_id),
-        ).fetchone()
-        if row is None:
-            return None
-        return self._membership_state(
-            row["active"],
-            row["suspended"],
-            row["suspension_reason"],
+    def due_cards(self, value: Deck | str, now: datetime, limit: int | None) -> list[StoredCard]:
+        return (
+            self.queue_cards(value, now, due_only=True)[:limit]
+            if limit is not None
+            else self.queue_cards(value, now)
         )
 
-    def due_cards(self, deck_name: str, now: datetime, limit: int | None) -> list[StoredCard]:
-        self._validate_active_due_mirrors(deck_name)
-        parameters: list[object] = [deck_name, datetime_to_text(now)]
-        limit_sql = ""
-        if limit is not None:
-            limit_sql = " LIMIT ?"
-            parameters.append(limit)
-        rows = self.connection.execute(
-            """
-            SELECT c.deck_id, c.entity_id, c.target_kind, c.card_json, c.due_at
-            FROM cards AS c
-            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
-            WHERE dc.deck_id = ? AND dc.active = 1 AND dc.suspended = 0
-              AND c.due_at <= ?
-            ORDER BY c.due_at, c.entity_id
-            """
-            + limit_sql,
-            parameters,
-        ).fetchall()
-        return [self._stored_card(row) for row in rows]
-
-    def active_cards(self, deck_name: str) -> list[StoredCard]:
-        """Return every available deck member in schedule order."""
-
-        self._validate_active_memberships(deck_name)
-        rows = self.connection.execute(
-            """
-            SELECT c.deck_id, c.entity_id, c.target_kind, c.card_json, c.due_at
-            FROM cards AS c
-            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
-            WHERE dc.deck_id = ? AND dc.active = 1 AND dc.suspended = 0
-            ORDER BY c.due_at, c.entity_id
-            """,
-            (deck_name,),
-        ).fetchall()
-        return [self._stored_card(row) for row in rows]
-
-    def _queue_records(
-        self,
-        deck_name: str,
-    ) -> list[tuple[StoredCard, QueueKind]]:
-        """Read and validate active, unsuspended cards with their queue kinds."""
-
-        self._validate_active_memberships(deck_name)
-        self._validate_review_logs(deck_name)
-        rows = self.connection.execute(
-            """
-            SELECT
-                c.deck_id,
-                c.entity_id,
-                c.target_kind,
-                c.card_json,
-                c.due_at,
-                (
-                    SELECT COUNT(*)
-                    FROM reviews AS r
-                    WHERE r.deck_id = c.deck_id AND r.entity_id = c.entity_id
-                ) AS review_count
-            FROM cards AS c
-            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
-            WHERE dc.deck_id = ? AND dc.active = 1 AND dc.suspended = 0
-            """,
-            (deck_name,),
-        ).fetchall()
-        records: list[tuple[StoredCard, QueueKind]] = []
-        for row in rows:
-            stored = self._stored_card(row)
-            queue = classify_card(stored.card(), _strict_count(row["review_count"], "review"))
-            records.append((stored, queue))
-        records.sort(
+    def _queue_records(self, value: Deck | str) -> list[tuple[StoredCard, QueueKind]]:
+        deck, state, _digest, records = self._active_records(value, include_suspended=False)
+        result: list[tuple[StoredCard, QueueKind]] = []
+        for card, _entity in records:
+            try:
+                queue = classify_card(
+                    card.card(), len(self._reviews_for(state, card.card_key.entity_id))
+                )
+            except (TypeError, ValueError, StorageError) as error:
+                if isinstance(error, StorageError):
+                    raise
+                raise StorageError("stored queue state is invalid") from error
+            result.append((card, queue))
+        del deck
+        result.sort(
             key=lambda item: (datetime_as_utc(item[0].card().due), item[0].card_key.entity_id)
         )
-        return records
+        return result
+
+    def queue_kind(self, card_key: CardKey) -> QueueKind:
+        for card, queue in self._queue_records(card_key.deck_id):
+            if card.card_key == card_key:
+                return queue
+        raise StorageError(
+            f"card {card_key.entity_id!r} is not an active member of deck {card_key.deck_id!r}"
+        )
 
     def queue_cards(
         self,
-        deck_name: str,
+        value: Deck | str,
         now: datetime,
         queue: QueueKind | str | None = None,
         *,
         due_only: bool = True,
     ) -> list[StoredCard]:
-        """Return validated cards grouped in the default queue order."""
-
         current = datetime_as_utc(now)
         queue_kind = None if queue is None else QueueKind(queue)
-        queue_priority = {
+        priorities = {
             QueueKind.LEARNING: 0,
             QueueKind.RELEARNING: 1,
             QueueKind.REVIEW: 2,
@@ -969,13 +986,13 @@ class Repository:
         }
         records = [
             (card, card_queue)
-            for card, card_queue in self._queue_records(deck_name)
+            for card, card_queue in self._queue_records(value)
             if (queue_kind is None or card_queue is queue_kind)
             and (not due_only or datetime_as_utc(card.card().due) <= current)
         ]
         records.sort(
             key=lambda item: (
-                queue_priority[item[1]],
+                priorities[item[1]],
                 datetime_as_utc(item[0].card().due),
                 item[0].card_key.entity_id,
             )
@@ -984,249 +1001,156 @@ class Repository:
 
     def queue_counts(
         self,
-        deck_name: str,
+        value: Deck | str,
         now: datetime,
         *,
         due_only: bool = True,
     ) -> QueueCounts:
-        """Count active, unsuspended cards in each queue."""
-
         current = datetime_as_utc(now)
         counts = {queue: 0 for queue in QueueKind}
-        for card, queue in self._queue_records(deck_name):
+        for card, queue in self._queue_records(value):
             if not due_only or datetime_as_utc(card.card().due) <= current:
                 counts[queue] += 1
         return QueueCounts.from_counts(counts)
 
-    def queue_kind(self, card_key: CardKey) -> QueueKind:
-        """Return the current queue for one active stored card."""
-
-        for stored, queue in self._queue_records(card_key.deck_id):
-            if stored.card_key == card_key:
-                return queue
-        raise StorageError(
-            f"card {card_key.entity_id!r} is not an active member of deck {card_key.deck_id!r}"
-        )
-
     def daily_usage(
         self,
-        deck_name: str,
+        value: Deck | str,
         now: datetime,
         timezone: ZoneInfo,
         limits: DailyLimits,
     ) -> DailyUsage:
-        """Count durable review events in the current configured local day."""
-
+        deck, state, _digest = self._read_state(value)
+        del deck
         try:
             local_date, start, end = local_day_bounds(now, timezone)
             validated_limits = DailyLimits.model_validate(limits)
         except (TypeError, ValueError, ValidationError) as error:
             raise StorageError("daily usage settings are invalid") from error
-        self._validate_active_due_mirrors(deck_name)
-        self._validate_review_logs(deck_name)
-        new_used, reviews_used = self._daily_usage_counts(
-            deck_name,
-            datetime_to_text(start),
-            datetime_to_text(end),
-        )
+        events = [
+            event
+            for event in state.reviews
+            if datetime_as_utc(event.reviewed_at) >= start
+            and datetime_as_utc(event.reviewed_at) < end
+        ]
+        first_events = {
+            event.entity_id
+            for event in events
+            if not any(
+                earlier.entity_id == event.entity_id
+                and (earlier.reviewed_at, earlier.review_id) < (event.reviewed_at, event.review_id)
+                for earlier in state.reviews
+            )
+        }
         return DailyUsage(
             local_date=local_date,
             limits=validated_limits,
-            new_used=new_used,
-            reviews_used=reviews_used,
+            new_used=len(first_events),
+            reviews_used=len(events),
         )
 
-    def _daily_usage_counts(
+    def _daily_usage_for_state(
         self,
-        deck_name: str,
-        start: str,
-        end: str,
-    ) -> tuple[int, int]:
-        reviews_row = self.connection.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM reviews
-            WHERE deck_id = ? AND reviewed_at >= ? AND reviewed_at < ?
-            """,
-            (deck_name, start, end),
-        ).fetchone()
-        new_row = self.connection.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM reviews AS first_review
-            WHERE first_review.deck_id = ?
-              AND first_review.reviewed_at >= ?
-              AND first_review.reviewed_at < ?
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM reviews AS earlier_review
-                  WHERE earlier_review.deck_id = first_review.deck_id
-                    AND earlier_review.entity_id = first_review.entity_id
-                    AND (
-                        earlier_review.reviewed_at < first_review.reviewed_at
-                        OR (
-                            earlier_review.reviewed_at = first_review.reviewed_at
-                            AND earlier_review.id < first_review.id
-                        )
-                    )
-              )
-            """,
-            (deck_name, start, end),
-        ).fetchone()
-        return (
-            _strict_count(new_row["count"], "new-card usage"),
-            _strict_count(reviews_row["count"], "review usage"),
+        state: ReviewState,
+        reviewed_at: datetime,
+        timezone: ZoneInfo,
+        limits: DailyLimits,
+    ) -> DailyUsage:
+        local_date, start, end = local_day_bounds(reviewed_at, timezone)
+        events = [
+            event for event in state.reviews if start <= datetime_as_utc(event.reviewed_at) < end
+        ]
+        first_events = {
+            event.entity_id
+            for event in events
+            if not any(
+                earlier.entity_id == event.entity_id
+                and (earlier.reviewed_at, earlier.review_id) < (event.reviewed_at, event.review_id)
+                for earlier in state.reviews
+            )
+        }
+        return DailyUsage(
+            local_date=local_date,
+            limits=limits,
+            new_used=len(first_events),
+            reviews_used=len(events),
         )
 
     def forgotten_cards(
         self,
-        deck_name: str,
+        value: Deck | str,
         since: datetime,
         limit: int | None,
     ) -> list[StoredCard]:
-        """Return available cards failed since a timestamp, newest failure first."""
-
-        # Validate every active identity and due mirror before the review predicate can
-        # silently omit a corrupt card that has no matching Again review.
-        self.active_cards(deck_name)
-        self._validate_review_logs(deck_name)
-        parameters: list[object] = [deck_name, datetime_to_text(since)]
-        limit_sql = ""
-        if limit is not None:
-            limit_sql = " LIMIT ?"
-            parameters.append(limit)
-        rows = self.connection.execute(
-            """
-            SELECT c.deck_id, c.entity_id, c.target_kind, c.card_json, c.due_at
-            FROM cards AS c
-            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
-            WHERE dc.deck_id = ? AND dc.active = 1 AND dc.suspended = 0 AND EXISTS (
-                SELECT 1
-                FROM reviews AS r
-                WHERE r.deck_id = c.deck_id AND r.entity_id = c.entity_id
-                  AND r.rating = 1 AND r.reviewed_at >= ?
+        _deck, state, _digest, records = self._active_records(value, include_suspended=False)
+        since = datetime_as_utc(since)
+        failed = {
+            entity_id
+            for entity_id in {card.card_key.entity_id for card, _entity in records}
+            if any(
+                event.entity_id == entity_id
+                and event.rating is Rating.Again
+                and datetime_as_utc(event.reviewed_at) >= since
+                for event in state.reviews
             )
-            ORDER BY (
-                SELECT MAX(r.reviewed_at)
-                FROM reviews AS r
-                WHERE r.deck_id = c.deck_id AND r.entity_id = c.entity_id AND r.rating = 1
-            ) DESC, c.entity_id
-            """
-            + limit_sql,
-            parameters,
-        ).fetchall()
-        return [self._stored_card(row) for row in rows]
+        }
+        result = [card for card, _entity in records if card.card_key.entity_id in failed]
+        result.sort(
+            key=lambda card: (
+                max(
+                    datetime_as_utc(event.reviewed_at)
+                    for event in state.reviews
+                    if event.entity_id == card.card_key.entity_id and event.rating is Rating.Again
+                ),
+                card.card_key.entity_id,
+            ),
+            reverse=True,
+        )
+        return result[:limit] if limit is not None else result
 
     def future_cards(
         self,
-        deck_name: str,
+        value: Deck | str,
         after: datetime,
         through: datetime,
         limit: int | None,
     ) -> list[StoredCard]:
-        """Return available cards due after now through an inclusive horizon."""
-
-        self._validate_active_due_mirrors(deck_name)
-        parameters: list[object] = [
-            deck_name,
-            datetime_to_text(after),
-            datetime_to_text(through),
+        after = datetime_as_utc(after)
+        through = datetime_as_utc(through)
+        _deck, _state, _digest, records = self._active_records(value, include_suspended=False)
+        result = [
+            card for card, _entity in records if after < datetime_as_utc(card.card().due) <= through
         ]
-        limit_sql = ""
-        if limit is not None:
-            limit_sql = " LIMIT ?"
-            parameters.append(limit)
-        rows = self.connection.execute(
-            """
-            SELECT c.deck_id, c.entity_id, c.target_kind, c.card_json, c.due_at
-            FROM cards AS c
-            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
-            WHERE dc.deck_id = ? AND dc.active = 1 AND dc.suspended = 0
-              AND c.due_at > ? AND c.due_at <= ?
-            ORDER BY c.due_at, c.entity_id
-            """
-            + limit_sql,
-            parameters,
-        ).fetchall()
-        return [self._stored_card(row) for row in rows]
+        result.sort(key=lambda card: (datetime_as_utc(card.card().due), card.card_key.entity_id))
+        return result[:limit] if limit is not None else result
 
-    def get_card(self, card_key: CardKey) -> StoredCard | None:
-        row = self.connection.execute(
-            """
-            SELECT deck_id, entity_id, target_kind, card_json, due_at
-            FROM cards WHERE deck_id = ? AND entity_id = ?
-            """,
-            (card_key.deck_id, card_key.entity_id),
-        ).fetchone()
-        return self._stored_card(row) if row is not None else None
+    def get_card(self, value: Deck | str, card_key: CardKey) -> StoredCard | None:
+        deck, state, digest = self._read_state(value)
+        if card_key.deck_id != deck.name:
+            return None
+        entity_state = state.entities.get(card_key.entity_id)
+        if entity_state is None:
+            return None
+        return self._stored_card(deck, card_key.entity_id, entity_state, digest, state.revision)
 
-    def _stored_card(self, row: sqlite3.Row) -> StoredCard:
-        if row["target_kind"] != "entity":
-            raise StorageError("stored card has an invalid exercise kind")
-        try:
-            card_key = CardKey.exercise(row["deck_id"], row["entity_id"])
-        except (TypeError, ValidationError) as error:
-            raise StorageError("stored card identity is invalid") from error
-        card_json = row["card_json"]
-        if not isinstance(card_json, str):
-            raise StorageError("stored card schedule is not JSON text")
-        stored = StoredCard(
-            card_key=card_key,
-            card_json=card_json,
-        )
-        mirrored_due = _datetime_from_text(row["due_at"])
-        if mirrored_due != datetime_as_utc(stored.card().due):
-            raise StorageError("stored card due timestamp does not match its schedule")
-        return stored
-
-    def _validate_active_due_mirrors(self, deck_name: str) -> None:
-        """Validate all active mirrors before an indexed filter can omit corruption."""
-
-        self._validate_active_memberships(deck_name)
-
-    def _validate_active_memberships(self, deck_name: str) -> None:
-        """Validate availability state before indexed predicates can omit corruption."""
-
-        rows = self.connection.execute(
-            """
-            SELECT active, suspended, suspension_reason
-            FROM deck_cards
-            WHERE deck_id = ? AND active = 1
-            """,
-            (deck_name,),
-        ).fetchall()
-        for row in rows:
-            self._membership_state(
-                row["active"],
-                row["suspended"],
-                row["suspension_reason"],
+    def review_history(self, value: Deck | str, through: datetime) -> tuple[ReviewRecord, ...]:
+        deck, state, _digest = self._read_state(value)
+        through = datetime_as_utc(through)
+        records = [
+            ReviewRecord(
+                review_id=event.review_id,
+                card_key=CardKey.exercise(deck.name, event.entity_id),
+                rating=event.rating,
+                reviewed_at=event.reviewed_at,
+                previous_interval_seconds=event.previous_interval_seconds,
+                scheduled_interval_seconds=event.scheduled_interval_seconds,
+                retrievability=event.retrievability,
             )
-        self._validate_all_active_card_mirrors(deck_name)
-
-    def _validate_all_active_card_mirrors(self, deck_name: str) -> None:
-        missing = self.connection.execute(
-            """
-            SELECT dc.deck_id, dc.entity_id
-            FROM deck_cards AS dc
-            LEFT JOIN cards AS c
-                ON c.deck_id = dc.deck_id AND c.entity_id = dc.entity_id
-            WHERE dc.deck_id = ? AND dc.active = 1 AND c.deck_id IS NULL
-            """,
-            (deck_name,),
-        ).fetchone()
-        if missing is not None:
-            raise StorageError("active deck membership has no matching stored card")
-        rows = self.connection.execute(
-            """
-            SELECT c.deck_id, c.entity_id, c.target_kind, c.card_json, c.due_at
-            FROM cards AS c
-            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
-            WHERE dc.deck_id = ? AND dc.active = 1
-            """,
-            (deck_name,),
-        ).fetchall()
-        for row in rows:
-            self._stored_card(row)
+            for event in state.reviews
+            if datetime_as_utc(event.reviewed_at) <= through
+        ]
+        records.sort(key=lambda record: (record.reviewed_at, record.review_id))
+        return tuple(records)
 
     def save_review(
         self,
@@ -1239,328 +1163,113 @@ class Repository:
         retrievability: float | None,
         daily_limits: DailyLimits | None = None,
         timezone: ZoneInfo | None = None,
+        expected_digest: str | None = None,
+        expected_revision: int | None = None,
     ) -> str:
-        """Persist updated FSRS state and its review log in one transaction."""
+        """Save the new schedule and immutable review event in one file replacement."""
 
-        # Validate the persisted fields before the indexed write predicate can
-        # misclassify a corrupt membership as reviewable.
-        deck_name = card_key.deck_id
-        entity_id = card_key.entity_id
-        self._card_membership_state(deck_name, entity_id)
-        reviewed_at = datetime_to_text(review_log.review_datetime)
+        if card.card_id is None or review_log.card_id is None:
+            raise StorageError("FSRS review is missing a card ID")
         card_json = card.to_json()
-        usage_bounds: tuple[str, str] | None = None
-        validated_limits: DailyLimits | None = None
-        if daily_limits is not None:
-            if timezone is None:
-                raise StorageError("daily usage timezone is required")
-            try:
-                validated_limits = DailyLimits.model_validate(daily_limits)
-                _local_date, start, end = local_day_bounds(review_log.review_datetime, timezone)
-            except (TypeError, ValueError, ValidationError) as error:
-                raise StorageError("daily usage settings are invalid") from error
-            self._validate_review_logs(deck_name)
-            usage_bounds = (datetime_to_text(start), datetime_to_text(end))
-        try:
-            payload = ReviewPayload(
-                fsrs_card_id=review_log.card_id,
-                rating=review_log.rating,
-                reviewed_at=review_log.review_datetime,
-                review_duration=review_log.review_duration,
-                previous_interval_seconds=previous_interval_seconds,
-                scheduled_interval_seconds=(
-                    datetime_as_utc(card.due) - datetime_as_utc(review_log.review_datetime)
-                ).total_seconds(),
-                retrievability=retrievability,
-            )
-        except ValidationError as error:
-            raise StorageError("review analytics metadata is invalid") from error
-        with self.connection:
-            if validated_limits is not None and usage_bounds is not None:
-                new_used, reviews_used = self._daily_usage_counts(
-                    deck_name,
-                    usage_bounds[0],
-                    usage_bounds[1],
+
+        def change(deck: Deck, state: ReviewState) -> tuple[ReviewState, str]:
+            if card_key.deck_id != deck.name:
+                raise StorageError(
+                    f"card {card_key.entity_id} does not belong to deck {deck.name!r}"
                 )
-                if reviews_used >= validated_limits.reviews_per_day:
-                    raise DailyLimitError("reviews", 0)
-                first_review = self.connection.execute(
-                    """
-                    SELECT 1
-                    FROM reviews
-                    WHERE deck_id = ? AND entity_id = ?
-                    LIMIT 1
-                    """,
-                    (deck_name, entity_id),
-                ).fetchone()
-                if first_review is None and new_used >= validated_limits.new_cards_per_day:
-                    raise DailyLimitError("new", 0)
-            cursor = self.connection.execute(
-                """
-                UPDATE cards SET card_json = ?, due_at = ?, updated_at = ?
-                WHERE deck_id = ? AND entity_id = ? AND card_json = ? AND EXISTS (
-                    SELECT 1
-                    FROM deck_cards AS dc
-                    WHERE dc.deck_id = cards.deck_id AND dc.entity_id = cards.entity_id
-                      AND dc.deck_id = ? AND dc.entity_id = ?
-                      AND dc.active = 1 AND dc.suspended = 0
+            if card_key.entity_id not in set(self._active_ids(deck)):
+                raise StorageError(
+                    f"cannot review unavailable entity {card_key.entity_id} in deck {deck.name!r}"
                 )
-                """,
-                (
-                    card_json,
-                    datetime_to_text(card.due),
-                    reviewed_at,
-                    deck_name,
-                    entity_id,
-                    source_card_json,
-                    deck_name,
-                    entity_id,
-                ),
-            )
-            if cursor.rowcount != 1:
-                exists = self.connection.execute(
-                    "SELECT 1 FROM cards WHERE deck_id = ? AND entity_id = ?",
-                    (deck_name, entity_id),
-                ).fetchone()
-                if exists is None:
-                    raise StaleReviewError(
-                        f"cannot review missing card {deck_name}/{entity_id}; reload or sync "
-                        "before trying again"
-                    )
-                if not self.card_available(deck_name, entity_id):
-                    raise StorageError(
-                        f"cannot review unavailable entity {entity_id} in deck {deck_name!r}"
-                    )
+            existing = state.entities.get(card_key.entity_id)
+            if existing is None:
                 raise StaleReviewError(
-                    f"cannot review stale card snapshot {deck_name}/{entity_id}; reload the card "
-                    "and try again"
+                    f"cannot review missing card {deck.name}/{card_key.entity_id}; reload or sync "
+                    "before trying again"
                 )
-            self.connection.execute(
-                """
-                INSERT INTO reviews (deck_id, entity_id, rating, reviewed_at, review_json)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    deck_name,
-                    entity_id,
-                    review_log.rating.value,
-                    reviewed_at,
-                    payload.as_json(),
-                ),
-            )
-        return card_json
+            stored = self._stored_card(deck, card_key.entity_id, existing, "", state.revision)
+            if stored.card_json != source_card_json:
+                raise StaleReviewError(
+                    f"cannot review stale card snapshot {deck.name}/{card_key.entity_id}; "
+                    "reload the card and try again"
+                )
+            if existing.suspended:
+                raise StorageError(
+                    f"cannot review unavailable entity {card_key.entity_id} in deck {deck.name!r}"
+                )
+            if existing.fsrs.card_id != card.card_id or review_log.card_id != card.card_id:
+                raise StorageError("review card ID does not match stored FSRS state")
+            if daily_limits is not None:
+                if timezone is None:
+                    raise StorageError("daily usage timezone is required")
+                try:
+                    limits = DailyLimits.model_validate(daily_limits)
+                except (TypeError, ValueError, ValidationError) as error:
+                    raise StorageError("daily usage settings are invalid") from error
+                usage = self._daily_usage_for_state(
+                    state, review_log.review_datetime, timezone, limits
+                )
+                if usage.reviews_remaining <= 0:
+                    raise DailyLimitError("reviews", 0)
+                if not self._reviews_for(state, card_key.entity_id) and usage.new_remaining <= 0:
+                    raise DailyLimitError("new", 0)
+            next_id = max((event.review_id for event in state.reviews), default=0) + 1
+            try:
+                event = ReviewEvent(
+                    review_id=next_id,
+                    entity_id=card_key.entity_id,
+                    card_id=review_log.card_id,
+                    rating=review_log.rating,
+                    reviewed_at=review_log.review_datetime,
+                    duration=review_log.review_duration,
+                    previous_interval_seconds=previous_interval_seconds,
+                    scheduled_interval_seconds=(
+                        datetime_as_utc(card.due) - datetime_as_utc(review_log.review_datetime)
+                    ).total_seconds(),
+                    retrievability=retrievability,
+                )
+                updated_entity = existing.model_copy(update={"fsrs": FsrsCardState.from_card(card)})
+                updated = state.model_copy(
+                    update={
+                        "entities": {
+                            **state.entities,
+                            card_key.entity_id: updated_entity,
+                        },
+                        "reviews": (*state.reviews, event),
+                    }
+                )
+            except (TypeError, ValueError, ValidationError) as error:
+                raise StorageError("review analytics metadata is invalid") from error
+            return updated, card_json
 
-    @staticmethod
-    def _review_record(row: sqlite3.Row) -> ReviewRecord:
-        review_json = row["review_json"]
-        if not isinstance(review_json, str):
-            raise StorageError("stored review log is not JSON text")
-        try:
-            payload_data = json.loads(review_json, object_pairs_hook=_unique_json_object)
-            payload = ReviewPayload.model_validate(payload_data)
-        except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as error:
-            raise StorageError("stored review log is invalid") from error
-        reviewed_at = _datetime_from_text(row["reviewed_at"])
-        try:
-            rating = Rating(row["rating"])
-        except (TypeError, ValueError) as error:
-            raise StorageError("stored review has an invalid rating") from error
-        if payload.reviewed_at != reviewed_at or payload.rating is not rating:
-            raise StorageError("stored review log does not match its indexed fields")
-        try:
-            card_key = CardKey.exercise(row["deck_id"], row["entity_id"])
-            return ReviewRecord(
-                review_id=row["id"],
-                card_key=card_key,
-                rating=rating,
-                reviewed_at=reviewed_at,
-                previous_interval_seconds=payload.previous_interval_seconds,
-                scheduled_interval_seconds=payload.scheduled_interval_seconds,
-                retrievability=payload.retrievability,
-            )
-        except ValidationError as error:
-            raise StorageError("stored review record is invalid") from error
-
-    def review_history(self, deck_name: str, through: datetime) -> tuple[ReviewRecord, ...]:
-        """Return immutable deck review events through a UTC instant."""
-
-        rows = self.connection.execute(
-            """
-            SELECT id, deck_id, entity_id, rating, reviewed_at, review_json
-            FROM reviews
-            WHERE deck_id = ? AND reviewed_at <= ?
-            ORDER BY reviewed_at, id
-            """,
-            (deck_name, datetime_to_text(through)),
-        ).fetchall()
-        records: list[ReviewRecord] = []
-        for row in rows:
-            self._validate_review_membership(row["deck_id"], row["entity_id"])
-            records.append(self._review_record(row))
-        return tuple(records)
-
-    def status(
-        self,
-        deck_name: str,
-        now: datetime,
-        scheduling: DeckSchedulingSettings | None = None,
-    ) -> DeckStatus:
-        """Return deck totals and the settings used for queue planning."""
-
-        self._validate_active_due_mirrors(deck_name)
-        self._validate_review_logs(deck_name)
-        timestamp = datetime_to_text(now)
-        settings = self.deck_settings(deck_name, scheduling)
-        row = self.connection.execute(
-            """
-            SELECT
-                COALESCE(SUM(CASE WHEN dc.suspended = 0 THEN 1 ELSE 0 END), 0)
-                    AS available,
-                COALESCE(SUM(CASE WHEN dc.suspended = 1 THEN 1 ELSE 0 END), 0)
-                    AS suspended,
-                COALESCE(SUM(CASE WHEN dc.suspended = 0 AND NOT EXISTS (
-                    SELECT 1 FROM reviews AS r
-                    WHERE r.deck_id = c.deck_id AND r.entity_id = c.entity_id
-                ) THEN 1 ELSE 0 END), 0) AS new,
-                COALESCE(SUM(CASE WHEN dc.suspended = 0 AND c.due_at <= ?
-                    THEN 1 ELSE 0 END), 0) AS due,
-                COALESCE(SUM(CASE WHEN dc.suspended = 0 AND c.due_at > ?
-                    THEN 1 ELSE 0 END), 0) AS future
-            FROM cards AS c
-            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
-            WHERE dc.deck_id = ? AND dc.active = 1
-            """,
-            (timestamp, timestamp, deck_name),
-        ).fetchone()
-        return DeckStatus(
-            available=_strict_count(row["available"], "available"),
-            suspended=_strict_count(row["suspended"], "suspended"),
-            new=_strict_count(row["new"], "new"),
-            due=_strict_count(row["due"], "due"),
-            future=_strict_count(row["future"], "future"),
-            queue_counts=self.queue_counts(deck_name, now),
-            queue_order=queue_order(settings),
-            scheduling=settings,
+        return self._mutate(
+            card_key.deck_id,
+            change,
+            expected_digest=expected_digest,
+            expected_revision=expected_revision,
+            stale_review=True,
         )
 
-    def queue_status(
-        self,
-        deck_name: str,
-        now: datetime,
-        scheduling: DeckSchedulingSettings | ZoneInfo | None = None,
-        timezone: ZoneInfo | DailyLimits | None = None,
-        limits: DailyLimits | None = None,
-    ) -> DeckQueueStatus:
-        """Return queue status with daily limits for CLI and web callers.
-
-        The positional ``timezone, limits`` form remains accepted for the CLI
-        and older controller call sites while the scheduling settings stay
-        available through the regular deck status response.
-        """
-
-        actual_scheduling: DeckSchedulingSettings | None
-        actual_timezone: ZoneInfo
-        actual_limits: DailyLimits
-        if isinstance(scheduling, ZoneInfo):
-            actual_scheduling = None
-            actual_timezone = scheduling
-            actual_limits = (
-                timezone if isinstance(timezone, DailyLimits) else limits or DailyLimits()
-            )
-        else:
-            actual_scheduling = scheduling
-            actual_timezone = timezone if isinstance(timezone, ZoneInfo) else ZoneInfo("UTC")
-            actual_limits = limits or self.daily_limits(deck_name)
-        base = self.status(deck_name, now, actual_scheduling)
-        queue_counts = self.queue_counts(deck_name, now)
-        daily = self.daily_usage(deck_name, now, actual_timezone, actual_limits)
-        capacities = queue_selection_capacities(queue_counts, daily)
-        hidden_values = {
-            queue: max(0, queue_counts.for_queue(queue) - capacities.for_queue(queue))
-            for queue in QueueKind
-        }
-        return DeckQueueStatus(
-            available=base.available,
-            suspended=base.suspended,
-            new=base.new,
-            due=base.due,
-            future=base.future,
-            queue_counts=queue_counts,
-            queue_order=base.queue_order,
-            scheduling=base.scheduling,
-            hidden_counts=QueueCounts.from_counts(hidden_values),
-            daily_usage=daily,
-        )
-
-    def card_statuses(self, deck_name: str) -> tuple[CardStatus, ...]:
-        """Return active deck members in the same due-time order used for study."""
-
-        self._validate_active_memberships(deck_name)
-        self._validate_review_logs(deck_name)
-        rows = self.connection.execute(
-            """
-            SELECT
-                c.deck_id,
-                c.entity_id,
-                c.target_kind,
-                c.card_json,
-                c.due_at,
-                dc.active,
-                dc.suspended,
-                dc.suspension_reason,
-                (
-                    SELECT COUNT(*)
-                    FROM reviews AS r
-                    WHERE r.deck_id = c.deck_id AND r.entity_id = c.entity_id
-                ) AS review_count,
-                (
-                    SELECT r.reviewed_at
-                    FROM reviews AS r
-                    WHERE r.deck_id = c.deck_id AND r.entity_id = c.entity_id
-                    ORDER BY r.reviewed_at DESC, r.id DESC
-                    LIMIT 1
-                ) AS last_review_at,
-                (
-                    SELECT r.rating
-                    FROM reviews AS r
-                    WHERE r.deck_id = c.deck_id AND r.entity_id = c.entity_id
-                    ORDER BY r.reviewed_at DESC, r.id DESC
-                    LIMIT 1
-                ) AS last_rating
-            FROM cards AS c
-            JOIN deck_cards AS dc ON dc.deck_id = c.deck_id AND dc.entity_id = c.entity_id
-            WHERE dc.deck_id = ? AND dc.active = 1
-            ORDER BY c.due_at, c.entity_id
-            """,
-            (deck_name,),
-        ).fetchall()
-        statuses: list[CardStatus] = []
-        for row in rows:
-            stored = self._stored_card(row)
-            _active, suspended, suspension_reason = self._membership_state(
-                row["active"],
-                row["suspended"],
-                row["suspension_reason"],
-            )
+    def _all_statuses(
+        self, value: Deck | str
+    ) -> tuple[Deck, ReviewState, str, tuple[CardStatus, ...]]:
+        deck, state, digest, records = self._active_records(value, include_suspended=True)
+        result: list[CardStatus] = []
+        for stored, entity_state in records:
             card = stored.card()
-            history_last_review = (
-                _datetime_from_text(row["last_review_at"])
-                if row["last_review_at"] is not None
-                else None
+            events = self._reviews_for(state, stored.card_key.entity_id)
+            latest = max(
+                events, key=lambda event: (event.reviewed_at, event.review_id), default=None
             )
-            card_last_review = (
-                datetime_as_utc(card.last_review) if card.last_review is not None else None
-            )
-            last_rating_value = row["last_rating"]
-            if history_last_review != card_last_review or (history_last_review is None) != (
-                last_rating_value is None
+            if (latest is None) != (card.last_review is None):
+                raise StorageError("stored card schedule and review history do not match")
+            if (
+                latest is not None
+                and card.last_review is not None
+                and datetime_as_utc(card.last_review) != datetime_as_utc(latest.reviewed_at)
             ):
                 raise StorageError("stored card schedule and review history do not match")
-            try:
-                last_rating = Rating(last_rating_value) if last_rating_value is not None else None
-            except ValueError as error:
-                raise StorageError("stored review has an invalid rating") from error
-            statuses.append(
+            result.append(
                 CardStatus(
                     card_key=stored.card_key,
                     card_json=stored.card_json,
@@ -1568,36 +1277,96 @@ class Repository:
                     fsrs_step=card.step,
                     stability=card.stability,
                     difficulty=card.difficulty,
-                    review_count=row["review_count"],
+                    review_count=len(events),
                     due_at=datetime_as_utc(card.due),
-                    last_review_at=history_last_review,
-                    last_rating=last_rating,
-                    suspended=suspended,
-                    suspension_reason=suspension_reason,
-                    queue=classify_card(card, _strict_count(row["review_count"], "review")),
+                    last_review_at=latest.reviewed_at if latest is not None else None,
+                    last_rating=latest.rating if latest is not None else None,
+                    suspended=entity_state.suspended,
+                    suspension_reason=entity_state.suspension_reason,
+                    queue=classify_card(card, len(events)),
+                    snapshot_digest=digest,
+                    state_revision=state.revision,
                 )
             )
-        return tuple(statuses)
+        result.sort(key=lambda item: (item.due_at, item.card_key.entity_id))
+        return deck, state, digest, tuple(result)
 
-    def _validate_review_logs(self, deck_name: str) -> None:
-        rows = self.connection.execute(
-            """
-            SELECT id, deck_id, entity_id, rating, reviewed_at, review_json
-            FROM reviews
-            WHERE deck_id = ?
-            """,
-            (deck_name,),
-        ).fetchall()
-        for row in rows:
-            self._validate_review_membership(row["deck_id"], row["entity_id"])
-            self._review_record(row)
+    def card_statuses(self, value: Deck | str) -> tuple[CardStatus, ...]:
+        return self._all_statuses(value)[3]
 
-    def _validate_review_membership(self, deck_name: object, entity_id: object) -> None:
-        if not isinstance(deck_name, str) or not isinstance(entity_id, str):
-            raise StorageError("stored review has invalid deck or card identity")
-        exists = self.connection.execute(
-            "SELECT 1 FROM deck_cards WHERE deck_id = ? AND entity_id = ?",
-            (deck_name, entity_id),
-        ).fetchone()
-        if exists is None:
-            raise StorageError("stored review has no matching deck membership")
+    def status(
+        self,
+        value: Deck | str,
+        now: datetime,
+        scheduling: DeckSchedulingSettings | None = None,
+    ) -> DeckStatus:
+        deck, state, _digest, statuses = self._all_statuses(value)
+        now = datetime_as_utc(now)
+        settings = scheduling or self.deck_settings(deck, deck.scheduling)
+        available = [status for status in statuses if not status.suspended]
+        queue_counts = self.queue_counts(deck, now)
+        return DeckStatus(
+            available=len(available),
+            suspended=len(statuses) - len(available),
+            new=sum(status.review_count == 0 and not status.suspended for status in statuses),
+            due=sum(status.due_at <= now and not status.suspended for status in statuses),
+            future=sum(status.due_at > now and not status.suspended for status in statuses),
+            queue_counts=queue_counts,
+            queue_order=queue_order(settings),
+            scheduling=settings,
+        )
+
+    def queue_status(
+        self,
+        value: Deck | str,
+        now: datetime,
+        scheduling: DeckSchedulingSettings | ZoneInfo | None = None,
+        timezone: ZoneInfo | DailyLimits | None = None,
+        limits: DailyLimits | None = None,
+    ) -> DeckQueueStatus:
+        if isinstance(scheduling, ZoneInfo):
+            actual_scheduling = None
+            actual_timezone = scheduling
+            actual_limits = timezone if isinstance(timezone, DailyLimits) else limits
+        else:
+            actual_scheduling = scheduling
+            actual_timezone = timezone if isinstance(timezone, ZoneInfo) else ZoneInfo("UTC")
+            actual_limits = limits
+        deck = self._resolve_deck(value)
+        actual_limits = actual_limits or self.daily_limits(deck, deck.daily_limits)
+        base = self.status(deck, now, actual_scheduling)
+        daily = self.daily_usage(deck, now, actual_timezone, actual_limits)
+        capacities = queue_selection_capacities(base.queue_counts, daily)
+        hidden = QueueCounts.from_counts(
+            {
+                queue: max(0, base.queue_counts.for_queue(queue) - capacities.for_queue(queue))
+                for queue in QueueKind
+            }
+        )
+        return DeckQueueStatus(
+            available=base.available,
+            suspended=base.suspended,
+            new=base.new,
+            due=base.due,
+            future=base.future,
+            queue_counts=base.queue_counts,
+            queue_order=base.queue_order,
+            scheduling=base.scheduling,
+            hidden_counts=hidden,
+            daily_usage=daily,
+        )
+
+
+__all__ = [
+    "CardStatus",
+    "DeckFileStateStore",
+    "DeckQueueStatus",
+    "DeckStatus",
+    "ReviewRecord",
+    "StoredCard",
+    "SuspensionUpdate",
+    "datetime_as_utc",
+    "datetime_to_text",
+    "normalize_suspension_reason",
+    "utc_now",
+]

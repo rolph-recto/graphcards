@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-import sqlite3
 from http import HTTPStatus
 from pathlib import Path
 from typing import Literal, cast
@@ -31,7 +30,7 @@ from pydantic import (
 )
 from werkzeug.exceptions import HTTPException, InternalServerError
 
-from graphcards.errors import ConfigError, GraphCardsError
+from graphcards.errors import ConfigError, GraphCardsError, StateConflictError
 from graphcards.models import CardKey
 from graphcards.references import EntityId
 from graphcards.scheduling import (
@@ -495,13 +494,20 @@ def create_flask_app(controller: StudyController) -> Flask:
 
     app.register_error_handler(GraphCardsError, handle_application_failure)
 
+    @app.errorhandler(StateConflictError)
+    def handle_state_conflict(_error: StateConflictError) -> tuple[str, int]:
+        return _render_error(
+            HTTPStatus.CONFLICT,
+            "The deck file changed outside GraphCards. Reload the deck and try again.",
+        )
+
     def handle_dependency_failure(_error: Exception) -> tuple[str, int]:
         return _render_error(
             HTTPStatus.INTERNAL_SERVER_ERROR,
             "Could not complete this request.",
         )
 
-    for error_type in (OSError, sqlite3.Error):
+    for error_type in (OSError,):
         app.register_error_handler(error_type, handle_dependency_failure)
 
     @app.errorhandler(InternalServerError)

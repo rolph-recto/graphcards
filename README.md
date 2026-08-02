@@ -6,7 +6,6 @@ TOML, or YAML file; `graphcards.toml` contains runtime settings and the list of 
 ## Workspace configuration
 
 ```toml
-state_path = ".graphcards/state.sqlite3"
 display_timezone = "UTC"
 decks = ["decks/capitals/deck.toml", "decks/planets/deck.json"]
 ```
@@ -103,8 +102,8 @@ supported choices instead of a free-form expression:
 ```
 
 The web deck page has a Deck status tab with controls for these five settings. The values are
-validated and stored per deck in the state database, so a saved setting overrides the deck-file
-default after a restart. The study planner applies the settings to learning, relearning, review,
+validated and stored in each deck file's `review_state.settings` object, so a saved setting
+overrides the deck-file default after a restart. The study planner applies the settings to learning, relearning, review,
 and new-card selection. The status tab shows the resulting queue counts and order. GraphCards does
 not support free-form queue expressions, shared presets, or temporary Today-only overrides.
 
@@ -395,8 +394,10 @@ graphcards --config graphcards.toml status --full
 graphcards --config graphcards.toml serve
 ```
 
-`init --template` creates one of the bundled JSON deck examples. The SQLite state database keeps
-FSRS schedules and review history; rendered exercise text is regenerated from the current deck.
+`init --template` creates one of the bundled deck examples. GraphCards stores FSRS schedules,
+suspensions, review history, and saved queue settings in the deck file's optional `review_state`
+object. A write uses the deck's existing JSON, TOML, or YAML format and replaces the file
+atomically. The generated exercise text is always regenerated from the current deck.
 
 The web deck page is opened through the `View Deck Info` link. It provides separate Deck status,
 Card Status, Review History, and Exercise Generators tabs. Deck status shows queue counts and
@@ -408,4 +409,4 @@ the same shared right-side preview panel, including for generators with no due c
 changing review or scheduling state or modifying generator sections. Review History applies its
 date range as soon as it changes, and browser
 suspension no longer requests or displays a reason; existing stored reasons remain compatible
-with the state database.
+with the deck file.

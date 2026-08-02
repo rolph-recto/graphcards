@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from graphcards.config import load_config
-from graphcards.storage import Repository
+from graphcards.storage import DeckFileStateStore
 from graphcards.web.app import EXPECTED_HOST_CONFIG, create_flask_app
 from graphcards.web.controller import StudyController
 from graphcards.web.study import StudyMode
@@ -176,12 +176,12 @@ def test_study_renders_html_from_jinja_card_templates(tmp_path: Path) -> None:
     )
     config_path = tmp_path / "graphcards.toml"
     config_path.write_text(
-        f'state_path = "{tmp_path / "state.sqlite3"}"\ndecks = ["{deck_path}"]\n',
+        f'decks = ["{deck_path}"]\n',
         encoding="utf-8",
     )
     config = load_config(config_path)
-    repository = Repository(config.state_path)
-    controller = StudyController(config, repository, random.Random(0))
+    state_store = DeckFileStateStore(config.decks)
+    controller = StudyController(config, state_store, random.Random(0))
     app = create_flask_app(controller)
     app.config[EXPECTED_HOST_CONFIG] = "localhost"
     try:
@@ -217,4 +217,4 @@ def test_study_renders_html_from_jinja_card_templates(tmp_path: Path) -> None:
         revealed = client.get("/study", headers={"Host": "localhost"})
         assert b"<em>&lt;b&gt;Unsafe&lt;/b&gt;</em>" in revealed.data
     finally:
-        repository.close()
+        state_store.close()

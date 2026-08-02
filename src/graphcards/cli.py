@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import random
-import sqlite3
 import sys
 from collections.abc import Sequence
 from datetime import datetime
@@ -17,7 +16,7 @@ from graphcards.decks import Deck
 from graphcards.errors import GraphCardsError
 from graphcards.presentation import execute_cards
 from graphcards.scaffold import available_templates, initialize_workspace
-from graphcards.storage import CardStatus, Repository, datetime_to_text, utc_now
+from graphcards.storage import CardStatus, DeckFileStateStore, datetime_to_text, utc_now
 from graphcards.web import run_server
 
 
@@ -82,9 +81,9 @@ def _run_validate(config: AppConfig, deck_name: str | None, output: TextIO) -> N
 
 
 def _run_sync(config: AppConfig, deck_name: str | None, output: TextIO) -> None:
-    with Repository(config.state_path) as repository:
+    with DeckFileStateStore(config.decks) as state_store:
         app = StudyService(
-            repository,
+            state_store,
             config.fsrs.create_scheduler(),
             display_timezone=config.display_timezone,
         )
@@ -143,10 +142,10 @@ def _print_status_table(cards: tuple[CardStatus, ...], now: datetime, output: Te
 
 def _run_status(config: AppConfig, deck_name: str | None, full: bool, output: TextIO) -> None:
     now = utc_now()
-    with Repository(config.state_path) as repository:
+    with DeckFileStateStore(config.decks) as state_store:
         decks = _selected_decks(config, deck_name)
         service = StudyService(
-            repository,
+            state_store,
             config.fsrs.create_scheduler(),
             display_timezone=config.display_timezone,
         )
@@ -155,8 +154,8 @@ def _run_status(config: AppConfig, deck_name: str | None, full: bool, output: Te
         for index, deck in enumerate(decks):
             if full and index:
                 print(file=output)
-            status = repository.queue_status(
-                deck.name,
+            status = state_store.queue_status(
+                deck,
                 now,
                 config.display_timezone,
                 service.daily_limits(deck),
@@ -194,7 +193,7 @@ def _run_status(config: AppConfig, deck_name: str | None, full: bool, output: Te
                 file=output,
             )
             if full:
-                _print_status_table(repository.card_statuses(deck.name), now, output)
+                _print_status_table(state_store.card_statuses(deck), now, output)
 
 
 def _run_suspend(
@@ -205,8 +204,8 @@ def _run_suspend(
     output: TextIO,
 ) -> None:
     deck = config.deck(deck_name)
-    with Repository(config.state_path) as repository:
-        repository.suspend_card(deck.name, entity_id, reason)
+    with DeckFileStateStore(config.decks) as state_store:
+        state_store.suspend_card(deck, entity_id, reason)
     print(f"{deck.display_name}: suspended {entity_id}", file=output)
 
 
@@ -217,8 +216,8 @@ def _run_resume(
     output: TextIO,
 ) -> None:
     deck = config.deck(deck_name)
-    with Repository(config.state_path) as repository:
-        repository.resume_card(deck.name, entity_id)
+    with DeckFileStateStore(config.decks) as state_store:
+        state_store.resume_card(deck, entity_id)
     print(f"{deck.display_name}: resumed {entity_id}", file=output)
 
 
@@ -271,6 +270,6 @@ def main(
         if args.command == "serve":
             print("\nWeb server stopped.", file=error)
         return 130
-    except (GraphCardsError, OSError, sqlite3.Error) as command_error:
+    except (GraphCardsError, OSError) as command_error:
         print(f"error: {command_error}", file=error)
         return 2

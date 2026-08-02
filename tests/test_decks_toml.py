@@ -12,7 +12,7 @@ from graphcards.config import load_config
 from graphcards.decks import Deck
 from graphcards.errors import ConfigError
 from graphcards.scaffold import initialize_workspace
-from graphcards.storage import Repository
+from graphcards.storage import DeckFileStateStore
 
 DOCUMENT = {
     "name": "Parity study",
@@ -244,7 +244,6 @@ def test_toml_config_paths_can_mix_decks_and_cli_validate_sync(tmp_path: Path) -
     config_path = tmp_path / "workspace" / "graphcards.toml"
     config_path.parent.mkdir()
     config_path.write_text(
-        'state_path = "state.sqlite3"\n'
         'decks = ["../mixed-json/deck.json", "../mixed-toml/deck.toml"]\n',
         encoding="utf-8",
     )
@@ -256,9 +255,9 @@ def test_toml_config_paths_can_mix_decks_and_cli_validate_sync(tmp_path: Path) -
     assert main(["--config", str(config_path), "validate"], output=output) == 0
     assert output.getvalue().count("valid (4 cards)") == 2
     assert main(["--config", str(config_path), "sync"], output=StringIO()) == 0
-    with Repository(config.state_path) as repository:
-        assert len(repository.active_cards("mixed-json")) == 4
-        assert len(repository.active_cards("mixed-toml")) == 4
+    with DeckFileStateStore(config.decks) as state_store:
+        assert len(state_store.active_cards("mixed-json")) == 4
+        assert len(state_store.active_cards("mixed-toml")) == 4
 
 
 def test_validate_help_mentions_supported_deck_formats(capsys: pytest.CaptureFixture[str]) -> None:

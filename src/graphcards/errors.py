@@ -18,6 +18,10 @@ class StaleReviewError(StorageError):
     """A review was based on a card schedule that is no longer current."""
 
 
+class StateConflictError(StorageError):
+    """A deck file changed after an operation loaded it."""
+
+
 class DailyLimitError(StorageError):
     """A saved review would exceed one of the configured daily budgets."""
 

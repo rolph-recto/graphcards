@@ -23,7 +23,7 @@ from pydantic import (
 
 from graphcards.decks import Deck
 from graphcards.errors import ConfigError
-from graphcards.models import FrozenModel, resolve_config_path
+from graphcards.models import FrozenModel
 
 
 def _number(value: object) -> float:
@@ -60,21 +60,11 @@ class FsrsSettings(FrozenModel):
             raise ConfigError(f"invalid FSRS settings: {error}") from error
 
 
-def _resolve_path(value: object, info: ValidationInfo) -> Path:
-    return resolve_config_path(value, info)
-
-
 class AppConfig(FrozenModel):
     model_config = FrozenModel.model_config | ConfigDict(arbitrary_types_allowed=True)
-    state_path: Path = Path(".graphcards/state.sqlite3")
     display_timezone: ZoneInfo = Field(default_factory=lambda: ZoneInfo("UTC"))
     decks: tuple[Deck, ...] = ()
     fsrs: FsrsSettings = Field(default_factory=FsrsSettings)
-
-    @field_validator("state_path", mode="before")
-    @classmethod
-    def resolve_single_path(cls, value: object, info: ValidationInfo) -> Path:
-        return _resolve_path(value, info)
 
     @field_validator("decks", mode="before")
     @classmethod

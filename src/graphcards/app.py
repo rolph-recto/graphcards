@@ -1,4 +1,4 @@
-"""Study-session orchestration across JSON/TOML/YAML decks, SQLite, and FSRS."""
+"""Study-session orchestration across deck files and FSRS."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from graphcards.scheduling import (
     is_interday_learning,
     queue_selection_capacities,
 )
-from graphcards.storage import Repository, StoredCard, datetime_as_utc, utc_now
+from graphcards.storage import DeckFileStateStore, StoredCard, datetime_as_utc, utc_now
 
 
 class StudyService:
@@ -35,20 +35,20 @@ class StudyService:
 
     def __init__(
         self,
-        repository: Repository,
+        state_store: DeckFileStateStore,
         scheduler: Scheduler,
         rng: random.Random | None = None,
         display_timezone: ZoneInfo | None = None,
     ) -> None:
-        self.repository = repository
+        self.store = state_store
         self.scheduler = scheduler
         self.rng = rng or random.Random()
         self.display_timezone = display_timezone or ZoneInfo("UTC")
 
     def sync(self, deck: Deck, now: datetime | None = None) -> tuple[int, int]:
         cards = self.generate_all(deck)
-        return self.repository.sync_deck(
-            deck.name,
+        return self.store.sync_deck(
+            deck,
             cards,
             now or utc_now(),
             daily_limits=deck.daily_limits,
@@ -80,7 +80,7 @@ class StudyService:
     def scheduling(self, deck: Deck) -> DeckSchedulingSettings:
         """Return persisted settings, using deck-file defaults when unset."""
 
-        return self.repository.deck_settings(deck.name, deck.scheduling)
+        return self.store.deck_settings(deck, deck.scheduling)
 
     def deck_settings(self, deck: Deck) -> DeckSchedulingSettings:
         """Alias for the persisted settings lookup."""
@@ -95,14 +95,14 @@ class StudyService:
     def daily_limits(self, deck: Deck) -> DailyLimits:
         """Return persisted daily limits, using deck-file defaults when unset."""
 
-        return self.repository.daily_limits(deck.name, deck.daily_limits)
+        return self.store.daily_limits(deck, deck.daily_limits)
 
     def daily_usage(self, deck: Deck, now: datetime | None = None) -> DailyUsage:
         """Return durable usage for the deck's current local day."""
 
         current = datetime_as_utc(now or utc_now())
-        return self.repository.daily_usage(
-            deck.name,
+        return self.store.daily_usage(
+            deck,
             current,
             self.display_timezone,
             self.daily_limits(deck),
@@ -111,7 +111,7 @@ class StudyService:
     def queue_for_card(self, card: StoredCard) -> QueueKind:
         """Return a stored card's current queue kind."""
 
-        return self.repository.queue_kind(card.card_key)
+        return self.store.queue_kind(card.card_key)
 
     def queue_plan(
         self,
@@ -136,31 +136,31 @@ class StudyService:
         session_limit = None if requested_limit == 0 else requested_limit
 
         if mode_value == "practice":
-            cards = self.repository.active_cards(deck.name)
+            cards = self.store.active_cards(deck)
             self.rng.shuffle(cards)
             if session_limit is not None:
                 cards = cards[:session_limit]
             return QueuePlan(
                 cards=tuple(cards),
-                queue_counts=self.repository.queue_counts(deck.name, current, due_only=False),
+                queue_counts=self.store.queue_counts(deck, current, due_only=False),
                 daily_usage=usage,
                 queue_order=tuple(
-                    dict.fromkeys(self.repository.queue_kind(card.card_key) for card in cards)
+                    dict.fromkeys(self.store.queue_kind(card.card_key) for card in cards)
                 ),
                 requested_limit=session_limit,
             )
 
         if mode_value == "due":
-            candidates = self.repository.queue_cards(deck.name, current, due_only=True)
+            candidates = self.store.queue_cards(deck, current, due_only=True)
         elif mode_value == "forgotten":
-            candidates = self.repository.forgotten_cards(
-                deck.name,
+            candidates = self.store.forgotten_cards(
+                deck,
                 current - timedelta(days=days),
                 None,
             )
         elif mode_value == "ahead":
-            candidates = self.repository.future_cards(
-                deck.name,
+            candidates = self.store.future_cards(
+                deck,
                 current,
                 current + timedelta(days=days),
                 None,
@@ -175,7 +175,7 @@ class StudyService:
         remaining_reviews = usage.reviews_remaining
         remaining_new = usage.new_remaining
         for card in ordered:
-            queue = self.repository.queue_kind(card.card_key)
+            queue = self.store.queue_kind(card.card_key)
             allowed = remaining_reviews > 0
             if queue is QueueKind.NEW:
                 allowed = allowed and remaining_new > 0
@@ -199,7 +199,7 @@ class StudyService:
             hidden_counts=QueueCounts.from_counts(hidden),
             daily_usage=usage,
             queue_order=tuple(
-                dict.fromkeys(self.repository.queue_kind(card.card_key) for card in selected)
+                dict.fromkeys(self.store.queue_kind(card.card_key) for card in selected)
             ),
             requested_limit=session_limit,
         )
@@ -237,7 +237,7 @@ class StudyService:
         interday: list[StoredCard] = []
         intraday: list[StoredCard] = []
         for card in candidates:
-            queue = self.repository.queue_kind(card.card_key)
+            queue = self.store.queue_kind(card.card_key)
             grouped[queue].append(card)
             if queue in {QueueKind.LEARNING, QueueKind.RELEARNING}:
                 if is_interday_learning(card.card(), now, self.display_timezone):
@@ -360,12 +360,12 @@ class StudyService:
     ) -> None:
         """Suspend one membership without changing its global FSRS card."""
 
-        self.repository.suspend_card(deck.name, entity_id, reason)
+        self.store.suspend_card(deck, entity_id, reason)
 
     def resume(self, deck: Deck, entity_id: str) -> None:
         """Resume one membership at its existing global FSRS schedule."""
 
-        self.repository.resume_card(deck.name, entity_id)
+        self.store.resume_card(deck, entity_id)
 
     def suspend_many(
         self,
@@ -375,12 +375,12 @@ class StudyService:
     ) -> None:
         """Suspend several memberships without changing their global schedules."""
 
-        self.repository.suspend_cards(deck.name, entity_ids, reason)
+        self.store.suspend_cards(deck, entity_ids, reason)
 
     def resume_many(self, deck: Deck, entity_ids: tuple[str, ...]) -> None:
         """Resume several memberships at their existing global schedules."""
 
-        self.repository.resume_cards(deck.name, entity_ids)
+        self.store.resume_cards(deck, entity_ids)
 
     def review(
         self,
@@ -413,7 +413,7 @@ class StudyService:
         updated_card, review_log = self.scheduler.review_card(
             source_card, rating, review_datetime=review_time
         )
-        card_json = self.repository.save_review(
+        card_json = self.store.save_review(
             card.card_key,
             card.card_json,
             updated_card,
@@ -422,6 +422,8 @@ class StudyService:
             retrievability=retrievability,
             daily_limits=self.daily_limits(deck),
             timezone=self.display_timezone,
+            expected_digest=card.snapshot_digest,
+            expected_revision=card.state_revision,
         )
         return StoredCard(
             card_key=card.card_key,

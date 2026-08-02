@@ -33,10 +33,11 @@ from yaml.constructor import ConstructorError
 from yaml.events import AliasEvent, NodeEvent
 from yaml.nodes import MappingNode
 
-from graphcards.errors import ConfigError, PresentationError
+from graphcards.errors import ConfigError, PresentationError, StorageError
 from graphcards.models import Card, CardKey, CardView, Exercise, FrozenModel
 from graphcards.references import EntityId, EntityIdListMarker, validate_entity_id
 from graphcards.scheduling import DailyLimits, DeckSchedulingSettings
+from graphcards.state import ReviewState
 
 MAX_TEMPLATE_LENGTH = 100_000
 MAX_RENDERED_LENGTH = 1_000_000
@@ -605,6 +606,7 @@ class DeckDocument(FrozenModel):
         default_factory=DeckSchedulingSettings,
         validation_alias=AliasChoices("scheduling", "queue_settings"),
     )
+    review_state: ReviewState | None = None
 
     @property
     def queue_settings(self) -> DeckSchedulingSettings:
@@ -932,6 +934,8 @@ class Deck:
             return deck
         except ConfigError:
             raise
+        except StorageError:
+            raise
         except YAMLError as error:
             raise ConfigError(f"invalid YAML deck {path}: {_yaml_error_message(error)}") from error
         except tomllib.TOMLDecodeError as error:
@@ -945,6 +949,15 @@ class Deck:
             TypeError,
             ValueError,
         ) as error:
+            if isinstance(error, ValidationError) and isinstance(raw, Mapping):
+                review_state_errors = [
+                    item
+                    for item in error.errors(include_url=False)
+                    if item.get("loc", ())[:1] == ("review_state",)
+                ]
+                if review_state_errors:
+                    message = str(review_state_errors[0]["msg"]).removeprefix("Value error, ")
+                    raise StorageError(f"invalid review state in {path}: {message}") from error
             message = _validation_message(error)
             raise ConfigError(f"invalid deck {path}: {message}") from error
 

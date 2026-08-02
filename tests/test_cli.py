@@ -7,7 +7,7 @@ from pathlib import Path
 from graphcards.cli import main
 from graphcards.config import load_config
 from graphcards.decks import Deck
-from graphcards.storage import Repository
+from graphcards.storage import DeckFileStateStore
 
 
 def test_templates_lists_bundled_names_without_loading_config() -> None:
@@ -113,8 +113,8 @@ def test_cli_suspend_and_resume_change_membership(
     config_path = write_config(tmp_path / "graphcards.toml", [deck_path])
     assert main(["--config", str(config_path), "sync"], output=StringIO()) == 0
     config = load_config(config_path)
-    with Repository(config.state_path) as repository:
-        entity_id = repository.active_cards("capitals")[0].card_key.entity_id
+    with DeckFileStateStore(config.decks) as state_store:
+        entity_id = state_store.active_cards("capitals")[0].card_key.entity_id
 
     assert (
         main(
@@ -132,16 +132,16 @@ def test_cli_suspend_and_resume_change_membership(
         == 0
     )
     config = load_config(config_path)
-    with Repository(config.state_path) as repository:
+    with DeckFileStateStore(config.decks) as state_store:
         card_status = next(
             status
-            for status in repository.card_statuses("capitals")
+            for status in state_store.card_statuses("capitals")
             if status.card_key.entity_id == entity_id
         )
         assert card_status.suspended is True
         assert card_status.suspension_reason == "later"
         assert entity_id not in {
-            card.card_key.entity_id for card in repository.active_cards("capitals")
+            card.card_key.entity_id for card in state_store.active_cards("capitals")
         }
 
     assert (
@@ -151,16 +151,16 @@ def test_cli_suspend_and_resume_change_membership(
         )
         == 0
     )
-    with Repository(config.state_path) as repository:
+    with DeckFileStateStore(config.decks) as state_store:
         card_status = next(
             status
-            for status in repository.card_statuses("capitals")
+            for status in state_store.card_statuses("capitals")
             if status.card_key.entity_id == entity_id
         )
         assert card_status.suspended is False
         assert card_status.suspension_reason is None
         assert entity_id in {
-            card.card_key.entity_id for card in repository.active_cards("capitals")
+            card.card_key.entity_id for card in state_store.active_cards("capitals")
         }
 
 

@@ -12,7 +12,7 @@ from flask import Flask
 from werkzeug.serving import BaseWSGIServer, WSGIRequestHandler, make_server
 
 from graphcards.config import AppConfig
-from graphcards.storage import Repository
+from graphcards.storage import DeckFileStateStore
 from graphcards.web.app import EXPECTED_HOST_CONFIG, create_flask_app
 from graphcards.web.controller import StudyController
 
@@ -23,12 +23,12 @@ class _QuietRequestHandler(WSGIRequestHandler):
 
 
 class LocalStudyServer:
-    """Single-threaded Werkzeug server carrying the open study repository."""
+    """Single-threaded Werkzeug server carrying the file-backed study store."""
 
     def __init__(self, flask_app: Flask, controller: StudyController) -> None:
         self.flask_app = flask_app
         self.app = controller
-        self.repository = controller.repository
+        self.store = controller.store
         self._closed = False
         self._server: BaseWSGIServer = make_server(
             "127.0.0.1",
@@ -76,7 +76,7 @@ class LocalStudyServer:
         try:
             self._server.server_close()
         finally:
-            self.repository.close()
+            self.store.close()
 
 
 def create_web_server(
@@ -85,13 +85,13 @@ def create_web_server(
 ) -> LocalStudyServer:
     """Synchronize all decks and bind the Flask deck hub."""
 
-    repository = Repository(config.state_path)
+    state_store = DeckFileStateStore(config.decks)
     try:
-        controller = StudyController(config, repository, rng or random.Random())
+        controller = StudyController(config, state_store, rng or random.Random())
         flask_app = create_flask_app(controller)
         return LocalStudyServer(flask_app, controller)
     except Exception:
-        repository.close()
+        state_store.close()
         raise
 
 

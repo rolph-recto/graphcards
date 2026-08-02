@@ -21,7 +21,6 @@ def test_paths_are_relative_to_config_file(
 
     config = load_config(config_path)
 
-    assert config.state_path == workspace / "state.sqlite3"
     assert config.decks[0].path == deck_copy.resolve()
 
 

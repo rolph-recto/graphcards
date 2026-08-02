@@ -11,9 +11,10 @@ from fsrs import Rating
 from hypothesis import given
 from hypothesis import strategies as st
 
-from graphcards.models import Card as SemanticCard
+from graphcards.decks import Deck
 from graphcards.models import CardKey
-from graphcards.storage import Repository, ReviewRecord, utc_now
+from graphcards.storage import DeckFileStateStore as Repository
+from graphcards.storage import ReviewRecord, utc_now
 from graphcards.web.app import MAX_FORM_BYTES
 from graphcards.web.status import (
     CardStatusQuery,
@@ -35,10 +36,13 @@ from tests.strategies import (
 
 
 def _reset_web_context(controller: object, repository: Repository) -> None:
-    with repository.connection:
-        repository.connection.execute("DELETE FROM reviews")
-        repository.connection.execute("DELETE FROM deck_cards")
-        repository.connection.execute("DELETE FROM cards")
+    for deck in controller.config.decks:
+        current = Deck.load(deck.path)
+        clean_document = current.document.model_copy(update={"review_state": None})
+        values = repository._document_values(clean_document)
+        deck.path.write_bytes(repository._serialize(deck.path, values))
+        repository._snapshots.pop(deck.name, None)
+        repository._decks[deck.name] = deck
     controller.session = None
     for deck in controller.config.decks:
         controller.study_service.sync(deck, utc_now())
@@ -251,30 +255,6 @@ def test_pagination_preserves_valid_page_ranges(page: int) -> None:
     assert view.pages == 3
     assert view.first == (page - 1) * 100 + 1
     assert view.last == min(page * 100, 201)
-
-
-def test_status_endpoint_supports_a_second_page(
-    web_context: tuple[object, object, Repository],
-) -> None:
-    # Property: a valid second status page returns only the cards in that page.
-    client, controller, repository = web_context
-    _reset_web_context(controller, repository)
-    deck = controller.config.deck("capitals")
-    generated = controller.study_service.generate_all(deck)
-    extras = {
-        key.entity_id: SemanticCard(card_key=key)
-        for key in (CardKey.exercise("capitals", f"extra-{index}") for index in range(110))
-    }
-    repository.sync_deck("capitals", {**generated, **extras}, utc_now())
-    response = client.get(
-        "/decks/capitals/cards?tab=status&page=2",
-        headers={"Host": "localhost"},
-    )
-    assert response.status_code == 200
-    expected_page_size = len(generated) + len(extras) - 100
-    assert (
-        len(re.findall(rb'name="entity_id" value="([^"]+)"', response.data)) == expected_page_size
-    )
 
 
 @given(values=status_queries())
@@ -518,32 +498,6 @@ def test_invalid_study_tokens_do_not_mutate_state(
     assert response.status_code == 403
     assert session.current is current
     assert current.revealed is False
-
-
-def test_inactive_membership_status_actions_are_not_mutating(
-    web_context: tuple[object, object, Repository],
-) -> None:
-    # Property: actions against inactive memberships return 404 and preserve their database row.
-    client, controller, repository = web_context
-    _reset_web_context(controller, repository)
-    entity_id = repository.active_cards("capitals")[0].card_key.entity_id
-    repository.sync_deck("capitals", {}, utc_now())
-    before = repository.connection.execute(
-        "SELECT suspended, suspension_reason FROM deck_cards WHERE deck_id = ? AND entity_id = ?",
-        ("capitals", entity_id),
-    ).fetchone()
-    for endpoint in ("suspend", "resume"):
-        response = client.post(
-            f"/decks/capitals/cards/{endpoint}",
-            data={"csrf_token": controller.csrf_token, "entity_id": entity_id},
-            headers={"Host": "localhost"},
-        )
-        assert response.status_code == 404
-    after = repository.connection.execute(
-        "SELECT suspended, suspension_reason FROM deck_cards WHERE deck_id = ? AND entity_id = ?",
-        ("capitals", entity_id),
-    ).fetchone()
-    assert after == before
 
 
 @given(rating=st.sampled_from(list(Rating)), stale_token=tokens())

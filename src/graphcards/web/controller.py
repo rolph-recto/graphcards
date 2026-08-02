@@ -13,7 +13,7 @@ from graphcards.decks import Deck, Entity, ExerciseGenerator, ExerciseGeneratorC
 from graphcards.errors import ConfigError, PresentationError
 from graphcards.models import CardKey
 from graphcards.scheduling import DailyLimits, DeckSchedulingSettings
-from graphcards.storage import DeckQueueStatus, DeckStatus, Repository, utc_now
+from graphcards.storage import DeckFileStateStore, DeckQueueStatus, DeckStatus, utc_now
 from graphcards.web.status import (
     CardReviewView,
     GeneratorRow,
@@ -27,20 +27,20 @@ from graphcards.web.study import RequestFailure, StudyMode, StudySession
 
 
 class StudyController:
-    """Deck catalog, persistent services, and the optional active session."""
+    """Deck catalog, file-backed study services, and the optional active session."""
 
     def __init__(
         self,
         config: AppConfig,
-        repository: Repository,
+        state_store: DeckFileStateStore,
         rng: random.Random,
     ) -> None:
         self.config = config
-        self.repository = repository
+        self.store = state_store
         self.rng = rng
         self.csrf_token = secrets.token_urlsafe(32)
         self.study_service = StudyService(
-            repository,
+            state_store,
             config.fsrs.create_scheduler(),
             rng,
             config.display_timezone,
@@ -55,8 +55,8 @@ class StudyController:
         return tuple(
             (
                 deck,
-                self.repository.queue_status(
-                    deck.name,
+                self.store.queue_status(
+                    deck,
                     now,
                     self.study_service.scheduling(deck),
                     self.config.display_timezone,
@@ -69,8 +69,8 @@ class StudyController:
     def deck_status(self, deck: Deck, now: datetime) -> DeckStatus:
         """Return one deck's current totals and queue settings."""
 
-        return self.repository.status(
-            deck.name,
+        return self.store.status(
+            deck,
             now,
             self.study_service.scheduling(deck),
         )
@@ -78,8 +78,8 @@ class StudyController:
     def queue_status(self, deck: Deck, now: datetime) -> DeckQueueStatus:
         """Return one deck's queue and daily-limit snapshot."""
 
-        return self.repository.queue_status(
-            deck.name,
+        return self.store.queue_status(
+            deck,
             now,
             self.study_service.scheduling(deck),
             self.config.display_timezone,
@@ -94,7 +94,7 @@ class StudyController:
         """Load active schedules and derive their time-dependent FSRS metric."""
 
         rows: list[StatusCard] = []
-        for status in self.repository.card_statuses(deck.name):
+        for status in self.store.card_statuses(deck):
             retrievability = None
             if status.stability is not None and status.last_review_at is not None:
                 retrievability = self.study_service.scheduler.get_card_retrievability(
@@ -266,7 +266,7 @@ class StudyController:
     ) -> HistoryView:
         """Aggregate immutable review events for one deck."""
 
-        records = self.repository.review_history(deck.name, now)
+        records = self.store.review_history(deck, now)
         return history_view(
             records,
             selected_range,
@@ -285,7 +285,7 @@ class StudyController:
         self.entity_status(deck, entity_id, now)
         records = tuple(
             record
-            for record in self.repository.review_history(deck.name, now)
+            for record in self.store.review_history(deck, now)
             if record.card_key.entity_id == entity_id
         )
         return card_review_views(records, now, self.config.display_timezone)
@@ -311,9 +311,8 @@ class StudyController:
             entity_id=entity_id,
             generator_id=generator_id,
         )
-        if not self.repository.has_membership(deck.name, entity_id) or not (
-            self.repository.card_available(deck.name, entity_id)
-            or self.repository.card_suspended(deck.name, entity_id)
+        if not self.store.has_membership(deck, entity_id) or not (
+            self.store.card_available(deck, entity_id) or self.store.card_suspended(deck, entity_id)
         ):
             raise RequestFailure(
                 HTTPStatus.NOT_FOUND,
@@ -347,7 +346,7 @@ class StudyController:
             deck = self.config.deck(deck_name)
         except ConfigError as error:
             raise RequestFailure(HTTPStatus.NOT_FOUND, "That deck does not exist.") from error
-        self.repository.set_deck_settings(deck.name, settings)
+        self.store.set_deck_settings(deck, settings)
 
     def set_queue_settings(
         self,
@@ -379,7 +378,7 @@ class StudyController:
             deck = self.config.deck(deck_name)
         except ConfigError as error:
             raise RequestFailure(HTTPStatus.NOT_FOUND, "That deck does not exist.") from error
-        self.repository.set_daily_limits(deck.name, limits)
+        self.store.set_daily_limits(deck, limits)
 
     def set_suspensions(
         self,
@@ -426,7 +425,7 @@ class StudyController:
     ) -> str:
         """Resolve a status action to a current active membership."""
 
-        statuses = self.repository.card_statuses(deck.name)
+        statuses = self.store.card_statuses(deck)
         if entity_id is not None:
             for status in statuses:
                 key = status.card_key

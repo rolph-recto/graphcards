@@ -36,16 +36,14 @@ def test_fsrs_retention_and_bounds_reject_invalid_values(value: str) -> None:
 
 @given(state_name=valid_identity_strings)
 @PROPERTY_SETTINGS
-def test_relative_state_paths_are_resolved_from_configuration_context(state_name: str) -> None:
-    # Property: relative state paths resolve beneath the supplied configuration base directory.
+def test_state_paths_are_rejected_from_runtime_configuration(state_name: str) -> None:
+    # Property: normal runtime configuration does not accept a SQLite state path.
     base = Path("/tmp") / state_name
-    config = AppConfig.model_validate(
-        {"state_path": "state.sqlite3"},
-        context={"base": base},
-    )
-    assert config.state_path == (base / "state.sqlite3").resolve()
     with pytest.raises(ValidationError):
-        config.state_path = config.state_path  # type: ignore[misc]
+        AppConfig.model_validate(
+            {"state_path": "state.sqlite3"},
+            context={"base": base},
+        )
 
 
 def test_invalid_fsrs_library_values_are_translated_to_config_error(tmp_path: Path) -> None:

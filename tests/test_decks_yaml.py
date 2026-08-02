@@ -11,7 +11,7 @@ from graphcards.cli import build_parser, main
 from graphcards.config import load_config
 from graphcards.decks import Deck
 from graphcards.errors import ConfigError
-from graphcards.storage import Repository
+from graphcards.storage import DeckFileStateStore
 from tests.test_decks_toml import DOCUMENT, TOML_DOCUMENT
 
 YAML_DOCUMENT = """\
@@ -253,7 +253,6 @@ def test_yaml_load_config_and_cli_support_relative_mixed_workspace(
     write_yaml(yaml_path)
     config_path = tmp_path / "graphcards.toml"
     config_path.write_text(
-        'state_path = "state.sqlite3"\n'
         'decks = ["json-deck/deck.json", "toml-deck/deck.toml", "yaml-deck/deck.yml"]\n',
         encoding="utf-8",
     )
@@ -268,8 +267,8 @@ def test_yaml_load_config_and_cli_support_relative_mixed_workspace(
     assert main(["--config", str(config_path), "validate"], output=output) == 0
     assert output.getvalue().count("valid (4 cards)") == 3
     assert main(["--config", str(config_path), "sync"], output=StringIO()) == 0
-    with Repository(config.state_path) as repository:
-        assert len(repository.active_cards("yaml-deck")) == 4
+    with DeckFileStateStore(config.decks) as state_store:
+        assert len(state_store.active_cards("yaml-deck")) == 4
 
     with pytest.raises(SystemExit):
         build_parser().parse_args(["validate", "--help"])

@@ -99,7 +99,7 @@ class StudySession:
 
         if self.current is None:
             return None
-        return self.service.repository.queue_kind(self.current.card.card_key).value.title()
+        return self.service.store.queue_kind(self.current.card.card_key).value.title()
 
     @property
     def current_queue(self) -> QueueKind | None:
@@ -118,8 +118,8 @@ class StudySession:
     def _load_current(self) -> None:
         while self.index < len(self.cards):
             card = self.cards[self.index]
-            if not self.service.repository.card_available(self.deck.name, card.card_key.entity_id):
-                if self.service.repository.card_suspended(self.deck.name, card.card_key.entity_id):
+            if not self.service.store.card_available(self.deck, card.card_key.entity_id):
+                if self.service.store.card_suspended(self.deck, card.card_key.entity_id):
                     self.suspended_count += 1
                 self.index += 1
                 continue
@@ -166,7 +166,7 @@ class StudySession:
         current.revealed = True
 
     def rate(self, session_token: str, entity_id: str, rating: Rating) -> None:
-        # Keep a deleted current card in place long enough for the repository's
+        # Keep a deleted current card in place long enough for the store's
         # snapshot-safe review path to produce the actionable stale-card error.
         current = self._require_current(session_token, entity_id, refresh=False)
         if self.is_practice:
@@ -198,7 +198,7 @@ class StudySession:
                 "available queue or return tomorrow.",
             ) from error
         except StaleReviewError as error:
-            refreshed = self.service.repository.get_card(current.card.card_key)
+            refreshed = self.service.store.get_card(self.deck, current.card.card_key)
             if refreshed is None:
                 self.skipped.append("A card was removed after this study session started.")
                 self.index += 1
@@ -244,8 +244,8 @@ class StudySession:
     def refresh_availability(self) -> None:
         """Drop a current card suspended or removed after session creation."""
 
-        if self.current is None or self.service.repository.card_available(
-            self.deck.name,
+        if self.current is None or self.service.store.card_available(
+            self.deck,
             self.current.card.card_key.entity_id,
         ):
             return

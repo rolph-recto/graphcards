@@ -15,7 +15,7 @@ from graphcards.decks import (
 )
 from graphcards.errors import ConfigError
 from graphcards.scaffold import initialize_workspace
-from graphcards.storage import Repository
+from graphcards.storage import DeckFileStateStore
 from graphcards.web.app import EXPECTED_HOST_CONFIG, create_flask_app
 from graphcards.web.controller import StudyController
 from graphcards.web.study import StudyMode
@@ -169,8 +169,8 @@ def test_image_asset_route_is_deck_scoped_and_rejects_unsafe_files(
     secret = tmp_path / "secret.png"
     secret.write_bytes(b"secret")
     config = load_config(write_config(tmp_path / "graphcards.toml", [deck_path]))
-    repository = Repository(config.state_path)
-    controller = StudyController(config, repository, random.Random(0))
+    state_store = DeckFileStateStore(config.decks)
+    controller = StudyController(config, state_store, random.Random(0))
     app = create_flask_app(controller)
     app.config[EXPECTED_HOST_CONFIG] = "localhost"
     client = app.test_client()
@@ -196,4 +196,4 @@ def test_image_asset_route_is_deck_scoped_and_rejects_unsafe_files(
         assert b"/decks/asset-deck/assets/diagram.png" in study.data
         assert b"image-occlusion__mask" in study.data
     finally:
-        repository.close()
+        state_store.close()

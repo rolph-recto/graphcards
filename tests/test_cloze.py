@@ -8,7 +8,7 @@ from pathlib import Path
 from graphcards.config import load_config
 from graphcards.decks import ClozeExercise, ClozeExerciseGenerator, Deck
 from graphcards.models import CardKey
-from graphcards.storage import Repository
+from graphcards.storage import DeckFileStateStore
 from graphcards.web.app import EXPECTED_HOST_CONFIG, create_flask_app
 from graphcards.web.controller import StudyController
 
@@ -74,14 +74,13 @@ def test_cloze_schedules_selected_markers_and_renders_nested_answers(
 def test_cloze_identity_is_stored_with_one_fsrs_card_per_entity(tmp_path: Path) -> None:
     deck = Deck.load(write_deck(tmp_path / "cloze" / "deck.json", json.dumps(DOCUMENT)))
     now = datetime(2026, 1, 1, tzinfo=UTC)
-    with Repository(tmp_path / "state.sqlite3") as repository:
-        repository.sync_deck(deck.name, deck.generate_all(), now)
-        cards = repository.active_cards(deck.name)
+    with DeckFileStateStore(deck) as state_store:
+        state_store.sync_deck(deck, deck.generate_all(), now)
+        cards = state_store.active_cards(deck)
         assert len(cards) == 2
         assert "cloze_id" not in CardKey.model_fields
-        assert repository.connection.execute("SELECT COUNT(*) FROM cards").fetchone()[0] == 2
         for card in cards:
-            restored = repository.get_card(card.card_key)
+            restored = state_store.get_card(deck, card.card_key)
             assert restored is not None
             assert restored.card_key == card.card_key
 
@@ -98,10 +97,10 @@ def test_cloze_variant_change_reuses_the_entity_schedule(tmp_path: Path) -> None
     second_deck = Deck.load(deck_path)
     now = datetime(2026, 1, 1, tzinfo=UTC)
 
-    with Repository(tmp_path / "state.sqlite3") as repository:
-        repository.sync_deck(first_deck.name, first_deck.generate_all(), now)
-        repository.sync_deck(second_deck.name, second_deck.generate_all(), now)
-        cards = repository.active_cards(second_deck.name)
+    with DeckFileStateStore(second_deck) as state_store:
+        state_store.sync_deck(first_deck, first_deck.generate_all(), now)
+        state_store.sync_deck(second_deck, second_deck.generate_all(), now)
+        cards = state_store.active_cards(second_deck)
         assert len(cards) == 2
         capital = next(card for card in cards if card.card_key.entity_id == "capital")
         assert second_deck.render(second_deck.generate(capital.card_key)).front == (
@@ -166,11 +165,11 @@ def test_cloze_cards_are_named_in_status_and_detail_views(tmp_path: Path) -> Non
     deck_path = write_deck(tmp_path / "cloze" / "deck.json", json.dumps(DOCUMENT))
     config_path = write_deck(
         tmp_path / "graphcards.toml",
-        f'state_path = "{tmp_path / "state.sqlite3"}"\ndecks = ["{deck_path}"]\n',
+        f'decks = ["{deck_path}"]\n',
     )
     config = load_config(config_path)
-    repository = Repository(config.state_path)
-    controller = StudyController(config, repository, random.Random(0))
+    state_store = DeckFileStateStore(config.decks)
+    controller = StudyController(config, state_store, random.Random(0))
     app = create_flask_app(controller)
     app.config[EXPECTED_HOST_CONFIG] = "localhost"
     try:
@@ -189,7 +188,7 @@ def test_cloze_cards_are_named_in_status_and_detail_views(tmp_path: Path) -> Non
         assert detail.status_code == 200
         assert b"2 selected cloze(s)" in detail.data
     finally:
-        repository.close()
+        state_store.close()
 
 
 def test_cloze_id_is_not_part_of_card_identity() -> None:
