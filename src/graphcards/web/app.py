@@ -34,6 +34,16 @@ from werkzeug.exceptions import HTTPException, InternalServerError
 from graphcards.errors import ConfigError, GraphCardsError
 from graphcards.models import CardKey
 from graphcards.references import EntityId
+from graphcards.scheduling import (
+    MAX_DAILY_LIMIT,
+    DailyLimits,
+    DeckSchedulingSettings,
+    InterdayLearningReviewOrder,
+    NewCardGatherOrder,
+    NewCardSortOrder,
+    NewReviewOrder,
+    ReviewSortOrder,
+)
 from graphcards.storage import normalize_suspension_reason, utc_now
 from graphcards.web.controller import StudyController
 from graphcards.web.status import (
@@ -41,6 +51,11 @@ from graphcards.web.status import (
     CARD_PAGE_SIZE,
     DIRECTION_OPTIONS,
     HISTORY_RANGE_OPTIONS,
+    QUEUE_GATHER_OPTIONS,
+    QUEUE_INTERDAY_OPTIONS,
+    QUEUE_NEW_REVIEW_OPTIONS,
+    QUEUE_NEW_SORT_OPTIONS,
+    QUEUE_REVIEW_SORT_OPTIONS,
     SCHEDULE_OPTIONS,
     SORT_OPTIONS,
     STATE_OPTIONS,
@@ -158,6 +173,54 @@ class _StatusActionSubmission(BaseModel):
             sort=self.sort,
             direction=self.direction,
             range=self.range,
+            tab=InfoTab.STATUS,
+        )
+
+
+class _DeckSettingsSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    csrf_token: str = Field(min_length=1, max_length=256)
+    new_review_order: NewReviewOrder | None = None
+    interday_learning_review_order: InterdayLearningReviewOrder | None = None
+    new_card_gather_order: NewCardGatherOrder | None = None
+    new_card_sort_order: NewCardSortOrder | None = None
+    review_sort_order: ReviewSortOrder | None = None
+    new_cards_per_day: int | None = Field(default=None, ge=0, le=MAX_DAILY_LIMIT)
+    reviews_per_day: int | None = Field(default=None, ge=0, le=MAX_DAILY_LIMIT)
+
+    @model_validator(mode="after")
+    def require_one_settings_group(self) -> _DeckSettingsSubmission:
+        queue_values = (
+            self.new_review_order,
+            self.interday_learning_review_order,
+            self.new_card_gather_order,
+            self.new_card_sort_order,
+            self.review_sort_order,
+        )
+        queue_complete = all(value is not None for value in queue_values)
+        daily_complete = self.new_cards_per_day is not None and self.reviews_per_day is not None
+        if queue_complete == daily_complete:
+            raise ValueError("submit either complete queue settings or complete daily limits")
+        return self
+
+    def settings(self) -> DeckSchedulingSettings:
+        if self.new_review_order is None:
+            raise ValueError("queue settings are missing")
+        return DeckSchedulingSettings(
+            new_review_order=self.new_review_order,
+            interday_learning_review_order=self.interday_learning_review_order,
+            new_card_gather_order=self.new_card_gather_order,
+            new_card_sort_order=self.new_card_sort_order,
+            review_sort_order=self.review_sort_order,
+        )
+
+    def daily_limits(self) -> DailyLimits:
+        if self.new_cards_per_day is None or self.reviews_per_day is None:
+            raise ValueError("daily limits are missing")
+        return DailyLimits(
+            new_cards_per_day=self.new_cards_per_day,
+            reviews_per_day=self.reviews_per_day,
         )
 
 
@@ -231,6 +294,7 @@ class _StatusBulkSubmission(BaseModel):
             sort=self.sort,
             direction=self.direction,
             range=self.range,
+            tab=InfoTab.STATUS,
         )
 
 
@@ -486,6 +550,29 @@ def create_flask_app(controller: StudyController) -> Flask:
         )
         return redirect(url_for("study"), code=HTTPStatus.SEE_OTHER)
 
+    @app.post("/decks/<path:deck_name>/settings")
+    def update_deck_settings(deck_name: str) -> Response:
+        submission = _validated_form(
+            _DeckSettingsSubmission,
+            "The deck-status settings form is invalid.",
+        )
+        if submission.new_cards_per_day is not None:
+            _controller().set_daily_limits(
+                csrf_token=submission.csrf_token,
+                deck_name=deck_name,
+                limits=submission.daily_limits(),
+            )
+        else:
+            _controller().set_scheduling(
+                csrf_token=submission.csrf_token,
+                deck_name=deck_name,
+                settings=submission.settings(),
+            )
+        return redirect(
+            url_for("card_status", deck_name=deck_name, tab=InfoTab.DECK_STATUS.value),
+            code=HTTPStatus.SEE_OTHER,
+        )
+
     @app.get("/study")
     def study() -> str:
         current = _session()
@@ -703,6 +790,8 @@ def create_flask_app(controller: StudyController) -> Flask:
 
         now = utc_now()
         all_cards = current.card_statuses(deck, now)
+        deck_status = current.deck_status(deck, now)
+        queue_status = current.queue_status(deck, now)
         filtered = [
             row
             for row in all_cards
@@ -768,6 +857,8 @@ def create_flask_app(controller: StudyController) -> Flask:
             available_count=sum(not row.status.suspended for row in all_cards),
             suspended_count=sum(row.status.suspended for row in all_cards),
             csrf_token=current.csrf_token,
+            daily_limit_maximum=MAX_DAILY_LIMIT,
+            queue_status=queue_status,
             empty_message=empty_message,
             pagination=(
                 pagination(
@@ -792,6 +883,7 @@ def create_flask_app(controller: StudyController) -> Flask:
             history_range_options=HISTORY_RANGE_OPTIONS,
             tab=query.tab,
             tab_urls={
+                InfoTab.DECK_STATUS: _tab_url(deck.name, query, InfoTab.DECK_STATUS),
                 InfoTab.STATUS: _tab_url(deck.name, query, InfoTab.STATUS),
                 InfoTab.HISTORY: _tab_url(deck.name, query, InfoTab.HISTORY),
                 InfoTab.GENERATORS: _tab_url(deck.name, query, InfoTab.GENERATORS),
@@ -799,6 +891,12 @@ def create_flask_app(controller: StudyController) -> Flask:
             generators=(
                 current.generator_rows(deck, now) if query.tab is InfoTab.GENERATORS else ()
             ),
+            deck_status=deck_status,
+            queue_new_review_options=QUEUE_NEW_REVIEW_OPTIONS,
+            queue_interday_options=QUEUE_INTERDAY_OPTIONS,
+            queue_gather_options=QUEUE_GATHER_OPTIONS,
+            queue_new_sort_options=QUEUE_NEW_SORT_OPTIONS,
+            queue_review_sort_options=QUEUE_REVIEW_SORT_OPTIONS,
             preview=preview,
             detail_urls={
                 row.entity_id: _detail_url(deck.name, row.entity_id, query) for row in rows

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime
 from http import HTTPStatus
 
 from graphcards.app import StudyService
@@ -12,7 +12,8 @@ from graphcards.config import AppConfig
 from graphcards.decks import Deck, Entity, ExerciseGenerator, ExerciseGeneratorContext
 from graphcards.errors import ConfigError, PresentationError
 from graphcards.models import CardKey
-from graphcards.storage import DeckStatus, Repository, utc_now
+from graphcards.scheduling import DailyLimits, DeckSchedulingSettings
+from graphcards.storage import DeckQueueStatus, DeckStatus, Repository, utc_now
 from graphcards.web.status import (
     CardReviewView,
     GeneratorRow,
@@ -42,15 +43,48 @@ class StudyController:
             repository,
             config.fsrs.create_scheduler(),
             rng,
+            config.display_timezone,
         )
         self.session: StudySession | None = None
         sync_time = utc_now()
         for deck in config.decks:
             self.study_service.sync(deck, sync_time)
 
-    def deck_statuses(self) -> tuple[tuple[Deck, DeckStatus], ...]:
+    def deck_statuses(self) -> tuple[tuple[Deck, DeckQueueStatus], ...]:
         now = utc_now()
-        return tuple((deck, self.repository.status(deck.name, now)) for deck in self.config.decks)
+        return tuple(
+            (
+                deck,
+                self.repository.queue_status(
+                    deck.name,
+                    now,
+                    self.study_service.scheduling(deck),
+                    self.config.display_timezone,
+                    self.study_service.daily_limits(deck),
+                ),
+            )
+            for deck in self.config.decks
+        )
+
+    def deck_status(self, deck: Deck, now: datetime) -> DeckStatus:
+        """Return one deck's current totals and queue settings."""
+
+        return self.repository.status(
+            deck.name,
+            now,
+            self.study_service.scheduling(deck),
+        )
+
+    def queue_status(self, deck: Deck, now: datetime) -> DeckQueueStatus:
+        """Return one deck's queue and daily-limit snapshot."""
+
+        return self.repository.queue_status(
+            deck.name,
+            now,
+            self.study_service.scheduling(deck),
+            self.config.display_timezone,
+            self.study_service.daily_limits(deck),
+        )
 
     def card_statuses(
         self,
@@ -298,6 +332,55 @@ class StudyController:
         if not secrets.compare_digest(csrf_token, self.csrf_token):
             raise RequestFailure(HTTPStatus.FORBIDDEN, "This card-status form is not valid.")
 
+    def set_scheduling(
+        self,
+        *,
+        csrf_token: str,
+        deck_name: str,
+        settings: DeckSchedulingSettings,
+    ) -> None:
+        """Persist validated queue settings for one configured deck."""
+
+        if not secrets.compare_digest(csrf_token, self.csrf_token):
+            raise RequestFailure(HTTPStatus.FORBIDDEN, "This deck-status form is not valid.")
+        try:
+            deck = self.config.deck(deck_name)
+        except ConfigError as error:
+            raise RequestFailure(HTTPStatus.NOT_FOUND, "That deck does not exist.") from error
+        self.repository.set_deck_settings(deck.name, settings)
+
+    def set_queue_settings(
+        self,
+        *,
+        csrf_token: str,
+        deck_name: str,
+        settings: DeckSchedulingSettings,
+    ) -> None:
+        """Alias for callers that use queue terminology."""
+
+        self.set_scheduling(
+            csrf_token=csrf_token,
+            deck_name=deck_name,
+            settings=settings,
+        )
+
+    def set_daily_limits(
+        self,
+        *,
+        csrf_token: str,
+        deck_name: str,
+        limits: DailyLimits,
+    ) -> None:
+        """Persist one deck's daily study limits after checking the form token."""
+
+        if not secrets.compare_digest(csrf_token, self.csrf_token):
+            raise RequestFailure(HTTPStatus.FORBIDDEN, "This deck-status form is not valid.")
+        try:
+            deck = self.config.deck(deck_name)
+        except ConfigError as error:
+            raise RequestFailure(HTTPStatus.NOT_FOUND, "That deck does not exist.") from error
+        self.repository.set_daily_limits(deck.name, limits)
+
     def set_suspensions(
         self,
         *,
@@ -375,33 +458,20 @@ class StudyController:
             raise RequestFailure(HTTPStatus.BAD_REQUEST, "That deck is not available.") from error
 
         now = utc_now()
-        limit = None if requested_limit == 0 else requested_limit
-        if mode is StudyMode.DUE:
-            cards = self.repository.due_cards(deck.name, now, None)
-        elif mode is StudyMode.FORGOTTEN:
-            cards = self.repository.forgotten_cards(
-                deck.name,
-                now - timedelta(days=days),
-                limit,
-            )
-        elif mode is StudyMode.PRACTICE:
-            cards = self.repository.active_cards(deck.name)
-            self.rng.shuffle(cards)
-            if limit is not None:
-                cards = cards[:limit]
-        else:
-            cards = self.repository.future_cards(
-                deck.name,
-                now,
-                now + timedelta(days=days),
-                limit,
-            )
+        plan = self.study_service.queue_plan(
+            deck,
+            mode,
+            now,
+            requested_limit,
+            days,
+        )
         self.session = StudySession(
             deck,
             self.study_service,
-            cards,
+            list(plan.cards),
             mode,
             days,
             requested_limit,
+            plan,
         )
         return self.session

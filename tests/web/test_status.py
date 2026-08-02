@@ -9,6 +9,13 @@ from fsrs import Rating
 from werkzeug.datastructures import MultiDict
 
 from graphcards.decks import BasicExerciseGenerator, Deck, DeckDocument, Entity
+from graphcards.scheduling import (
+    InterdayLearningReviewOrder,
+    NewCardGatherOrder,
+    NewCardSortOrder,
+    NewReviewOrder,
+    ReviewSortOrder,
+)
 from graphcards.storage import utc_now
 from graphcards.web.app import EXPECTED_HOST_CONFIG, create_flask_app
 from graphcards.web.status import (
@@ -52,13 +59,88 @@ def test_status_page_lists_cards_and_filters(web_context: tuple[object, object, 
     deck = controller.config.deck("capitals")
     reviewed = repository.active_cards("capitals")[0]
     controller.study_service.review(deck, reviewed, Rating.Good, utc_now())
-    response = client.get("/decks/capitals/cards?schedule=new", headers={"Host": "localhost"})
-    all_cards = client.get("/decks/capitals/cards?schedule=all", headers={"Host": "localhost"})
+    response = client.get(
+        "/decks/capitals/cards?tab=status&schedule=new",
+        headers={"Host": "localhost"},
+    )
+    all_cards = client.get(
+        "/decks/capitals/cards?tab=status&schedule=all",
+        headers={"Host": "localhost"},
+    )
 
     assert response.status_code == 200
     assert b"Card status" in response.data
     assert b'entity_id="france"' not in response.data
     assert b"france" in all_cards.data
+
+
+def test_deck_status_settings_are_rendered_and_persisted(
+    web_context: tuple[object, object, object],
+) -> None:
+    client, controller, repository = web_context
+
+    status = client.get("/decks/capitals/cards", headers={"Host": "localhost"})
+    assert status.status_code == 200
+    assert b'aria-current="page">Deck status' in status.data
+    assert b"Study queues" in status.data
+    assert b"New/review order" in status.data
+    assert b"Interday learning/review order" in status.data
+    assert b"New-card gather order" in status.data
+    assert b"New-card sort order" in status.data
+    assert b"Review sort order" in status.data
+    assert b"Save queue settings" in status.data
+
+    saved = client.post(
+        "/decks/capitals/settings",
+        data={
+            "csrf_token": controller.csrf_token,
+            "new_review_order": NewReviewOrder.NEW_FIRST.value,
+            "interday_learning_review_order": InterdayLearningReviewOrder.REVIEWS_FIRST.value,
+            "new_card_gather_order": NewCardGatherOrder.RANDOM_CARDS.value,
+            "new_card_sort_order": NewCardSortOrder.RANDOM.value,
+            "review_sort_order": ReviewSortOrder.DESCENDING_INTERVAL.value,
+        },
+        headers={"Host": "localhost"},
+    )
+    assert saved.status_code == 303
+    assert "tab=deck_status" in saved.headers["Location"]
+    settings = repository.deck_settings("capitals")
+    assert settings.new_review_order is NewReviewOrder.NEW_FIRST
+    assert settings.interday_learning_review_order is InterdayLearningReviewOrder.REVIEWS_FIRST
+    assert settings.new_card_gather_order is NewCardGatherOrder.RANDOM_CARDS
+    assert settings.new_card_sort_order is NewCardSortOrder.RANDOM
+    assert settings.review_sort_order is ReviewSortOrder.DESCENDING_INTERVAL
+
+
+def test_deck_status_settings_reject_invalid_values_and_csrf(
+    web_context: tuple[object, object, object],
+) -> None:
+    client, controller, repository = web_context
+    before = repository.deck_settings("capitals")
+    values = {
+        "csrf_token": controller.csrf_token,
+        "new_review_order": NewReviewOrder.NEW_FIRST.value,
+        "interday_learning_review_order": InterdayLearningReviewOrder.REVIEWS_FIRST.value,
+        "new_card_gather_order": NewCardGatherOrder.DECK.value,
+        "new_card_sort_order": NewCardSortOrder.ORDER_GATHERED.value,
+        "review_sort_order": ReviewSortOrder.DUE_DATE.value,
+    }
+
+    invalid = client.post(
+        "/decks/capitals/settings",
+        data={**values, "review_sort_order": "not-a-supported-sort"},
+        headers={"Host": "localhost"},
+    )
+    assert invalid.status_code == 400
+    assert repository.deck_settings("capitals") == before
+
+    invalid_csrf = client.post(
+        "/decks/capitals/settings",
+        data={**values, "csrf_token": "wrong"},
+        headers={"Host": "localhost"},
+    )
+    assert invalid_csrf.status_code == 403
+    assert repository.deck_settings("capitals") == before
 
 
 def test_status_page_searches_entity_fields_and_rejects_bad_syntax(
@@ -67,23 +149,23 @@ def test_status_page_searches_entity_fields_and_rejects_bad_syntax(
     client, _controller, _repository = web_context
 
     field_search = client.get(
-        "/decks/capitals/cards?search=field%3Afront%3DFrance",
+        "/decks/capitals/cards?tab=status&search=field%3Afront%3DFrance",
         headers={"Host": "localhost"},
     )
     text_search = client.get(
-        "/decks/capitals/cards?search=Germany",
+        "/decks/capitals/cards?tab=status&search=Germany",
         headers={"Host": "localhost"},
     )
     boolean_search = client.get(
-        "/decks/capitals/cards?search=field%3Afront%3DFrance%20OR%20field%3Afront%3DGermany",
+        "/decks/capitals/cards?tab=status&search=field%3Afront%3DFrance%20OR%20field%3Afront%3DGermany",
         headers={"Host": "localhost"},
     )
     id_search = client.get(
-        "/decks/capitals/cards?search=id%3A%22france%22",
+        "/decks/capitals/cards?tab=status&search=id%3A%22france%22",
         headers={"Host": "localhost"},
     )
     malformed = client.get(
-        "/decks/capitals/cards?search=%22unclosed",
+        "/decks/capitals/cards?tab=status&search=%22unclosed",
         headers={"Host": "localhost"},
     )
 
@@ -252,7 +334,10 @@ def test_status_suspend_and_resume_round_trip(web_context: tuple[object, object,
     available_after_suspend = {
         item.card_key.entity_id for item in repository.active_cards("capitals")
     }
-    suspended_page = client.get("/decks/capitals/cards", headers={"Host": "localhost"})
+    suspended_page = client.get(
+        "/decks/capitals/cards?tab=status",
+        headers={"Host": "localhost"},
+    )
     suspended_cells = _first_status_row_cells(suspended_page.data)
     resume = client.post(
         "/decks/capitals/cards/resume",
@@ -400,11 +485,17 @@ def test_deck_info_tabs_have_isolated_content_and_updated_controls(
     web_context: tuple[object, object, object],
 ) -> None:
     client, controller, _repository = web_context
+    deck = controller.config.deck("capitals")
 
     index = client.get("/", headers={"Host": "localhost"})
-    status = client.get("/decks/capitals/cards", headers={"Host": "localhost"})
+    status = client.get("/decks/capitals/cards?tab=status", headers={"Host": "localhost"})
+    default_status = client.get("/decks/capitals/cards", headers={"Host": "localhost"})
     history = client.get(
         "/decks/capitals/cards?tab=history&range=30d",
+        headers={"Host": "localhost"},
+    )
+    deck_status = client.get(
+        "/decks/capitals/cards?tab=deck_status",
         headers={"Host": "localhost"},
     )
     generators = client.get(
@@ -415,13 +506,45 @@ def test_deck_info_tabs_have_isolated_content_and_updated_controls(
 
     assert b"View Deck Info" in index.data
     assert b"View card status" not in index.data
+    assert b'aria-current="page">Deck status' in default_status.data
+    assert b"Study queues" in default_status.data
     assert b"Card Status" in status.data
     assert b'id="card-status"' in status.data
+    assert b"Daily limits" not in status.data
     assert b'id="history"' not in status.data
     assert b"Reason for suspension" not in status.data
     assert b"Suspend selected" not in status.data
     assert b"Resume selected" not in status.data
     assert b"selected_card_key" not in status.data
+    assert deck_status.status_code == 200
+    assert b'aria-current="page">Deck status' in deck_status.data
+    assert b'id="deck-status"' in deck_status.data
+    assert b"Study queues" in deck_status.data
+    assert b"Daily limits" in deck_status.data
+    assert b'name="new_cards_per_day"' in deck_status.data
+    assert b'name="reviews_per_day"' in deck_status.data
+    assert deck_status.data.index(b">Deck status</a>") < deck_status.data.index(b">Card Status</a>")
+
+    settings = client.post(
+        "/decks/capitals/settings",
+        data={
+            "csrf_token": controller.csrf_token,
+            "new_cards_per_day": "7",
+            "reviews_per_day": "11",
+        },
+        headers={"Host": "localhost"},
+    )
+    assert settings.status_code == 303
+    assert settings.location.endswith("/decks/capitals/cards?tab=deck_status")
+    assert controller.study_service.daily_limits(deck).new_cards_per_day == 7
+    assert controller.study_service.daily_limits(deck).reviews_per_day == 11
+
+    updated_deck_status = client.get(
+        "/decks/capitals/cards?tab=deck_status",
+        headers={"Host": "localhost"},
+    )
+    assert b'value="7"' in updated_deck_status.data
+    assert b'value="11"' in updated_deck_status.data
     assert b"Review History" in history.data
     assert b'id="history"' in history.data
     assert b'id="card-status"' not in history.data
@@ -555,7 +678,7 @@ def test_status_table_is_minimal_and_links_to_entity_details(
 ) -> None:
     client, _controller, _repository = web_context
 
-    response = client.get("/decks/capitals/cards", headers={"Host": "localhost"})
+    response = client.get("/decks/capitals/cards?tab=status", headers={"Host": "localhost"})
 
     assert response.status_code == 200
     assert b"<th>Entity</th>" in response.data
@@ -599,7 +722,7 @@ def test_card_detail_preserves_status_filters_and_invalid_action_paths_stay_405(
     query = "page=1&sort=review_count&direction=desc&range=30d"
 
     status = client.get(
-        f"/decks/capitals/cards?{query}",
+        f"/decks/capitals/cards?{query}&tab=status",
         headers={"Host": "localhost"},
     )
     detail = client.get(
@@ -706,7 +829,7 @@ def test_card_detail_shows_state_and_card_review_history_tabs(
     assert b"md:grid-cols-2" in generators.data
     assert invalid_preview.status_code == 400
 
-    status = client.get("/decks/capitals/cards", headers={"Host": "localhost"})
+    status = client.get("/decks/capitals/cards?tab=status", headers={"Host": "localhost"})
     assert b'<a class="underline" aria-label="More details for france"' in status.data
 
 

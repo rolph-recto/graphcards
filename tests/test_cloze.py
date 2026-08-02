@@ -175,7 +175,10 @@ def test_cloze_cards_are_named_in_status_and_detail_views(tmp_path: Path) -> Non
     app.config[EXPECTED_HOST_CONFIG] = "localhost"
     try:
         client = app.test_client()
-        status = client.get("/decks/cloze/cards", headers={"Host": "localhost"})
+        status = client.get(
+            "/decks/cloze/cards?tab=status",
+            headers={"Host": "localhost"},
+        )
         detail = client.get(
             "/decks/cloze/cards/detail/nested",
             headers={"Host": "localhost"},

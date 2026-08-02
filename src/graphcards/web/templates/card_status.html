@@ -13,6 +13,7 @@
   </header>
 
   <nav class="my-6 flex flex-wrap gap-1.5 border-b border-neutral-200" aria-label="Deck information tabs">
+    <a class="px-3.5 py-2.5 text-sm font-semibold no-underline{% if tab.value == 'deck_status' %} border-b-2 border-neutral-900 text-neutral-900{% else %} text-neutral-600{% endif %}" href="{{ tab_urls.deck_status }}"{% if tab.value == "deck_status" %} aria-current="page"{% endif %}>Deck status</a>
     <a class="px-3.5 py-2.5 text-sm font-semibold no-underline{% if tab.value == 'status' %} border-b-2 border-neutral-900 text-neutral-900{% else %} text-neutral-600{% endif %}" href="{{ tab_urls.status }}"{% if tab.value == "status" %} aria-current="page"{% endif %}>Card Status</a>
     <a class="px-3.5 py-2.5 text-sm font-semibold no-underline{% if tab.value == 'history' %} border-b-2 border-neutral-900 text-neutral-900{% else %} text-neutral-600{% endif %}" href="{{ tab_urls.history }}"{% if tab.value == "history" %} aria-current="page"{% endif %}>Review History</a>
     <a class="px-3.5 py-2.5 text-sm font-semibold no-underline{% if tab.value == 'generators' %} border-b-2 border-neutral-900 text-neutral-900{% else %} text-neutral-600{% endif %}" href="{{ tab_urls.generators }}"{% if tab.value == "generators" %} aria-current="page"{% endif %}>Exercise Generators</a>
@@ -36,7 +37,83 @@
     </div>
   {% endif %}
 
-  {% if tab.value == "history" %}
+  {% if tab.value == "deck_status" %}
+    <section id="deck-status" aria-label="Deck status">
+      <div class="grid gap-4 md:grid-cols-2">
+        <section class="rounded-xl border border-neutral-200 bg-neutral-50 p-4" aria-labelledby="queue-summary-title">
+          <h2 id="queue-summary-title">Study queues</h2>
+          <div class="stats mt-3">
+            <span><strong>{{ deck_status.queue_counts.learning }}</strong> learning</span>
+            <span><strong>{{ deck_status.queue_counts.relearning }}</strong> relearning</span>
+            <span><strong>{{ deck_status.queue_counts.review }}</strong> review</span>
+            <span><strong>{{ deck_status.queue_counts.new }}</strong> new</span>
+          </div>
+          <p class="mt-4 text-sm text-neutral-600">
+            Queue order:
+            {% for queue in deck_status.queue_order %}{{ queue.value }}{% if not loop.last %} → {% endif %}{% endfor %}.
+          </p>
+        </section>
+
+        <section class="rounded-xl border border-neutral-200 bg-neutral-50 p-4" aria-labelledby="schedule-settings-title">
+          <h2 id="schedule-settings-title">Queue scheduling</h2>
+          <p class="mt-2 text-sm text-neutral-600">These settings apply to this deck's saved study queue.</p>
+          <form class="mt-4 grid gap-3" method="post" action="{{ url_for('update_deck_settings', deck_name=deck.name) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label>New/review order
+              <select name="new_review_order">
+                {% for value, label in queue_new_review_options %}<option value="{{ value.value }}"{% if value == deck_status.scheduling.new_review_order %} selected{% endif %}>{{ label }}</option>{% endfor %}
+              </select>
+            </label>
+            <label>Interday learning/review order
+              <select name="interday_learning_review_order">
+                {% for value, label in queue_interday_options %}<option value="{{ value.value }}"{% if value == deck_status.scheduling.interday_learning_review_order %} selected{% endif %}>{{ label }}</option>{% endfor %}
+              </select>
+            </label>
+            <label>New-card gather order
+              <select name="new_card_gather_order">
+                {% for value, label in queue_gather_options %}<option value="{{ value.value }}"{% if value == deck_status.scheduling.new_card_gather_order %} selected{% endif %}>{{ label }}</option>{% endfor %}
+              </select>
+            </label>
+            <label>New-card sort order
+              <select name="new_card_sort_order">
+                {% for value, label in queue_new_sort_options %}<option value="{{ value.value }}"{% if value == deck_status.scheduling.new_card_sort_order %} selected{% endif %}>{{ label }}</option>{% endfor %}
+              </select>
+            </label>
+            <label>Review sort order
+              <select name="review_sort_order">
+                {% for value, label in queue_review_sort_options %}<option value="{{ value.value }}"{% if value == deck_status.scheduling.review_sort_order %} selected{% endif %}>{{ label }}</option>{% endfor %}
+              </select>
+            </label>
+            <button class="primary" type="submit">Save queue settings</button>
+          </form>
+        </section>
+      </div>
+      <section class="mt-4 rounded-xl border border-neutral-200 bg-white p-4" aria-labelledby="daily-limits-title">
+        <h2 id="daily-limits-title">Daily limits</h2>
+        <p class="mb-4 text-sm text-neutral-600">
+          Usage for {{ queue_status.daily_usage.local_date_display }}:
+          {{ queue_status.daily_usage.new_used }}/{{ queue_status.daily_usage.new_limit }} new and
+          {{ queue_status.daily_usage.reviews_used }}/{{ queue_status.daily_usage.reviews_limit }} reviews used.
+        </p>
+        <form class="grid gap-3 md:grid-cols-3" method="post" action="{{ url_for('update_deck_settings', deck_name=deck.name) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label>New cards per day
+            <input type="number" name="new_cards_per_day" min="0" max="{{ daily_limit_maximum }}" value="{{ queue_status.daily_usage.new_limit }}" required>
+          </label>
+          <label>Reviews per day
+            <input type="number" name="reviews_per_day" min="0" max="{{ daily_limit_maximum }}" value="{{ queue_status.daily_usage.reviews_limit }}" required>
+          </label>
+          <div class="flex flex-col justify-end gap-2">
+            <p class="text-sm text-neutral-500">
+              Remaining today: {{ queue_status.daily_usage.new_remaining }} new and
+              {{ queue_status.daily_usage.reviews_remaining }} reviews.
+            </p>
+            <button class="primary" type="submit">Save daily limits</button>
+          </div>
+        </form>
+      </section>
+    </section>
+  {% elif tab.value == "history" %}
     <section class="mb-12 border-b border-neutral-300 pb-8" id="history" aria-label="Review History">
       <header class="mb-4 flex items-end justify-between gap-4 max-sm:flex-col max-sm:items-stretch">
         <div>

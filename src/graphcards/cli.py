@@ -83,7 +83,11 @@ def _run_validate(config: AppConfig, deck_name: str | None, output: TextIO) -> N
 
 def _run_sync(config: AppConfig, deck_name: str | None, output: TextIO) -> None:
     with Repository(config.state_path) as repository:
-        app = StudyService(repository, config.fsrs.create_scheduler())
+        app = StudyService(
+            repository,
+            config.fsrs.create_scheduler(),
+            display_timezone=config.display_timezone,
+        )
         for deck in _selected_decks(config, deck_name):
             active, created = app.sync(deck)
             print(f"{deck.display_name}: {active} current, {created} new", file=output)
@@ -102,6 +106,7 @@ def _print_status_table(cards: tuple[CardStatus, ...], now: datetime, output: Te
     headers = (
         "TARGET",
         "STATUS",
+        "QUEUE",
         "FSRS STATE",
         "REVIEWS",
         "DUE (UTC)",
@@ -112,6 +117,7 @@ def _print_status_table(cards: tuple[CardStatus, ...], now: datetime, output: Te
         (
             "entity",
             _status_label(card, now),
+            card.queue.value,
             card.fsrs_state,
             str(card.review_count),
             datetime_to_text(card.due_at),
@@ -139,17 +145,52 @@ def _run_status(config: AppConfig, deck_name: str | None, full: bool, output: Te
     now = utc_now()
     with Repository(config.state_path) as repository:
         decks = _selected_decks(config, deck_name)
-        service = StudyService(repository, config.fsrs.create_scheduler())
+        service = StudyService(
+            repository,
+            config.fsrs.create_scheduler(),
+            display_timezone=config.display_timezone,
+        )
         for deck in decks:
             service.sync(deck, now)
         for index, deck in enumerate(decks):
             if full and index:
                 print(file=output)
-            status = repository.status(deck.name, now)
+            status = repository.queue_status(
+                deck.name,
+                now,
+                config.display_timezone,
+                service.daily_limits(deck),
+            )
             print(
                 f"{deck.display_name}: {status.available} available, "
                 f"{status.suspended} suspended, {status.new} new, "
                 f"{status.due} due, {status.future} future",
+                file=output,
+            )
+            print(
+                "  queues: "
+                f"learning {status.queue_counts.learning}, "
+                f"relearning {status.queue_counts.relearning}, "
+                f"review {status.queue_counts.review}, "
+                f"new {status.queue_counts.new} "
+                f"({status.studyable_due} available today)",
+                file=output,
+            )
+            print(
+                "  daily: "
+                f"new {status.daily_usage.new_used}/{status.daily_usage.new_limit} "
+                f"({status.daily_usage.new_remaining} remaining), "
+                f"reviews {status.daily_usage.reviews_used}/"
+                f"{status.daily_usage.reviews_limit} "
+                f"({status.daily_usage.reviews_remaining} remaining)",
+                file=output,
+            )
+            print(
+                "  hidden by daily limit: "
+                f"learning {status.hidden_counts.learning}, "
+                f"relearning {status.hidden_counts.relearning}, "
+                f"review {status.hidden_counts.review}, "
+                f"new {status.hidden_counts.new}",
                 file=output,
             )
             if full:

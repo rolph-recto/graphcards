@@ -11,8 +11,9 @@ from fsrs import Rating
 
 from graphcards.app import StudyService
 from graphcards.decks import Deck
-from graphcards.errors import PresentationError, StaleReviewError, StorageError
+from graphcards.errors import DailyLimitError, PresentationError, StaleReviewError, StorageError
 from graphcards.models import CardView
+from graphcards.scheduling import DailyUsage, QueueKind, QueuePlan
 from graphcards.storage import StoredCard, utc_now
 
 
@@ -67,6 +68,7 @@ class StudySession:
         mode: StudyMode,
         days: int,
         requested_limit: int,
+        plan: QueuePlan | None = None,
     ) -> None:
         self.deck = deck
         self.service = service
@@ -74,6 +76,7 @@ class StudySession:
         self.mode = mode
         self.days = days
         self.requested_limit = requested_limit
+        self.plan = plan
         self.session_token = secrets.token_urlsafe(32)
         self.index = 0
         self.completed_count = 0
@@ -89,6 +92,28 @@ class StudySession:
     @property
     def is_practice(self) -> bool:
         return self.mode is StudyMode.PRACTICE
+
+    @property
+    def current_queue_label(self) -> str | None:
+        """Return the current card's validated queue label."""
+
+        if self.current is None:
+            return None
+        return self.service.repository.queue_kind(self.current.card.card_key).value.title()
+
+    @property
+    def current_queue(self) -> QueueKind | None:
+        if self.current is None:
+            return None
+        return self.service.queue_for_card(self.current.card)
+
+    @property
+    def daily_usage(self) -> DailyUsage:
+        return self.service.daily_usage(self.deck, utc_now())
+
+    @property
+    def daily_limit_reached(self) -> bool:
+        return self.plan is not None and self.current is None and self.plan.hidden_count > 0
 
     def _load_current(self) -> None:
         while self.index < len(self.cards):
@@ -156,6 +181,22 @@ class StudySession:
             )
         try:
             self.service.review(self.deck, current.card, rating, utc_now())
+        except DailyLimitError as error:
+            blocked_queues = {QueueKind.NEW} if error.budget == "new" else set(QueueKind)
+            self._advance(completed=False)
+            while self.current is not None:
+                try:
+                    current_queue = self.current_queue
+                except StorageError:
+                    break
+                if current_queue not in blocked_queues:
+                    break
+                self._advance(completed=False)
+            raise RequestFailure(
+                HTTPStatus.CONFLICT,
+                f"The daily {error.budget} limit has been reached. Continue with the next "
+                "available queue or return tomorrow.",
+            ) from error
         except StaleReviewError as error:
             refreshed = self.service.repository.get_card(current.card.card_key)
             if refreshed is None:

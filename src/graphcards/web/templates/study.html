@@ -25,8 +25,17 @@
         </div>
       {% else %}
         <p class="mb-4 text-xs font-bold uppercase tracking-wider text-neutral-500">
-          {{ session.mode.label }} · Card {{ session.index + 1 }} of {{ session.cards|length }}
+          {{ session.mode.label }}{% if session.current_queue_label %} · {{ session.current_queue_label }} queue{% endif %} · Card {{ session.index + 1 }} of {{ session.cards|length }}
         </p>
+        {% if session.is_practice %}
+          <p class="mb-4 text-sm text-neutral-500">Practice only; scheduling and daily limits are unchanged.</p>
+        {% else %}
+          <p class="mb-4 text-sm text-neutral-500">
+            Queue: {{ session.current_queue.value|title }} ·
+            {{ session.daily_usage.new_remaining }} new and
+            {{ session.daily_usage.reviews_remaining }} reviews remain today.
+          </p>
+        {% endif %}
         <div class="prompt">{{ current.front|safe }}</div>
 
         {% if current.revealed %}

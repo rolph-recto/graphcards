@@ -31,6 +31,13 @@ from pyparsing import (
 
 from graphcards.decks import Entity
 from graphcards.references import EntityId
+from graphcards.scheduling import (
+    InterdayLearningReviewOrder,
+    NewCardGatherOrder,
+    NewCardSortOrder,
+    NewReviewOrder,
+    ReviewSortOrder,
+)
 from graphcards.storage import CardStatus, ReviewRecord, datetime_as_utc, datetime_to_text
 
 CARD_PAGE_SIZE = 100
@@ -83,6 +90,7 @@ class HistoryRange(StrEnum):
 
 
 class InfoTab(StrEnum):
+    DECK_STATUS = "deck_status"
     STATUS = "status"
     HISTORY = "history"
     GENERATORS = "generators"
@@ -372,7 +380,7 @@ class CardStatusQuery(BaseModel):
     sort: CardSort = CardSort.NEXT_REVIEW
     direction: SortDirection = SortDirection.ASCENDING
     range: HistoryRange = HistoryRange.NINETY_DAYS
-    tab: InfoTab = InfoTab.STATUS
+    tab: InfoTab = InfoTab.DECK_STATUS
     preview_entity: EntityId | None = None
     preview_generator: str | None = Field(default=None, min_length=1, max_length=512)
 
@@ -731,8 +739,9 @@ def status_row(
 ) -> StatusRow:
     status = row.status
     badges = ["Suspended"] if status.suspended else []
-    if status.review_count == 0:
-        badges.append("New")
+    queue_label = status.queue.value.title()
+    if queue_label.casefold() != status.fsrs_state.casefold():
+        badges.append(queue_label)
     badges.append("Due" if status.due_at <= now else "Future")
     step = f" · step {status.fsrs_step}" if status.fsrs_step is not None else ""
     identity = status.card_key.entity_id
@@ -1008,4 +1017,42 @@ HISTORY_RANGE_OPTIONS = (
     (HistoryRange.NINETY_DAYS, "Last 90 days"),
     (HistoryRange.ONE_YEAR, "Last year"),
     (HistoryRange.ALL, "All time"),
+)
+QUEUE_NEW_REVIEW_OPTIONS = (
+    (NewReviewOrder.REVIEWS_FIRST, "Reviews before new cards"),
+    (NewReviewOrder.NEW_FIRST, "New cards before reviews"),
+    (NewReviewOrder.MIXED, "Mix new cards with reviews"),
+)
+QUEUE_INTERDAY_OPTIONS = (
+    (InterdayLearningReviewOrder.LEARNING_FIRST, "Learning before reviews"),
+    (InterdayLearningReviewOrder.REVIEWS_FIRST, "Reviews before learning"),
+    (InterdayLearningReviewOrder.MIXED, "Mix learning with reviews"),
+)
+QUEUE_GATHER_OPTIONS = (
+    (NewCardGatherOrder.DECK, "Deck order"),
+    (NewCardGatherOrder.DECK_THEN_RANDOM_NOTES, "Deck, then random notes"),
+    (NewCardGatherOrder.ASCENDING_POSITION, "Ascending position"),
+    (NewCardGatherOrder.DESCENDING_POSITION, "Descending position"),
+    (NewCardGatherOrder.RANDOM_NOTES, "Random notes"),
+    (NewCardGatherOrder.RANDOM_CARDS, "Random cards"),
+)
+QUEUE_NEW_SORT_OPTIONS = (
+    (NewCardSortOrder.CARD_TYPE_THEN_ORDER_GATHERED, "Card type, then order gathered"),
+    (NewCardSortOrder.ORDER_GATHERED, "Order gathered"),
+    (NewCardSortOrder.CARD_TYPE_THEN_RANDOM, "Card type, then random"),
+    (NewCardSortOrder.RANDOM_NOTE_THEN_CARD_TYPE, "Random note, then card type"),
+    (NewCardSortOrder.RANDOM, "Random"),
+)
+QUEUE_REVIEW_SORT_OPTIONS = (
+    (ReviewSortOrder.DUE_DATE, "Due date"),
+    (ReviewSortOrder.DUE_DATE_THEN_RANDOM, "Due date, then random"),
+    (ReviewSortOrder.DUE_DATE_THEN_DECK, "Due date, then deck"),
+    (ReviewSortOrder.DECK_THEN_DUE_DATE, "Deck, then due date"),
+    (ReviewSortOrder.ASCENDING_INTERVAL, "Ascending interval"),
+    (ReviewSortOrder.DESCENDING_INTERVAL, "Descending interval"),
+    (ReviewSortOrder.ASCENDING_EASE, "Ascending ease"),
+    (ReviewSortOrder.DESCENDING_EASE, "Descending ease"),
+    (ReviewSortOrder.RELATIVE_OVERDUENESS, "Relative overdueness"),
+    (ReviewSortOrder.ASCENDING_RETRIEVABILITY, "Ascending retrievability"),
+    (ReviewSortOrder.RANDOM, "Random"),
 )

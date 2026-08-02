@@ -84,7 +84,7 @@ def test_bulk_suspension_is_all_or_nothing(tmp_path) -> None:
         repository.resume_cards("deck", ("first", "second"))
         assert repository.card_available("deck", "first")
         assert repository.card_available("deck", "second")
-        assert repository.connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert repository.connection.execute("PRAGMA user_version").fetchone()[0] == 8
 
 
 def test_inactive_memberships_cannot_be_changed_by_stale_actions(tmp_path) -> None:

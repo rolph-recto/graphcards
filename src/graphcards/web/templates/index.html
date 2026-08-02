@@ -20,15 +20,40 @@
               <span><strong>{{ status.due }}</strong> due</span>
               <span><strong>{{ status.future }}</strong> future</span>
             </div>
+            <p class="mt-3 text-sm text-neutral-600">
+              Queues: {{ status.queue_counts.learning }} learning ·
+              {{ status.queue_counts.relearning }} relearning ·
+              {{ status.queue_counts.review }} review ·
+              {{ status.queue_counts.new }} new
+            </p>
+            <p class="mt-1 text-sm text-neutral-500">
+              Today ({{ status.daily_usage.local_date }}):
+              {{ status.daily_usage.new_used }}/{{ status.daily_usage.new_limit }} new and
+              {{ status.daily_usage.reviews_used }}/{{ status.daily_usage.reviews_limit }} reviews.
+              {{ status.daily_usage.new_remaining }} new and
+              {{ status.daily_usage.reviews_remaining }} reviews remain.
+            </p>
+            {% if status.hidden_counts.total %}
+              <p class="mt-1 text-sm text-amber-700">
+                Hidden by daily limits:
+                {{ status.hidden_counts.learning }} learning ·
+                {{ status.hidden_counts.relearning }} relearning ·
+                {{ status.hidden_counts.review }} review ·
+                {{ status.hidden_counts.new }} new.
+              </p>
+            {% endif %}
           </div>
           <div class="grid justify-items-stretch gap-2">
             <form method="post" action="{{ url_for('start_session') }}">
               <input type="hidden" name="csrf_token" value="{{ controller.csrf_token }}">
               <input type="hidden" name="deck_name" value="{{ deck.name }}">
               <input type="hidden" name="mode" value="due">
-              <button class="primary" type="submit"{% if not status.due %} disabled{% endif %}>
-                {% if status.due %}
-                  Study {{ status.due }} due card(s)
+              <input type="hidden" name="limit" value="0">
+              <button class="primary" type="submit"{% if not status.studyable_due %} disabled{% endif %}>
+                {% if status.studyable_due %}
+                  Study {{ status.studyable_due }} card(s)
+                {% elif status.due %}
+                  Daily limit reached
                 {% else %}
                   No cards due
                 {% endif %}

@@ -267,7 +267,7 @@ def test_status_endpoint_supports_a_second_page(
     }
     repository.sync_deck("capitals", {**generated, **extras}, utc_now())
     response = client.get(
-        "/decks/capitals/cards?page=2",
+        "/decks/capitals/cards?tab=status&page=2",
         headers={"Host": "localhost"},
     )
     assert response.status_code == 200
@@ -297,7 +297,7 @@ def test_generated_status_filters_sort_and_paginate_without_server_errors(
     page_count = max(1, (len(ordered) + 99) // 100)
 
     response = client.get(
-        "/decks/capitals/cards?" + urlencode(values, doseq=True),
+        "/decks/capitals/cards?tab=status&" + urlencode(values, doseq=True),
         headers={"Host": "localhost"},
     )
     if query.page <= page_count:
@@ -666,7 +666,10 @@ def test_generated_status_form_values_never_create_reviews(
             if item.card_key.entity_id == entity_id
         )
         assert status.suspended is True
-        page = client.get("/decks/capitals/cards", headers={"Host": "localhost"})
+        page = client.get(
+            "/decks/capitals/cards?tab=status",
+            headers={"Host": "localhost"},
+        )
         if "<" in reason:
             assert reason.encode() not in page.data
     else:

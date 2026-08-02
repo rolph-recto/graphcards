@@ -17,7 +17,9 @@ from typing import Annotated, Any, ClassVar, Literal, cast, get_args, get_origin
 from jinja2 import StrictUndefined, Template, TemplateError, meta
 from jinja2.sandbox import SandboxedEnvironment
 from pydantic import (
+    AliasChoices,
     ConfigDict,
+    Field,
     StrictStr,
     StringConstraints,
     ValidationError,
@@ -34,6 +36,7 @@ from yaml.nodes import MappingNode
 from graphcards.errors import ConfigError, PresentationError
 from graphcards.models import Card, CardKey, CardView, Exercise, FrozenModel
 from graphcards.references import EntityId, EntityIdListMarker, validate_entity_id
+from graphcards.scheduling import DailyLimits, DeckSchedulingSettings
 
 MAX_TEMPLATE_LENGTH = 100_000
 MAX_RENDERED_LENGTH = 1_000_000
@@ -597,6 +600,17 @@ class DeckDocument(FrozenModel):
     entities: tuple[Entity, ...]
     groups: tuple[EntityGroup, ...] = ()
     exercises: tuple[ExerciseGenerator, ...]
+    daily_limits: DailyLimits = Field(default_factory=DailyLimits)
+    scheduling: DeckSchedulingSettings = Field(
+        default_factory=DeckSchedulingSettings,
+        validation_alias=AliasChoices("scheduling", "queue_settings"),
+    )
+
+    @property
+    def queue_settings(self) -> DeckSchedulingSettings:
+        """Return scheduling defaults using queue terminology."""
+
+        return self.scheduling
 
     @classmethod
     def parse_raw(cls, b: str | bytes | bytearray, *args: Any, **kwargs: Any) -> DeckDocument:
@@ -823,6 +837,24 @@ class Deck:
     @property
     def display_name(self) -> str:
         return self.document.name or self.name
+
+    @property
+    def daily_limits(self) -> DailyLimits:
+        """Return the validated per-day budgets for this deck."""
+
+        return self.document.daily_limits
+
+    @property
+    def scheduling(self) -> DeckSchedulingSettings:
+        """Return the validated default queue settings for this deck."""
+
+        return self.document.scheduling
+
+    @property
+    def queue_settings(self) -> DeckSchedulingSettings:
+        """Alias for callers that describe the settings as queue options."""
+
+        return self.scheduling
 
     def _generators_by_key(self) -> dict[tuple[str, str | None], ExerciseGenerator]:
         """Choose one stable exercise generator for every scheduled exercise key.

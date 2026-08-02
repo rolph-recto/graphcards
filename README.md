@@ -71,6 +71,43 @@ and rendered views is preserved.
 Generated multiple-choice exercises record the selected and ordered entity IDs in `choices`;
 rendering only resolves those references into entity objects and never reselects them.
 
+### Daily limits and queue scheduling
+
+Each deck may set strict per-local-day limits in any supported deck format:
+
+```json
+"daily_limits": {
+  "new_cards_per_day": 20,
+  "reviews_per_day": 200
+}
+```
+
+These are the defaults when `daily_limits` is omitted. Open the browser's **Deck status** tab to
+save a per-deck override without editing the deck file. The browser, CLI, and study planner use
+the workspace `display_timezone` for the local day. Practice sessions do not change FSRS state,
+review history, or either daily budget.
+
+Deck files may provide strict defaults for the order of the study queues. The settings use
+supported choices instead of a free-form expression:
+
+```json
+{
+  "scheduling": {
+    "new_review_order": "reviews_first",
+    "interday_learning_review_order": "learning_first",
+    "new_card_gather_order": "deck",
+    "new_card_sort_order": "order_gathered",
+    "review_sort_order": "due_date"
+  }
+}
+```
+
+The web deck page has a Deck status tab with controls for these five settings. The values are
+validated and stored per deck in the state database, so a saved setting overrides the deck-file
+default after a restart. The study planner applies the settings to learning, relearning, review,
+and new-card selection. The status tab shows the resulting queue counts and order. GraphCards does
+not support free-form queue expressions, shared presets, or temporary Today-only overrides.
+
 ### Cloze exercises
 
 Cloze generators store complete sentences in the entity field named by `cloze_field`. Mark each
@@ -361,8 +398,9 @@ graphcards --config graphcards.toml serve
 `init --template` creates one of the bundled JSON deck examples. The SQLite state database keeps
 FSRS schedules and review history; rendered exercise text is regenerated from the current deck.
 
-The web deck page is opened through the `View Deck Info` link. It provides separate Card Status,
-Review History, and Exercise Generators tabs. Card Status is a compact table of entity, review,
+The web deck page is opened through the `View Deck Info` link. It provides separate Deck status,
+Card Status, Review History, and Exercise Generators tabs. Deck status shows queue counts and
+saved queue scheduling controls. Card Status is a compact table of entity, review,
 next-review, and FSRS data; use `More details` to open one entity's detail page while preserving
 the current filters. The detail page lists every associated generator and shows the selected
 non-persistent exercise in a shared preview panel on the right. The Exercise Generators tab uses
