@@ -10,10 +10,19 @@ from pathlib import Path
 from graphcards.errors import ConfigError
 
 
+def _templates_root() -> Traversable | Path:
+    """Return template resources from a checkout or an installed package."""
+
+    checkout_root = Path(__file__).parents[2] / "templates"
+    if checkout_root.is_dir():
+        return checkout_root
+    return files("graphcards").joinpath("templates")
+
+
 def available_templates() -> tuple[str, ...]:
     """Return the sorted names accepted by ``init --template``."""
 
-    templates_root = files("graphcards").joinpath("templates")
+    templates_root = _templates_root()
     # "empty" supplies the default workspace and is not a named template.
     return tuple(
         resource.name
@@ -58,7 +67,7 @@ def _symlink_ancestor(path: Path) -> Path | None:
 def initialize_workspace(directory: Path, template: str | None = None) -> Path:
     """Copy an entire bundled template without overwriting existing files."""
 
-    templates_root = files("graphcards").joinpath("templates")
+    templates_root = _templates_root()
     # Every packaged directory except the reserved empty workspace is a named
     # template, so adding one does not require a Python registry change.
     available = available_templates()

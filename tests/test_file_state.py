@@ -22,7 +22,7 @@ NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _format_deck(tmp_path: Path, extension: str) -> Deck:
-    source = Path(f"src/graphcards/templates/capitals/deck.{extension}")
+    source = Path(f"templates/capitals/deck.{extension}")
     path = tmp_path / f"capitals-{extension}" / f"deck.{extension}"
     path.parent.mkdir()
     shutil.copyfile(source, path)

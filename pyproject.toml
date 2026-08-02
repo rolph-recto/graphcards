@@ -39,6 +39,7 @@ include = [
     "/README.md",
     "/pyproject.toml",
     "/src",
+    "/templates",
     "/tests",
     "/uv.lock",
 ]

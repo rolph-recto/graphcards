@@ -140,7 +140,7 @@ def test_image_occlusion_rejects_unknown_target_before_sync(tmp_path: Path, writ
 
 @pytest.mark.parametrize("filename", ["deck.json", "deck.toml", "deck.yaml"])
 def test_image_occlusion_examples_have_the_same_cards(tmp_path: Path, filename: str) -> None:
-    source = Path(__file__).parents[1] / "src/graphcards/templates/image-occlusion" / filename
+    source = Path(__file__).parents[1] / "templates/image-occlusion" / filename
     destination = tmp_path / "image-occlusion" / filename
     destination.parent.mkdir()
     destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
