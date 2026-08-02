@@ -109,6 +109,7 @@
               </div>
               <form method="get" action="{{ url_for('card_detail', deck_name=deck.name, entity_id=entity_id) }}">
                 <input type="hidden" name="page" value="{{ query.page }}">
+                <input type="hidden" name="search" value="{{ query.search }}">
                 <input type="hidden" name="availability" value="{{ query.availability.value }}">
                 <input type="hidden" name="schedule" value="{{ query.schedule.value }}">
                 <input type="hidden" name="state" value="{{ query.state.value }}">

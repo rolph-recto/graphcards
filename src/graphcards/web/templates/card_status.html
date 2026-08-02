@@ -30,6 +30,12 @@
     </section>
   {% endif %}
 
+  {% if search_error %}
+    <div class="mb-4 rounded-xl border border-red-300 bg-red-50 p-4 text-red-800" role="alert">
+      {{ search_error }}
+    </div>
+  {% endif %}
+
   {% if tab.value == "history" %}
     <section class="mb-12 border-b border-neutral-300 pb-8" id="history" aria-label="Review History">
       <header class="mb-4 flex items-end justify-between gap-4 max-sm:flex-col max-sm:items-stretch">
@@ -139,20 +145,8 @@
       <form class="mb-4 grid grid-cols-1 items-end gap-2.5 rounded-xl border border-neutral-200 bg-neutral-50 p-4 sm:grid-cols-2 lg:grid-cols-6" method="get" action="{{ url_for('card_status', deck_name=deck.name) }}">
         <input type="hidden" name="tab" value="status">
         <input type="hidden" name="range" value="{{ query.range.value }}">
-        <label>Availability
-          <select name="availability">
-            {% for value, label in availability_options %}<option value="{{ value.value }}"{% if value == query.availability %} selected{% endif %}>{{ label }}</option>{% endfor %}
-          </select>
-        </label>
-        <label>Schedule
-          <select name="schedule">
-            {% for value, label in schedule_options %}<option value="{{ value.value }}"{% if value == query.schedule %} selected{% endif %}>{{ label }}</option>{% endfor %}
-          </select>
-        </label>
-        <label>FSRS state
-          <select name="state">
-            {% for value, label in state_options %}<option value="{{ value.value }}"{% if value == query.state %} selected{% endif %}>{{ label }}</option>{% endfor %}
-          </select>
+        <label class="lg:col-span-2">Search cards
+          <input type="search" name="search" value="{{ search_value }}" maxlength="512" placeholder="id:earth OR (state:review AND NOT field:front=France)" autocomplete="off">
         </label>
         <label>Sort by
           <select name="sort">
@@ -164,7 +158,10 @@
             {% for value, label in direction_options %}<option value="{{ value.value }}"{% if value == query.direction %} selected{% endif %}>{{ label }}</option>{% endfor %}
           </select>
         </label>
-        <button class="col-span-full lg:col-span-1" type="submit">Apply</button>
+        <div class="col-span-full flex flex-wrap gap-2 lg:col-span-2">
+          <button class="flex-1" type="submit">Search</button>
+          <a class="button flex-1" href="{{ url_for('card_status', deck_name=deck.name, tab='status', range=query.range.value, sort=query.sort.value, direction=query.direction.value) }}">Clear</a>
+        </div>
       </form>
 
       {% if rows %}
@@ -190,13 +187,13 @@
                       {% if row.status.suspended %}
                         <form class="grid gap-2" method="post" action="{{ url_for('resume_card', deck_name=deck.name) }}">
                           <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="entity_id" value="{{ row.status.card_key.entity_id }}">
-                          <input type="hidden" name="availability" value="{{ query.availability.value }}"><input type="hidden" name="schedule" value="{{ query.schedule.value }}"><input type="hidden" name="state" value="{{ query.state.value }}"><input type="hidden" name="sort" value="{{ query.sort.value }}"><input type="hidden" name="direction" value="{{ query.direction.value }}"><input type="hidden" name="range" value="{{ query.range.value }}">
+                          <input type="hidden" name="page" value="{{ query.page }}"><input type="hidden" name="search" value="{{ query.search }}"><input type="hidden" name="availability" value="{{ query.availability.value }}"><input type="hidden" name="schedule" value="{{ query.schedule.value }}"><input type="hidden" name="state" value="{{ query.state.value }}"><input type="hidden" name="sort" value="{{ query.sort.value }}"><input type="hidden" name="direction" value="{{ query.direction.value }}"><input type="hidden" name="range" value="{{ query.range.value }}">
                           <button class="min-h-7 rounded-md px-2 py-1 text-xs" type="submit">Resume</button>
                         </form>
                       {% else %}
                         <form class="grid gap-2" method="post" action="{{ url_for('suspend_card', deck_name=deck.name) }}">
                           <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="entity_id" value="{{ row.status.card_key.entity_id }}">
-                          <input type="hidden" name="availability" value="{{ query.availability.value }}"><input type="hidden" name="schedule" value="{{ query.schedule.value }}"><input type="hidden" name="state" value="{{ query.state.value }}"><input type="hidden" name="sort" value="{{ query.sort.value }}"><input type="hidden" name="direction" value="{{ query.direction.value }}"><input type="hidden" name="range" value="{{ query.range.value }}">
+                          <input type="hidden" name="page" value="{{ query.page }}"><input type="hidden" name="search" value="{{ query.search }}"><input type="hidden" name="availability" value="{{ query.availability.value }}"><input type="hidden" name="schedule" value="{{ query.schedule.value }}"><input type="hidden" name="state" value="{{ query.state.value }}"><input type="hidden" name="sort" value="{{ query.sort.value }}"><input type="hidden" name="direction" value="{{ query.direction.value }}"><input type="hidden" name="range" value="{{ query.range.value }}">
                           <button class="min-h-7 rounded-md px-2 py-1 text-xs" type="submit">Suspend</button>
                         </form>
                       {% endif %}

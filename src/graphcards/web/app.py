@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from http import HTTPStatus
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 from urllib.parse import parse_qs, urlencode
 
 from flask import (
@@ -20,10 +21,18 @@ from flask import (
     url_for,
 )
 from fsrs import Rating
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from werkzeug.exceptions import HTTPException, InternalServerError
 
 from graphcards.errors import ConfigError, GraphCardsError
+from graphcards.models import CardKey
 from graphcards.references import EntityId
 from graphcards.storage import normalize_suspension_reason, utc_now
 from graphcards.web.controller import StudyController
@@ -45,8 +54,10 @@ from graphcards.web.status import (
     InfoTab,
     ScheduleFilter,
     SortDirection,
+    normalize_search_text,
     pagination,
     schedule_matches,
+    search_matches,
     sort_status_cards,
     status_row,
 )
@@ -117,12 +128,19 @@ class _StatusActionSubmission(BaseModel):
     csrf_token: str = Field(min_length=1, max_length=256)
     entity_id: EntityId | None = None
     generator_id: str | None = Field(default=None, min_length=1, max_length=512)
+    page: int = Field(default=1, ge=1)
+    search: str = Field(default="", max_length=512)
     availability: AvailabilityFilter = AvailabilityFilter.ALL
     schedule: ScheduleFilter = ScheduleFilter.ALL
     state: FsrsStateFilter = FsrsStateFilter.ALL
     sort: CardSort = CardSort.NEXT_REVIEW
     direction: SortDirection = SortDirection.ASCENDING
     range: HistoryRange = HistoryRange.NINETY_DAYS
+
+    @field_validator("search")
+    @classmethod
+    def validate_search(cls, value: str) -> str:
+        return normalize_search_text(value)
 
     @model_validator(mode="after")
     def require_card_reference(self) -> _StatusActionSubmission:
@@ -132,6 +150,8 @@ class _StatusActionSubmission(BaseModel):
 
     def status_query(self) -> CardStatusQuery:
         return CardStatusQuery(
+            page=self.page,
+            search=self.search,
             availability=self.availability,
             schedule=self.schedule,
             state=self.state,
@@ -148,6 +168,70 @@ class _StatusSuspensionSubmission(_StatusActionSubmission):
     @classmethod
     def normalize_reason(cls, value: object) -> object:
         return normalize_suspension_reason(value)
+
+
+class _StatusBulkSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    csrf_token: str = Field(min_length=1, max_length=256)
+    selected_card_key: list[CardKey] = Field(min_length=1, max_length=100)
+    bulk_action: Literal["suspend", "resume"]
+    reason: str | None = Field(default=None, max_length=500)
+    page: int = Field(default=1, ge=1)
+    search: str = Field(default="", max_length=512)
+    availability: AvailabilityFilter = AvailabilityFilter.ALL
+    schedule: ScheduleFilter = ScheduleFilter.ALL
+    state: FsrsStateFilter = FsrsStateFilter.ALL
+    sort: CardSort = CardSort.NEXT_REVIEW
+    direction: SortDirection = SortDirection.ASCENDING
+    range: HistoryRange = HistoryRange.NINETY_DAYS
+
+    @field_validator("selected_card_key", mode="before")
+    @classmethod
+    def normalize_selection(cls, value: object) -> object:
+        values: list[object]
+        if isinstance(value, str):
+            values = [value]
+        elif isinstance(value, (list, tuple)):
+            values = list(value)
+        else:
+            return value
+        keys: list[CardKey] = []
+        for raw_value in values:
+            if isinstance(raw_value, str):
+                try:
+                    raw_value = json.loads(raw_value)
+                except (json.JSONDecodeError, TypeError, ValueError) as error:
+                    raise ValueError("a selected card key is invalid") from error
+            try:
+                keys.append(CardKey.model_validate(raw_value))
+            except ValidationError as error:
+                raise ValueError("a selected card key is invalid") from error
+        if len(keys) != len({key.identity_parts for key in keys}):
+            raise ValueError("a card must be selected only once")
+        return keys
+
+    @field_validator("search")
+    @classmethod
+    def validate_search(cls, value: str) -> str:
+        return normalize_search_text(value)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def normalize_reason(cls, value: object) -> object:
+        return normalize_suspension_reason(value)
+
+    def status_query(self) -> CardStatusQuery:
+        return CardStatusQuery(
+            page=self.page,
+            search=self.search,
+            availability=self.availability,
+            schedule=self.schedule,
+            state=self.state,
+            sort=self.sort,
+            direction=self.direction,
+            range=self.range,
+        )
 
 
 def _controller() -> StudyController:
@@ -220,9 +304,16 @@ def _render_error(status: HTTPStatus, message: str) -> tuple[str, int]:
     return render_template("error.html", status=status, message=message), status.value
 
 
+def _is_search_validation_error(error: ValidationError) -> bool:
+    errors = error.errors()
+    return bool(errors) and all(entry.get("loc") == ("search",) for entry in errors)
+
+
 def _status_url(deck_name: str, query: CardStatusQuery, page: int) -> str:
     values = query.model_dump(mode="json", exclude_none=True)
     values["page"] = page
+    if not query.search:
+        values.pop("search", None)
     values.pop("preview_entity", None)
     values.pop("preview_generator", None)
     return f"{url_for('card_status', deck_name=deck_name)}?{urlencode(values)}"
@@ -234,6 +325,8 @@ def _tab_url(deck_name: str, query: CardStatusQuery, tab: InfoTab) -> str:
 
 def _detail_url(deck_name: str, entity_id: str, query: CardStatusQuery) -> str:
     values = query.model_dump(mode="json", exclude_none=True)
+    if not query.search:
+        values.pop("search", None)
     values.pop("preview_entity", None)
     values.pop("preview_generator", None)
     values["tab"] = CardDetailTab.GENERATORS.value
@@ -502,6 +595,24 @@ def create_flask_app(controller: StudyController) -> Flask:
             code=HTTPStatus.SEE_OTHER,
         )
 
+    @app.post("/decks/<path:deck_name>/cards/bulk")
+    def bulk_card_action(deck_name: str) -> Response:
+        submission = _validated_form(
+            _StatusBulkSubmission,
+            "The bulk card-status form is invalid.",
+        )
+        _controller().set_suspensions(
+            csrf_token=submission.csrf_token,
+            deck_name=deck_name,
+            card_keys=tuple(submission.selected_card_key),
+            suspended=submission.bulk_action == "suspend",
+            reason=submission.reason,
+        )
+        return redirect(
+            _status_url(deck_name, submission.status_query(), 1) + "#card-status",
+            code=HTTPStatus.SEE_OTHER,
+        )
+
     @app.get("/decks/<path:deck_name>/cards/detail/<path:entity_id>")
     def card_detail(deck_name: str, entity_id: str) -> str:
         current = _controller()
@@ -566,17 +677,45 @@ def create_flask_app(controller: StudyController) -> Flask:
             deck = current.config.deck(deck_name)
         except ConfigError as error:
             raise RequestFailure(HTTPStatus.NOT_FOUND, "That deck does not exist.") from error
+        query_data = _query_data()
+        search_error = None
+        raw_search = query_data.get("search")
+        search_value = raw_search if isinstance(raw_search, str) else ""
         try:
-            query = CardStatusQuery.model_validate(_query_data())
+            query = CardStatusQuery.model_validate(query_data)
         except ValidationError as error:
-            raise RequestFailure(
-                HTTPStatus.BAD_REQUEST,
-                "The card-status filters are invalid.",
-            ) from error
+            if not _is_search_validation_error(error):
+                raise RequestFailure(
+                    HTTPStatus.BAD_REQUEST,
+                    "The card-status filters are invalid.",
+                ) from error
+            fallback_data = {**query_data, "search": ""}
+            try:
+                query = CardStatusQuery.model_validate(fallback_data)
+            except ValidationError as fallback_error:
+                raise RequestFailure(
+                    HTTPStatus.BAD_REQUEST,
+                    "The card-status filters are invalid.",
+                ) from fallback_error
+            search_error = "The search syntax is invalid. Use AND, OR, NOT, and parentheses."
+        if search_error is None:
+            search_value = query.search
 
         now = utc_now()
         all_cards = current.card_statuses(deck, now)
-        filtered = [row for row in all_cards if schedule_matches(row, query, now)]
+        filtered = [
+            row
+            for row in all_cards
+            if schedule_matches(row, query, now)
+            and search_matches(
+                row,
+                query,
+                now,
+                current.config.display_timezone,
+                deck_name=deck.name,
+                deck_display_name=deck.display_name,
+            )
+        ]
         ordered = sort_status_cards(filtered, query)
         total = len(ordered)
         pages = max(1, math.ceil(total / CARD_PAGE_SIZE))
@@ -623,6 +762,8 @@ def create_flask_app(controller: StudyController) -> Flask:
             "card_status.html",
             deck=deck,
             query=query,
+            search_error=search_error,
+            search_value=search_value,
             rows=rows,
             available_count=sum(not row.status.suspended for row in all_cards),
             suspended_count=sum(row.status.suspended for row in all_cards),

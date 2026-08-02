@@ -9,7 +9,7 @@ from http import HTTPStatus
 
 from graphcards.app import StudyService
 from graphcards.config import AppConfig
-from graphcards.decks import Deck, ExerciseGenerator, ExerciseGeneratorContext
+from graphcards.decks import Deck, Entity, ExerciseGenerator, ExerciseGeneratorContext
 from graphcards.errors import ConfigError, PresentationError
 from graphcards.models import CardKey
 from graphcards.storage import DeckStatus, Repository, utc_now
@@ -72,9 +72,13 @@ class StudyController:
                 for generator in deck.generators
                 if status.card_key.entity_id in generator.target_ids
             )
+            entity = deck.entities.get(status.card_key.entity_id)
+            if entity is None:
+                entity = Entity(id=status.card_key.entity_id)
             rows.append(
                 StatusCard(
                     status=status,
+                    entity=entity,
                     retrievability=retrievability,
                     generator_labels=labels,
                 )
@@ -285,6 +289,48 @@ class StudyController:
             self.study_service.suspend(deck, entity_id, reason)
         else:
             self.study_service.resume(deck, entity_id)
+        if self.session is not None and self.session.deck.name == deck.name:
+            self.session.refresh_availability()
+
+    def check_csrf(self, csrf_token: str) -> None:
+        """Validate a mutating web form without performing a card action."""
+
+        if not secrets.compare_digest(csrf_token, self.csrf_token):
+            raise RequestFailure(HTTPStatus.FORBIDDEN, "This card-status form is not valid.")
+
+    def set_suspensions(
+        self,
+        *,
+        csrf_token: str,
+        deck_name: str,
+        card_keys: tuple[CardKey, ...],
+        suspended: bool,
+        reason: str | None = None,
+    ) -> None:
+        """Apply one validated bulk card-status action atomically."""
+
+        if not secrets.compare_digest(csrf_token, self.csrf_token):
+            raise RequestFailure(HTTPStatus.FORBIDDEN, "This card-status form is not valid.")
+        try:
+            deck = self.config.deck(deck_name)
+        except ConfigError as error:
+            raise RequestFailure(HTTPStatus.NOT_FOUND, "That deck does not exist.") from error
+        if any(card_key.deck_id != deck.name for card_key in card_keys):
+            raise RequestFailure(
+                HTTPStatus.CONFLICT,
+                "One or more selected cards is outside this deck.",
+            )
+        entity_ids = tuple(card_key.entity_id for card_key in card_keys)
+        known = {row.status.card_key.entity_id for row in self.card_statuses(deck, utc_now())}
+        if not set(entity_ids).issubset(known):
+            raise RequestFailure(
+                HTTPStatus.CONFLICT,
+                "One or more selected cards is no longer available.",
+            )
+        if suspended:
+            self.study_service.suspend_many(deck, entity_ids, reason)
+        else:
+            self.study_service.resume_many(deck, entity_ids)
         if self.session is not None and self.session.deck.name == deck.name:
             self.session.refresh_availability()
 

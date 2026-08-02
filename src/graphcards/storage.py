@@ -297,6 +297,7 @@ class Repository:
                 PRAGMA user_version = 7;
                 """
             )
+            current = 7
         try:
             with self.connection:
                 self.connection.execute(
@@ -419,6 +420,68 @@ class Repository:
                 raise StorageError(
                     f"entity {entity_id} is not a known member of deck {deck_name!r}"
                 )
+
+    def suspend_cards(
+        self,
+        deck_name: str,
+        entity_ids: tuple[str, ...],
+        reason: str | None = None,
+    ) -> None:
+        """Suspend several active memberships atomically."""
+
+        try:
+            update = SuspensionUpdate(reason=reason)
+        except ValidationError as error:
+            raise StorageError(validation_message(error)) from error
+        self._update_memberships(deck_name, entity_ids, suspended=True, reason=update.reason)
+
+    def resume_cards(self, deck_name: str, entity_ids: tuple[str, ...]) -> None:
+        """Resume several active memberships atomically."""
+
+        self._update_memberships(deck_name, entity_ids, suspended=False, reason=None)
+
+    def _update_memberships(
+        self,
+        deck_name: str,
+        entity_ids: tuple[str, ...],
+        *,
+        suspended: bool,
+        reason: str | None,
+    ) -> None:
+        if not entity_ids or len(entity_ids) != len(set(entity_ids)):
+            raise StorageError("card selection must contain unique entities")
+        placeholders = ", ".join("?" for _ in entity_ids)
+        with self.connection:
+            rows = self.connection.execute(
+                f"""
+                SELECT entity_id
+                FROM deck_cards
+                WHERE deck_id = ? AND active = 1 AND entity_id IN ({placeholders})
+                """,
+                (deck_name, *entity_ids),
+            ).fetchall()
+            if {row["entity_id"] for row in rows} != set(entity_ids):
+                raise StorageError("one or more selected cards is no longer active")
+            if suspended:
+                cursor = self.connection.execute(
+                    f"""
+                    UPDATE deck_cards
+                    SET suspended = 1, suspension_reason = ?
+                    WHERE deck_id = ? AND active = 1 AND entity_id IN ({placeholders})
+                    """,
+                    (reason, deck_name, *entity_ids),
+                )
+            else:
+                cursor = self.connection.execute(
+                    f"""
+                    UPDATE deck_cards
+                    SET suspended = 0, suspension_reason = NULL
+                    WHERE deck_id = ? AND active = 1 AND entity_id IN ({placeholders})
+                    """,
+                    (deck_name, *entity_ids),
+                )
+            if cursor.rowcount != len(entity_ids):
+                raise StorageError("card selection changed during the update")
 
     @staticmethod
     def _membership_state(

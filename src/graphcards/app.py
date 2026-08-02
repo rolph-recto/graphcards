@@ -68,6 +68,21 @@ class StudyService:
 
         self.repository.resume_card(deck.name, entity_id)
 
+    def suspend_many(
+        self,
+        deck: Deck,
+        entity_ids: tuple[str, ...],
+        reason: str | None = None,
+    ) -> None:
+        """Suspend several memberships without changing their global schedules."""
+
+        self.repository.suspend_cards(deck.name, entity_ids, reason)
+
+    def resume_many(self, deck: Deck, entity_ids: tuple[str, ...]) -> None:
+        """Resume several memberships at their existing global schedules."""
+
+        self.repository.resume_cards(deck.name, entity_ids)
+
     def review(
         self,
         deck: Deck,

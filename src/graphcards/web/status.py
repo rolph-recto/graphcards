@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import math
+import re
+import shlex
+import unicodedata
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import StrEnum
@@ -12,12 +17,27 @@ from typing import cast
 from zoneinfo import ZoneInfo
 
 from fsrs import Rating
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pyparsing import (
+    FollowedBy,
+    Forward,
+    ParseBaseException,
+    ParserElement,
+    Regex,
+    StringEnd,
+    Suppress,
+    ZeroOrMore,
+)
 
+from graphcards.decks import Entity
 from graphcards.references import EntityId
 from graphcards.storage import CardStatus, ReviewRecord, datetime_as_utc, datetime_to_text
 
 CARD_PAGE_SIZE = 100
+MAX_SEARCH_LENGTH = 512
+MAX_SEARCH_TERMS = 32
+MAX_SEARCH_FIELD_LENGTH = 128
+MAX_SEARCH_DEPTH = 16
 
 
 class ScheduleFilter(StrEnum):
@@ -41,6 +61,7 @@ class FsrsStateFilter(StrEnum):
 
 
 class CardSort(StrEnum):
+    ENTITY_ID = "entity_id"
     NEXT_REVIEW = "next_review"
     LAST_REVIEW = "last_review"
     REVIEW_COUNT = "review_count"
@@ -72,10 +93,279 @@ class CardDetailTab(StrEnum):
     GENERATORS = "generators"
 
 
+@dataclass(frozen=True)
+class SearchTerm:
+    """One validated leaf in a card-status search expression."""
+
+    kind: str
+    value: str
+    field: str | None = None
+    operator: str | None = None
+    operand: date | float | int | None = None
+
+
+@dataclass(frozen=True)
+class SearchNot:
+    expression: SearchExpression
+
+
+@dataclass(frozen=True)
+class SearchGroup:
+    expression: SearchExpression
+
+
+@dataclass(frozen=True)
+class SearchAnd:
+    expressions: tuple[SearchExpression, ...]
+
+
+@dataclass(frozen=True)
+class SearchOr:
+    expressions: tuple[SearchExpression, ...]
+
+
+SearchExpression = SearchTerm | SearchNot | SearchGroup | SearchAnd | SearchOr
+
+
+_COMPARISON_PATTERN = re.compile(
+    r"^(reviews|due|last_review|stability|difficulty|retrievability)(!=|>=|<=|=|>|<)(.+)$"
+)
+_COMPARISON_KINDS = (
+    "reviews",
+    "due",
+    "last_review",
+    "stability",
+    "difficulty",
+    "retrievability",
+)
+_FIELD_PATTERN = re.compile(r"^field:([^=]+)=(.+)$")
+_RAW_ATOM_PATTERN = r"""(?:(?:[^()\s"'\\]|\\.)+|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')+"""
+
+
+def _reject_search_controls(value: str) -> None:
+    if len(value) > MAX_SEARCH_LENGTH:
+        raise ValueError(f"search must not exceed {MAX_SEARCH_LENGTH} characters")
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for character in value
+    ):
+        raise ValueError("search must not contain control characters")
+
+
+def _comparison_operand(kind: str, value: str) -> date | float | int:
+    if kind in {"due", "last_review"}:
+        try:
+            return date.fromisoformat(value)
+        except ValueError as error:
+            raise ValueError(f"{kind} must use YYYY-MM-DD") from error
+    if kind == "reviews":
+        if not re.fullmatch(r"[+-]?\d+", value):
+            raise ValueError("reviews must compare with an integer")
+        return int(value)
+    try:
+        number = float(value)
+    except ValueError as error:
+        raise ValueError(f"{kind} must compare with a number") from error
+    if not math.isfinite(number):
+        raise ValueError(f"{kind} must compare with a finite number")
+    return number
+
+
+def _parse_search_term(token: str) -> SearchTerm:
+    if not token:
+        raise ValueError("search terms must not be empty")
+    if token.startswith("field:"):
+        match = _FIELD_PATTERN.fullmatch(token)
+        if match is None:
+            raise ValueError("field search must use field:name=value")
+        field_name, field_value = match.groups()
+        if not field_name.strip() or len(field_name) > MAX_SEARCH_FIELD_LENGTH:
+            raise ValueError("field name is too long or empty")
+        return SearchTerm("field", field_value, field=field_name)
+    if token.startswith("id:"):
+        entity_id = token.removeprefix("id:")
+        if not entity_id:
+            raise ValueError("id search must include a value")
+        return SearchTerm("id", entity_id.casefold())
+    if token.startswith("state:"):
+        state = token.removeprefix("state:").casefold()
+        if state not in {"new", "learning", "review", "relearning"}:
+            raise ValueError("state search has an unknown state")
+        return SearchTerm("state", state)
+    if ":" in token:
+        raise ValueError("search contains an unknown field prefix")
+    comparison = _COMPARISON_PATTERN.fullmatch(token)
+    if comparison is not None:
+        kind, operator, raw_operand = comparison.groups()
+        return SearchTerm(
+            kind,
+            raw_operand,
+            operator=operator,
+            operand=_comparison_operand(kind, raw_operand),
+        )
+    if any(
+        token.startswith(kind) and len(token) > len(kind) and token[len(kind)] in "!<>=~"
+        for kind in _COMPARISON_KINDS
+    ):
+        raise ValueError("search contains an invalid comparison operator")
+    return SearchTerm("text", token.casefold())
+
+
+def _parse_atom(source: str, location: int, tokens: Sequence[str]) -> SearchTerm:
+    del source, location
+    raw_token = tokens[0]
+    try:
+        decoded = shlex.split(raw_token, posix=True)
+    except ValueError as error:
+        raise ValueError("search contains an unmatched quote") from error
+    if len(decoded) != 1:
+        raise ValueError("search contains an invalid term")
+    return _parse_search_term(decoded[0])
+
+
+def _make_not(tokens: Sequence[object]) -> SearchNot:
+    return SearchNot(cast(SearchExpression, tokens[0]))
+
+
+def _make_parenthesized(tokens: Sequence[object]) -> SearchGroup:
+    return SearchGroup(cast(SearchExpression, tokens[0]))
+
+
+def _make_group(
+    tokens: Sequence[object],
+    group_type: type[SearchAnd] | type[SearchOr],
+) -> SearchExpression:
+    expressions = tuple(cast(SearchExpression, token) for token in tokens)
+    return expressions[0] if len(expressions) == 1 else group_type(expressions)
+
+
+def _build_search_parser() -> ParserElement:
+    """Build the bounded boolean expression parser."""
+
+    boolean_word = Regex(r"(?i:(?:AND|OR|NOT))(?=\s|\(|\)|$)")
+    raw_atom = Regex(_RAW_ATOM_PATTERN)
+    atom = (~boolean_word + raw_atom).set_parse_action(_parse_atom)
+    and_operator = Regex(r"(?i:AND)(?=\s|\()")
+    or_operator = Regex(r"(?i:OR)(?=\s|\()")
+    not_operator = Regex(r"(?i:NOT)(?=\s|\()")
+
+    primary = Forward()
+    not_expression = Forward()
+    and_expression = Forward()
+    or_expression = Forward()
+
+    primary <<= atom | (Suppress("(") + or_expression + Suppress(")")).set_parse_action(
+        _make_parenthesized
+    )
+    not_expression <<= (not_operator.copy().suppress() + not_expression).set_parse_action(
+        _make_not
+    ) | primary
+    implicit_and = FollowedBy(not_expression)
+    and_expression <<= (
+        not_expression
+        + ZeroOrMore(
+            (and_operator.copy().suppress() | implicit_and) + not_expression,
+        )
+    ).set_parse_action(lambda tokens: _make_group(tokens, SearchAnd))
+    or_expression <<= (
+        and_expression + ZeroOrMore(or_operator.copy().suppress() + and_expression)
+    ).set_parse_action(lambda tokens: _make_group(tokens, SearchOr))
+    return or_expression + StringEnd()
+
+
+_SEARCH_PARSER = _build_search_parser()
+
+
+def _search_shape(expression: SearchExpression, depth: int = 0) -> int:
+    if depth > MAX_SEARCH_DEPTH:
+        raise ValueError(f"search must not nest more than {MAX_SEARCH_DEPTH} levels")
+    if isinstance(expression, SearchTerm):
+        return 1
+    if isinstance(expression, (SearchNot, SearchGroup)):
+        return _search_shape(expression.expression, depth + 1)
+    return sum(_search_shape(child, depth + 1) for child in expression.expressions)
+
+
+def _plain_conjunction_constraints(
+    expression: SearchExpression,
+) -> dict[tuple[str, str | None], str] | None:
+    if isinstance(expression, SearchTerm):
+        if expression.kind not in {"field", "state"}:
+            return {}
+        return {
+            (expression.kind, expression.field): expression.value.casefold(),
+        }
+    if isinstance(expression, SearchNot):
+        return None
+    if isinstance(expression, SearchGroup):
+        return _plain_conjunction_constraints(expression.expression)
+    if isinstance(expression, SearchOr):
+        return None
+    constraints: dict[tuple[str, str | None], str] = {}
+    for child in expression.expressions:
+        child_constraints = _plain_conjunction_constraints(child)
+        if child_constraints is None:
+            return None
+        for key, value in child_constraints.items():
+            previous = constraints.get(key)
+            if previous is not None and previous != value:
+                raise ValueError("search contains conflicting terms")
+            constraints[key] = value
+    return constraints
+
+
+def parse_search_expression(value: str) -> SearchExpression | None:
+    """Parse the bounded boolean search language used by the status page."""
+
+    _reject_search_controls(value)
+    normalized = value.strip()
+    if not normalized:
+        return None
+    try:
+        parsed = _SEARCH_PARSER.parse_string(normalized, parse_all=True)
+    except ValueError:
+        raise
+    except ParseBaseException as error:
+        raise ValueError("search contains invalid boolean syntax") from error
+    expression = cast(SearchExpression, parsed[0])
+    if _search_shape(expression) > MAX_SEARCH_TERMS:
+        raise ValueError(f"search must not contain more than {MAX_SEARCH_TERMS} terms")
+    _plain_conjunction_constraints(expression)
+    return expression
+
+
+def _iter_search_terms(expression: SearchExpression | None) -> tuple[SearchTerm, ...]:
+    if expression is None:
+        return ()
+    if isinstance(expression, SearchTerm):
+        return (expression,)
+    if isinstance(expression, SearchNot):
+        return _iter_search_terms(expression.expression)
+    if isinstance(expression, SearchGroup):
+        return _iter_search_terms(expression.expression)
+    return tuple(term for child in expression.expressions for term in _iter_search_terms(child))
+
+
+def parse_search_terms(value: str) -> tuple[SearchTerm, ...]:
+    """Return the validated leaf terms from a boolean search expression."""
+
+    return _iter_search_terms(parse_search_expression(value))
+
+
+def normalize_search_text(value: str) -> str:
+    """Normalize and validate one card-status search string."""
+
+    normalized = value.strip()
+    parse_search_expression(normalized)
+    return normalized
+
+
 class CardStatusQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    _parsed_search: SearchExpression | None = PrivateAttr(default=None)
+
     page: int = Field(default=1, ge=1)
+    search: str = Field(default="", max_length=MAX_SEARCH_LENGTH)
     availability: AvailabilityFilter = AvailabilityFilter.ALL
     schedule: ScheduleFilter = ScheduleFilter.ALL
     state: FsrsStateFilter = FsrsStateFilter.ALL
@@ -85,6 +375,39 @@ class CardStatusQuery(BaseModel):
     tab: InfoTab = InfoTab.STATUS
     preview_entity: EntityId | None = None
     preview_generator: str | None = Field(default=None, min_length=1, max_length=512)
+
+    @field_validator("search")
+    @classmethod
+    def validate_search(cls, value: str) -> str:
+        return normalize_search_text(value)
+
+    @model_validator(mode="after")
+    def validate_search_expression(self) -> CardStatusQuery:
+        object.__setattr__(self, "_parsed_search", parse_search_expression(self.search))
+        return self
+
+    @property
+    def search_expression(self) -> SearchExpression | None:
+        """Return the parsed boolean expression used by all card rows."""
+
+        return self._parsed_search
+
+    @property
+    def search_terms(self) -> tuple[SearchTerm, ...]:
+        """Return the validated leaf terms for compatibility with status callers."""
+
+        return _iter_search_terms(self._parsed_search)
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, object] | None = None,
+        deep: bool = False,
+    ) -> CardStatusQuery:
+        copied = super().model_copy(update=update, deep=deep)
+        if update is not None and "search" in update:
+            object.__setattr__(copied, "_parsed_search", parse_search_expression(copied.search))
+        return copied
 
 
 class CardDetailQuery(BaseModel):
@@ -116,6 +439,7 @@ class CardDetailQuery(BaseModel):
 @dataclass(frozen=True)
 class StatusCard:
     status: CardStatus
+    entity: Entity
     retrievability: float | None
     generator_labels: tuple[str, ...] = ()
 
@@ -141,6 +465,7 @@ class StatusRow:
     retrievability: str
     suspension_reason: str | None
     entity_id: str
+    selection_value: str
     generator_labels: tuple[str, ...]
 
 
@@ -223,9 +548,116 @@ def schedule_matches(row: StatusCard, query: CardStatusQuery, now: datetime) -> 
     return query.state is FsrsStateFilter.ALL or status.fsrs_state == query.state.value
 
 
-def _sort_value(row: StatusCard, sort: CardSort) -> datetime | float | int | None:
+def _text_values(value: object) -> tuple[str, ...]:
+    if isinstance(value, Mapping):
+        values: list[str] = []
+        for key, child in value.items():
+            values.append(str(key))
+            values.extend(_text_values(child))
+        return tuple(values)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(text for child in value for text in _text_values(child))
+    if value is None:
+        return ()
+    return (str(value),)
+
+
+def _entity_values(entity: Entity) -> dict[str, object]:
+    return cast(dict[str, object], entity.model_dump(mode="python"))
+
+
+def _compare(left: float | int | date, operator: str, right: float | int | date) -> bool:
+    if operator == "=":
+        return left == right
+    if operator == "!=":
+        return left != right
+    if operator == ">":
+        return left > right
+    if operator == ">=":
+        return left >= right
+    if operator == "<":
+        return left < right
+    return left <= right
+
+
+def search_matches(
+    row: StatusCard,
+    query: CardStatusQuery,
+    now: datetime,
+    timezone: ZoneInfo,
+    *,
+    deck_name: str,
+    deck_display_name: str,
+) -> bool:
+    """Return whether one status-page card matches the parsed search expression."""
+
+    entity = row.entity
+    entity_values = _entity_values(entity)
+    flattened = tuple(text.casefold() for text in _text_values(entity_values))
+    status = row.status
+    local_timezone = timezone
+
+    def matches_term(term: SearchTerm) -> bool:
+        if term.kind == "text":
+            candidates = flattened + (deck_name.casefold(), deck_display_name.casefold())
+            return any(term.value in candidate for candidate in candidates)
+        if term.kind == "id":
+            return term.value in status.card_key.entity_id.casefold()
+        if term.kind == "field":
+            field_value = entity_values.get(term.field or "")
+            return field_value is not None and any(
+                term.value.casefold() in item.casefold() for item in _text_values(field_value)
+            )
+        if term.kind == "state":
+            if term.value == "new":
+                matches = status.review_count == 0
+            else:
+                matches = status.fsrs_state == term.value
+            return matches
+        value: float | int | date | None
+        if term.kind == "reviews":
+            value = status.review_count
+        elif term.kind == "due":
+            value = datetime_as_utc(status.due_at).astimezone(local_timezone).date()
+        elif term.kind == "last_review":
+            value = (
+                datetime_as_utc(status.last_review_at).astimezone(local_timezone).date()
+                if status.last_review_at is not None
+                else None
+            )
+        elif term.kind == "stability":
+            value = status.stability
+        elif term.kind == "difficulty":
+            value = status.difficulty
+        else:
+            value = row.retrievability
+        return (
+            value is not None
+            and term.operator is not None
+            and term.operand is not None
+            and _compare(value, term.operator, term.operand)
+        )
+
+    def matches_expression(expression: SearchExpression | None) -> bool:
+        if expression is None:
+            return True
+        if isinstance(expression, SearchTerm):
+            return matches_term(expression)
+        if isinstance(expression, SearchNot):
+            return not matches_expression(expression.expression)
+        if isinstance(expression, SearchGroup):
+            return matches_expression(expression.expression)
+        if isinstance(expression, SearchAnd):
+            return all(matches_expression(child) for child in expression.expressions)
+        return any(matches_expression(child) for child in expression.expressions)
+
+    return matches_expression(query.search_expression)
+
+
+def _sort_value(row: StatusCard, sort: CardSort) -> datetime | float | int | str | None:
     status = row.status
     return {
+        CardSort.ENTITY_ID: status.card_key.entity_id,
         CardSort.NEXT_REVIEW: status.due_at,
         CardSort.LAST_REVIEW: status.last_review_at,
         CardSort.REVIEW_COUNT: status.review_count,
@@ -317,6 +749,13 @@ def status_row(
         retrievability=(f"{row.retrievability:.1%}" if row.retrievability is not None else "—"),
         suspension_reason=status.suspension_reason,
         entity_id=status.card_key.entity_id,
+        selection_value=json.dumps(
+            {
+                "deck_id": status.card_key.deck_id,
+                "entity_id": status.card_key.entity_id,
+            },
+            separators=(",", ":"),
+        ),
         generator_labels=row.generator_labels,
     )
 
@@ -552,6 +991,7 @@ STATE_OPTIONS = (
     (FsrsStateFilter.RELEARNING, "Relearning"),
 )
 SORT_OPTIONS = (
+    (CardSort.ENTITY_ID, "Entity ID"),
     (CardSort.NEXT_REVIEW, "Next review"),
     (CardSort.LAST_REVIEW, "Last review"),
     (CardSort.REVIEW_COUNT, "Review count"),

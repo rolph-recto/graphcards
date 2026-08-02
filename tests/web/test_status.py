@@ -1,15 +1,28 @@
 from __future__ import annotations
 
+import json
 import random
 import re
 
 import pytest
 from fsrs import Rating
+from werkzeug.datastructures import MultiDict
 
 from graphcards.decks import BasicExerciseGenerator, Deck, DeckDocument, Entity
 from graphcards.storage import utc_now
 from graphcards.web.app import EXPECTED_HOST_CONFIG, create_flask_app
-from graphcards.web.status import status_row
+from graphcards.web.status import (
+    MAX_SEARCH_DEPTH,
+    MAX_SEARCH_LENGTH,
+    CardStatusQuery,
+    SearchAnd,
+    SearchOr,
+    StatusCard,
+    parse_search_expression,
+    parse_search_terms,
+    search_matches,
+    status_row,
+)
 from graphcards.web.study import RequestFailure
 
 
@@ -46,6 +59,168 @@ def test_status_page_lists_cards_and_filters(web_context: tuple[object, object, 
     assert b"Card status" in response.data
     assert b'entity_id="france"' not in response.data
     assert b"france" in all_cards.data
+
+
+def test_status_page_searches_entity_fields_and_rejects_bad_syntax(
+    web_context: tuple[object, object, object],
+) -> None:
+    client, _controller, _repository = web_context
+
+    field_search = client.get(
+        "/decks/capitals/cards?search=field%3Afront%3DFrance",
+        headers={"Host": "localhost"},
+    )
+    text_search = client.get(
+        "/decks/capitals/cards?search=Germany",
+        headers={"Host": "localhost"},
+    )
+    boolean_search = client.get(
+        "/decks/capitals/cards?search=field%3Afront%3DFrance%20OR%20field%3Afront%3DGermany",
+        headers={"Host": "localhost"},
+    )
+    id_search = client.get(
+        "/decks/capitals/cards?search=id%3A%22france%22",
+        headers={"Host": "localhost"},
+    )
+    malformed = client.get(
+        "/decks/capitals/cards?search=%22unclosed",
+        headers={"Host": "localhost"},
+    )
+
+    assert field_search.status_code == 200
+    assert b'aria-label="More details for france"' in field_search.data
+    assert b'aria-label="More details for germany"' not in field_search.data
+    assert text_search.status_code == 200
+    assert b'aria-label="More details for germany"' in text_search.data
+    assert b'aria-label="More details for france"' not in text_search.data
+    assert boolean_search.status_code == 200
+    assert b'aria-label="More details for france"' in boolean_search.data
+    assert b'aria-label="More details for germany"' in boolean_search.data
+    assert id_search.status_code == 200
+    assert b'aria-label="More details for france"' in id_search.data
+    assert b'aria-label="More details for germany"' not in id_search.data
+    assert malformed.status_code == 200
+    assert b'role="alert"' in malformed.data
+    assert b"The search syntax is invalid." in malformed.data
+    assert b'value="%22unclosed"' not in malformed.data
+
+
+def test_status_search_query_validates_typed_terms() -> None:
+    query = CardStatusQuery(search="id:earth reviews>=2 due>=2026-01-01")
+
+    assert query.search.startswith("id:earth")
+    assert len(parse_search_terms(query.search)) == 3
+    quoted_state = CardStatusQuery(search='state:"review"')
+    assert quoted_state.search_terms[0].value == "review"
+    quoted_id = CardStatusQuery(search='id:"earth"')
+    assert quoted_id.search_terms[0].kind == "id"
+    assert quoted_id.search_terms[0].value == "earth"
+    with pytest.raises(ValueError):
+        CardStatusQuery(search="stability=not-a-number")
+
+
+def test_status_search_boolean_precedence_and_parentheses(
+    web_context: tuple[object, object, object],
+) -> None:
+    _client, controller, _repository = web_context
+    deck = controller.config.deck("capitals")
+    now = utc_now()
+    source = controller.card_statuses(deck, now)[0]
+    tagged = StatusCard(
+        status=source.status,
+        entity=Entity(id=source.entity.id, front="France", tags=["travel"]),
+        retrievability=source.retrievability,
+    )
+
+    expression = parse_search_expression("field:front=France OR field:front=Germany state:new")
+    assert isinstance(expression, SearchOr)
+    assert isinstance(expression.expressions[1], SearchAnd)
+    assert parse_search_expression("state:new OR state:review") is not None
+    assert parse_search_expression('"AND"') is not None
+    with pytest.raises(ValueError):
+        parse_search_expression("state:new state:review")
+
+    def matches(search: str) -> bool:
+        return search_matches(
+            tagged,
+            CardStatusQuery(search=search),
+            now,
+            controller.config.display_timezone,
+            deck_name=deck.name,
+            deck_display_name=deck.display_name,
+        )
+
+    assert matches("field:front=France OR field:front=Germany state:new")
+    assert matches("(field:front=France OR field:front=Germany) AND state:new")
+    assert matches("field:front=France AND NOT field:front=Germany")
+
+
+def test_status_search_matches_review_properties(
+    web_context: tuple[object, object, object],
+) -> None:
+    _client, controller, repository = web_context
+    deck = controller.config.deck("capitals")
+    now = utc_now()
+    source = controller.card_statuses(deck, now)[0]
+    tagged = StatusCard(
+        status=source.status,
+        entity=Entity(id=source.entity.id, front="France", tags=["travel"]),
+        retrievability=source.retrievability,
+    )
+
+    query = CardStatusQuery(search="field:front=France state:new reviews=0")
+    assert search_matches(
+        tagged,
+        query,
+        now,
+        controller.config.display_timezone,
+        deck_name=deck.name,
+        deck_display_name=deck.display_name,
+    )
+
+    stored = repository.active_cards("capitals")[0]
+    controller.study_service.review(deck, stored, Rating.Good, now)
+    reviewed = next(
+        row for row in controller.card_statuses(deck, now) if row.status.card_key == stored.card_key
+    )
+    reviewed_query = CardStatusQuery(
+        search=("reviews>=1 last_review>=2026-01-01 stability>=0 difficulty>=0 retrievability>=0")
+    )
+    assert reviewed.retrievability is not None
+    assert search_matches(
+        reviewed,
+        reviewed_query,
+        now,
+        controller.config.display_timezone,
+        deck_name=deck.name,
+        deck_display_name=deck.display_name,
+    )
+
+
+@pytest.mark.parametrize(
+    "search",
+    [
+        "state:new state:review",
+        "tag:travel",
+        "deck:capitals",
+        "is:due",
+        "rating:good",
+        "tag:travel OR",
+        "(tag:travel",
+        "NOT",
+        "tag:travel AND )",
+        "(" * (MAX_SEARCH_DEPTH + 1) + "id:travel" + ")" * (MAX_SEARCH_DEPTH + 1),
+        "reviews~2",
+        "due=not-a-date",
+        "field:=value",
+        "\x00",
+        " ".join("term" for _ in range(33)),
+        "x" * (MAX_SEARCH_LENGTH + 1),
+    ],
+)
+def test_status_search_rejects_invalid_terms(search: str) -> None:
+    with pytest.raises(ValueError):
+        CardStatusQuery(search=search)
 
 
 def test_schedule_badges_do_not_repeat_fsrs_state(
@@ -99,6 +274,116 @@ def test_status_suspend_and_resume_round_trip(web_context: tuple[object, object,
     assert resumed_status.suspension_reason is None
 
 
+def test_status_bulk_suspend_and_resume_is_atomic(
+    web_context: tuple[object, object, object],
+) -> None:
+    client, controller, repository = web_context
+    entity_ids = [card.card_key.entity_id for card in repository.active_cards("capitals")[:2]]
+    before = {
+        item.card_key.entity_id: (item.card_json, item.due_at, item.review_count)
+        for item in repository.card_statuses("capitals")
+    }
+    data = MultiDict(
+        [
+            ("csrf_token", controller.csrf_token),
+            ("bulk_action", "suspend"),
+            ("reason", "focus later"),
+            *[
+                (
+                    "selected_card_key",
+                    json.dumps(
+                        {"deck_id": "capitals", "entity_id": entity_id},
+                        separators=(",", ":"),
+                    ),
+                )
+                for entity_id in entity_ids
+            ],
+        ]
+    )
+
+    suspend = client.post(
+        "/decks/capitals/cards/bulk",
+        data=data,
+        headers={"Host": "localhost"},
+    )
+
+    assert suspend.status_code == 303
+    assert all(repository.card_suspended("capitals", entity_id) for entity_id in entity_ids)
+
+    resume = client.post(
+        "/decks/capitals/cards/bulk",
+        data=MultiDict(
+            [
+                ("csrf_token", controller.csrf_token),
+                ("bulk_action", "resume"),
+                *[
+                    (
+                        "selected_card_key",
+                        json.dumps(
+                            {"deck_id": "capitals", "entity_id": entity_id},
+                            separators=(",", ":"),
+                        ),
+                    )
+                    for entity_id in entity_ids
+                ],
+            ]
+        ),
+        headers={"Host": "localhost"},
+    )
+
+    assert resume.status_code == 303
+    assert all(repository.card_available("capitals", entity_id) for entity_id in entity_ids)
+    after = {
+        item.card_key.entity_id: (item.card_json, item.due_at, item.review_count)
+        for item in repository.card_statuses("capitals")
+    }
+    assert after == before
+
+
+def test_status_bulk_rejects_duplicate_and_cross_deck_selections(
+    web_context: tuple[object, object, object],
+) -> None:
+    client, controller, repository = web_context
+    entity_id = repository.active_cards("capitals")[0].card_key.entity_id
+    selection = json.dumps(
+        {"deck_id": "capitals", "entity_id": entity_id},
+        separators=(",", ":"),
+    )
+    duplicate = client.post(
+        "/decks/capitals/cards/bulk",
+        data=MultiDict(
+            [
+                ("csrf_token", controller.csrf_token),
+                ("bulk_action", "suspend"),
+                ("selected_card_key", selection),
+                ("selected_card_key", selection),
+            ]
+        ),
+        headers={"Host": "localhost"},
+    )
+    cross_deck = client.post(
+        "/decks/capitals/cards/bulk",
+        data=MultiDict(
+            [
+                ("csrf_token", controller.csrf_token),
+                ("bulk_action", "suspend"),
+                (
+                    "selected_card_key",
+                    json.dumps(
+                        {"deck_id": "other", "entity_id": entity_id},
+                        separators=(",", ":"),
+                    ),
+                ),
+            ]
+        ),
+        headers={"Host": "localhost"},
+    )
+
+    assert duplicate.status_code == 400
+    assert cross_deck.status_code == 409
+    assert repository.card_available("capitals", entity_id)
+
+
 def test_status_rejects_malformed_filters_without_state_change(
     web_context: tuple[object, object, object],
 ) -> None:
@@ -133,7 +418,10 @@ def test_deck_info_tabs_have_isolated_content_and_updated_controls(
     assert b"Card Status" in status.data
     assert b'id="card-status"' in status.data
     assert b'id="history"' not in status.data
-    assert b"Reason" not in status.data
+    assert b"Reason for suspension" not in status.data
+    assert b"Suspend selected" not in status.data
+    assert b"Resume selected" not in status.data
+    assert b"selected_card_key" not in status.data
     assert b"Review History" in history.data
     assert b'id="history"' in history.data
     assert b'id="card-status"' not in history.data
@@ -276,6 +564,16 @@ def test_status_table_is_minimal_and_links_to_entity_details(
     assert b"<th>Schedule</th>" in response.data
     assert b"<th>FSRS Status</th>" in response.data
     assert b"<th>Actions</th>" in response.data
+    assert b'placeholder="id:earth OR (state:review AND NOT field:front=France)"' in response.data
+    assert b"<label>Availability" not in response.data
+    assert b"<label>Schedule" not in response.data
+    assert b"<label>FSRS state" not in response.data
+    assert b"<label>Sort by" in response.data
+    assert b'<option value="entity_id">Entity ID</option>' in response.data
+    assert b"<label>Direction" in response.data
+    assert b">Search</button>" in response.data
+    assert b">Clear</a>" in response.data
+    assert b">Apply</button>" not in response.data
     assert (
         b"<thead><tr><th>Entity</th><th>Review history</th><th>Next review</th>"
         b"<th>Schedule</th><th>FSRS Status</th><th>Actions</th></tr></thead>" in response.data

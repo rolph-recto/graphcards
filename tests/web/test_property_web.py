@@ -82,6 +82,7 @@ def _expected_status_rows(rows: list[object], query: CardStatusQuery, now: objec
     def sort_value(row: object) -> object:
         status = row.status
         return {
+            "entity_id": status.card_key.entity_id,
             "next_review": status.due_at,
             "last_review": status.last_review_at,
             "review_count": status.review_count,
