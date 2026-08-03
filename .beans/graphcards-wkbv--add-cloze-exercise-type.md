@@ -1,11 +1,11 @@
 ---
 # graphcards-wkbv
 title: Add cloze exercise type
-status: in-progress
+status: scrapped
 type: feature
 priority: normal
 created_at: 2026-07-30T02:21:25Z
-updated_at: 2026-07-30T18:19:07Z
+updated_at: 2026-08-03T06:21:05Z
 ---
 
 Add a cloze exercise type for study cards.
@@ -99,3 +99,7 @@ The string entry creates cards for both `c1` and `c2` in `capital-france`. The o
 Each generated card has a deck ID, generator ID, entity ID, and cloze ID. The cloze ID must be part of `CardKey` and stored identity.
 
 The entity remains the source note. Each selected cloze has its own FSRS state.
+
+## Reasons for Scrapping
+
+The completed cloze implementation is tracked by duplicate bean graphcards-4jfn, so this original bean record is redundant.
