@@ -37,11 +37,10 @@ templates_paths = ["templates"]
 decks = ["../graphcards-study/capitals/deck.json"]
 ```
 
-Then validate, synchronize, inspect status, and start the local web interface:
+Then validate, inspect status, and start the local web interface:
 
 ```console
 graphcards validate
-graphcards sync
 graphcards status
 graphcards serve
 ```

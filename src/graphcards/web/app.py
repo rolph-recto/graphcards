@@ -436,7 +436,7 @@ def _deck_asset_path(deck_path: Path, image_path: str) -> tuple[Path, str]:
 
 
 def create_flask_app(controller: StudyController) -> Flask:
-    """Create one Flask application around a synchronized study controller."""
+    """Create one Flask application around an initialized study controller."""
 
     app = Flask(
         __name__,

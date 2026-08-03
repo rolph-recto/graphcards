@@ -61,13 +61,12 @@ The path is relative to `~/.graphcards/config.toml`. An absolute path is also va
 
 ```console
 graphcards validate
-graphcards sync
 graphcards status --full
 ```
 
 `validate` loads the complete deck, checks entity and generator references, renders deterministic
-examples, and reports the card count. `sync` regenerates current semantic exercises and updates
-SQLite state. `status` reports queue counts and daily limits.
+examples, and reports the card count. `status` initializes or refreshes review state as needed,
+then reports queue counts and daily limits.
 
 ## Start a study session
 

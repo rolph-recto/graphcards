@@ -355,7 +355,7 @@ class DeckFileStateStore:
         state = current.document.review_state
         if state is None:
             raise StorageError(
-                f"deck {deck.display_name!r} has no review state; synchronize the deck first"
+                f"deck {deck.display_name!r} has no review state; open it in GraphCards first"
             )
         return state
 
@@ -676,7 +676,7 @@ class DeckFileStateStore:
             if entity_state is None:
                 raise StorageError(
                     f"deck {deck.display_name!r} has no state for current entity {entity_id!r}; "
-                    "synchronize the deck"
+                    "refresh the deck state"
                 )
             if include_suspended or not entity_state.suspended:
                 records.append(
@@ -1184,8 +1184,8 @@ class DeckFileStateStore:
             existing = state.entities.get(card_key.entity_id)
             if existing is None:
                 raise StaleReviewError(
-                    f"cannot review missing card {deck.name}/{card_key.entity_id}; reload or sync "
-                    "before trying again"
+                    f"cannot review missing card {deck.name}/{card_key.entity_id}; reload the "
+                    "deck before trying again"
                 )
             stored = self._stored_card(deck, card_key.entity_id, existing, "", state.revision)
             if stored.card_json != source_card_json:

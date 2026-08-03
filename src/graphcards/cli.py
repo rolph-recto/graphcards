@@ -65,7 +65,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     for command, help_text in (
         ("validate", "validate JSON/TOML/YAML deck study content"),
-        ("sync", "synchronize generated exercises into study state"),
         ("status", "show card counts"),
     ):
         command_parser = subparsers.add_parser(command, help=help_text, description=help_text)
@@ -100,18 +99,6 @@ def _run_validate(config: AppConfig, deck_name: str | None, output: TextIO) -> N
     for deck in _selected_decks(config, deck_name):
         count = len(execute_cards(deck))
         print(f"{deck.display_name}: valid ({count} cards)", file=output)
-
-
-def _run_sync(config: AppConfig, deck_name: str | None, output: TextIO) -> None:
-    with DeckFileStateStore(config.decks) as state_store:
-        app = StudyService(
-            state_store,
-            config.fsrs.create_scheduler(),
-            display_timezone=config.display_timezone,
-        )
-        for deck in _selected_decks(config, deck_name):
-            active, created = app.sync(deck)
-            print(f"{deck.display_name}: {active} current, {created} new", file=output)
 
 
 def _status_label(card: CardStatus, now: datetime) -> str:
@@ -285,8 +272,6 @@ def main(
         config = load_config(args.config)
         if args.command == "validate":
             _run_validate(config, args.deck, output)
-        elif args.command == "sync":
-            _run_sync(config, args.deck, output)
         elif args.command == "status":
             _run_status(config, args.deck, args.full, output)
         elif args.command == "suspend":

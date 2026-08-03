@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from graphcards.cli import main
+from graphcards.cli import build_parser, main
 from graphcards.config import load_config
 from graphcards.decks import Deck
 from graphcards.storage import DeckFileStateStore
@@ -198,7 +198,7 @@ def test_init_temporal_comparison_template_validates(tmp_path: Path) -> None:
     assert deck.generators[0].type == "temporal_comparison"
 
 
-def test_validate_sync_and_full_status_use_json_deck(
+def test_validate_and_full_status_use_json_deck(
     deck_path: Path, tmp_path: Path, write_config
 ) -> None:
     config_path = write_config(tmp_path / "graphcards.toml", [deck_path])
@@ -206,18 +206,22 @@ def test_validate_sync_and_full_status_use_json_deck(
 
     assert main(["--config", str(config_path), "validate"], output=output) == 0
     assert "Capital study: valid (3 cards)" in output.getvalue()
-    assert main(["--config", str(config_path), "sync"], output=StringIO()) == 0
     output = StringIO()
     assert main(["--config", str(config_path), "status", "--full"], output=output) == 0
     assert "IDENTITY" in output.getvalue()
     assert "capitals /" in output.getvalue()
 
 
+def test_sync_command_is_not_available() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["sync"])
+
+
 def test_cli_suspend_and_resume_change_membership(
     deck_path: Path, tmp_path: Path, write_config
 ) -> None:
     config_path = write_config(tmp_path / "graphcards.toml", [deck_path])
-    assert main(["--config", str(config_path), "sync"], output=StringIO()) == 0
+    assert main(["--config", str(config_path), "status"], output=StringIO()) == 0
     config = load_config(config_path)
     with DeckFileStateStore(config.decks) as state_store:
         entity_id = state_store.active_cards("capitals")[0].card_key.entity_id

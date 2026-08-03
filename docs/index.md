@@ -22,7 +22,6 @@ graphcards setup
 graphcards templates
 graphcards init DECK_DIRECTORY --template NAME --format json
 graphcards validate
-graphcards sync
 graphcards status
 graphcards serve
 ```

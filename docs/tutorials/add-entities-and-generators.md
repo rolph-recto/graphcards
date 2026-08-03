@@ -127,4 +127,5 @@ for entity_id, card in cards.items():
     print(entity_id, deck.render(card).front)
 ```
 
-Then run `graphcards sync` to update study state and `graphcards serve` to review the cards.
+Then run `graphcards status` to initialize or refresh study state and `graphcards serve` to review
+the cards.

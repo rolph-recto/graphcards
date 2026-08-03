@@ -962,7 +962,7 @@ class Deck:
             raise ConfigError(f"invalid deck {path}: {message}") from error
 
     def _validate_rendering(self) -> None:
-        """Preflight generated views so template errors fail before synchronization."""
+        """Preflight generated views so template errors fail before study begins."""
 
         context = ExerciseGeneratorContext(self.name, self.entities, random.Random(0))
         for generator in self.generators:

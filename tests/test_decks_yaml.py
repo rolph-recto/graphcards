@@ -266,7 +266,7 @@ def test_yaml_load_config_and_cli_support_relative_mixed_workspace(
     output = StringIO()
     assert main(["--config", str(config_path), "validate"], output=output) == 0
     assert output.getvalue().count("valid (4 cards)") == 3
-    assert main(["--config", str(config_path), "sync"], output=StringIO()) == 0
+    assert main(["--config", str(config_path), "status"], output=StringIO()) == 0
     with DeckFileStateStore(config.decks) as state_store:
         assert len(state_store.active_cards("yaml-deck")) == 4
 

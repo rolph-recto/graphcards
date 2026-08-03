@@ -234,7 +234,7 @@ def test_malformed_toml_preserves_parser_location(tmp_path: Path) -> None:
         Deck.load(path)
 
 
-def test_toml_config_paths_can_mix_decks_and_cli_validate_sync(tmp_path: Path) -> None:
+def test_toml_config_paths_can_mix_decks_and_cli_validate_status(tmp_path: Path) -> None:
     json_path = tmp_path / "mixed-json" / "deck.json"
     toml_path = tmp_path / "mixed-toml" / "deck.toml"
     json_path.parent.mkdir()
@@ -254,7 +254,7 @@ def test_toml_config_paths_can_mix_decks_and_cli_validate_sync(tmp_path: Path) -
     output = StringIO()
     assert main(["--config", str(config_path), "validate"], output=output) == 0
     assert output.getvalue().count("valid (4 cards)") == 2
-    assert main(["--config", str(config_path), "sync"], output=StringIO()) == 0
+    assert main(["--config", str(config_path), "status"], output=StringIO()) == 0
     with DeckFileStateStore(config.decks) as state_store:
         assert len(state_store.active_cards("mixed-json")) == 4
         assert len(state_store.active_cards("mixed-toml")) == 4
