@@ -7,10 +7,16 @@
     {"id": "capital-spain", "front": "Capital of Spain?", "back": "Madrid"}
   ],
   "exercises": [
-    {"id": "capitals-basic", "type": "basic", "entities": ["capital-france", "capital-germany"]},
+    {
+      "id": "capitals-basic",
+      "type": "basic",
+      "entities": ["capital-france", "capital-germany"],
+      "render": {"question": "front", "answer": "back"}
+    },
     {
       "id": "capitals-choice",
       "type": "multiple_choice",
+      "render": {"question": "front", "choice_label": "back", "answer": "back"},
       "choices": {
         "capital-italy": ["capital-france", "capital-germany"],
         "capital-spain": ["capital-france", "capital-germany"]

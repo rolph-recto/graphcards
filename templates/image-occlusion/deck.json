@@ -8,6 +8,7 @@
     {
       "id": "solar-system",
       "type": "image_occlusion",
+      "render": {"answer": "answer"},
       "image_path": "assets/solar-system.jpg",
       "image_alt": "The solar system",
       "occlusions": [

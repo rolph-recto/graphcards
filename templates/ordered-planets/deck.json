@@ -8,6 +8,12 @@
     {"id": "mars", "label": "Mars"}
   ],
   "exercises": [
-    {"id": "planet-order", "type": "missing_sequence_item", "window_size": 3, "groups": {"solar-system": ["mercury", "venus", "earth", "mars"]}}
+    {
+      "id": "planet-order",
+      "type": "missing_sequence_item",
+      "window_size": 3,
+      "render": {"row_label": "label", "answer": "label"},
+      "groups": {"solar-system": ["mercury", "venus", "earth", "mars"]}
+    }
   ]
 }

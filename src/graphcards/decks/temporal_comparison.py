@@ -16,13 +16,7 @@ from graphcards.errors import PresentationError
 from graphcards.models import CardView, Exercise
 from graphcards.references import EntityId, EntityIdList
 
-FRONT_TEMPLATE = (
-    "Did {{ target.label|default(target.back, true)|default(target.answer, true)|"
-    "default(target.id, true) }} "
-    "happen before or after "
-    "{{ comparison.label|default(comparison.back, true)|default(comparison.answer, true)|"
-    "default(comparison.id, true) }}?"
-)
+FRONT_TEMPLATE = "Did {{ target.event_label }} happen before or after {{ comparison.event_label }}?"
 BACK_TEMPLATE = "{{ answer }}"
 
 
@@ -43,6 +37,9 @@ class TemporalComparisonExerciseGenerator(ExerciseGenerator):
             "target_position",
         }
     )
+    render_fields: ClassVar[dict[str, tuple[str, ...]]] = {
+        "event_label": ("label", "back", "answer", "id"),
+    }
 
     @model_validator(mode="after")
     def validate_group_definitions(self) -> TemporalComparisonExerciseGenerator:
@@ -122,12 +119,15 @@ class TemporalComparisonExerciseGenerator(ExerciseGenerator):
                 raise ValueError("exercise comparison position does not match its temporal group")
             if exercise.target_position == exercise.comparison_position:
                 raise ValueError("exercise positions must be different")
+            render_target = self.render_entity(context.entities[exercise.target_id])
+            render_comparison = self.render_entity(context.entities[exercise.comparison_id])
+            render_group = self.render_entity(context.entities[exercise.group_id])
             render_context = {
                 "answer": exercise.answer,
-                "comparison": context.entities[exercise.comparison_id],
+                "comparison": render_comparison,
                 "comparison_position": exercise.comparison_position,
-                "group": context.entities[exercise.group_id],
-                "target": context.entities[exercise.target_id],
+                "group": render_group,
+                "target": render_target,
                 "target_position": exercise.target_position,
             }
             return CardView(

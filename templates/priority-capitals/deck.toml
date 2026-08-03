@@ -12,16 +12,21 @@ back = "Berlin"
 
 [[entities]]
 id = "italy"
+front = "Italy"
+back = "Rome"
 label = "Rome"
 
 [[entities]]
 id = "spain"
+front = "Spain"
+back = "Madrid"
 label = "Madrid"
 
 [[exercises]]
 id = "priority-choice"
 type = "multiple_choice"
 max_choices = 3
+render = {question = "front", choice_label = "back", answer = "back"}
 
 [exercises.choices]
 france = ["italy", "spain"]

@@ -6,11 +6,17 @@ from graphcards.decks.base import (
     DeckDocument,
     Entity,
     EntityGroup,
+    EntityRenderValue,
     ExerciseGenerator,
     ExerciseGeneratorContext,
+    RenderConfig,
 )
 from graphcards.decks.basic import BasicExercise, BasicExerciseGenerator
-from graphcards.decks.cloze import ClozeExercise, ClozeExerciseGenerator, ClozeSelection
+from graphcards.decks.cloze import (
+    ClozeExercise,
+    ClozeExerciseGenerator,
+    ClozeSelection,
+)
 from graphcards.decks.common_relation import (
     CommonRelationExercise,
     CommonRelationExerciseGenerator,
@@ -56,12 +62,14 @@ __all__ = [
     "Deck",
     "DeckDocument",
     "Entity",
+    "EntityRenderValue",
     "EntityGroup",
     "EntityId",
     "EntityIdList",
     "EntityIdListMarker",
     "ExerciseGenerator",
     "ExerciseGeneratorContext",
+    "RenderConfig",
     "MultipleChoiceExercise",
     "MultipleChoiceExerciseGenerator",
     "ImageOcclusionExercise",

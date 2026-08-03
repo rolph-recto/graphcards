@@ -6,4 +6,5 @@ directory. It includes a NASA/Lunar and Planetary Institute raster example image
 
 Each occlusion target is an entity. The generator creates one FSRS card for each target and stores
 the rectangle in normalized coordinates from 0 to 1. The default front hides the target rectangle.
-The back displays only the entity's `answer` value.
+The `answer` render slot selects the entity's `answer` value. `image_path` remains a separate
+deck-relative generation setting.

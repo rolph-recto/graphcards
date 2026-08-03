@@ -18,18 +18,15 @@ from graphcards.models import CardView, Exercise
 from graphcards.references import EntityId, EntityIdList
 
 FRONT_TEMPLATE = (
-    "{{ target.label|default(target.front, true)|default(target.prompt, true)|"
-    "default(target.question, true)|default(target.id, true) }}:\n"
+    "{{ target.target_label }}:\n"
     "{% for related_entity in scrambled_entities %}{{ loop.index }}. "
-    "{{ related_entity.label|default(related_entity.back, true)|"
-    "default(related_entity.answer, true)|default(related_entity.id, true) }}"
+    "{{ related_entity.item_label }}"
     "{% if not loop.last %}\n{% endif %}"
     "{% endfor %}"
 )
 BACK_TEMPLATE = (
     "{% for related_entity in ordered_entities %}{{ loop.index }}. "
-    "{{ related_entity.label|default(related_entity.back, true)|"
-    "default(related_entity.answer, true)|default(related_entity.id, true) }}"
+    "{{ related_entity.item_label }}"
     "{% if not loop.last %}\n{% endif %}"
     "{% endfor %}"
 )
@@ -43,8 +40,19 @@ class ScrambledListExerciseGenerator(ExerciseGenerator):
     type_name = "scrambled_list"
     groups: dict[EntityId, EntityIdList]
     template_context_names: ClassVar[frozenset[str]] = frozenset(
-        {"target", "scrambled_entities", "ordered_entities"}
+        {
+            "target",
+            "related",
+            "scrambled",
+            "ordered",
+            "scrambled_entities",
+            "ordered_entities",
+        }
     )
+    render_fields: ClassVar[dict[str, tuple[str, ...]]] = {
+        "target_label": ("label", "front", "prompt", "question", "id"),
+        "item_label": ("label", "back", "answer", "id"),
+    }
 
     @model_validator(mode="after")
     def validate_group_definitions(self) -> ScrambledListExerciseGenerator:
@@ -107,12 +115,16 @@ class ScrambledListExerciseGenerator(ExerciseGenerator):
                 raise ValueError("exercise ordered IDs do not match generator configuration")
             if set(exercise.scrambled_ids) != set(ordered_ids):
                 raise ValueError("exercise scrambled IDs do not match generator configuration")
+            render_target = self.render_entity(context.entities[exercise.target_id])
+            scrambled_entities = self.render_entities(context.entities, exercise.scrambled_ids)
+            ordered_entities = self.render_entities(context.entities, ordered_ids)
             render_context = {
-                "target": context.entities[exercise.target_id],
-                "scrambled_entities": tuple(
-                    context.entities[entity_id] for entity_id in exercise.scrambled_ids
-                ),
-                "ordered_entities": tuple(context.entities[entity_id] for entity_id in ordered_ids),
+                "target": render_target,
+                "related": ordered_entities,
+                "scrambled": scrambled_entities,
+                "ordered": ordered_entities,
+                "scrambled_entities": scrambled_entities,
+                "ordered_entities": ordered_entities,
             }
             return CardView(
                 card_key=exercise.card_key,

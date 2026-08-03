@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import keyword
 import random
 import tomllib
 from abc import ABC, abstractmethod
@@ -20,6 +21,8 @@ from pydantic import (
     AliasChoices,
     ConfigDict,
     Field,
+    PrivateAttr,
+    RootModel,
     StrictStr,
     StringConstraints,
     ValidationError,
@@ -106,6 +109,47 @@ _RESERVED_ENTITY_FIELDS = frozenset(
         "validate",
     }
 )
+
+
+def _validate_render_field_name(value: str) -> str:
+    """Validate one direct Entity field selected for presentation rendering."""
+
+    if not value.strip():
+        raise ValueError("render field names must be non-blank")
+    if value.startswith("_"):
+        raise ValueError("render field names must not be private")
+    if "." in value:
+        raise ValueError("render field names must be direct top-level names")
+    if not value.isidentifier() or keyword.iskeyword(value):
+        raise ValueError(f"invalid render field name: {value!r}")
+    if value in _RESERVED_ENTITY_FIELDS:
+        raise ValueError(f"reserved render field name: {value!r}")
+    return value
+
+
+def _validate_render_slot_name(value: str) -> str:
+    """Validate one generator-defined render slot name."""
+
+    if not value.strip():
+        raise ValueError("render slot names must be non-blank")
+    if value.startswith("_"):
+        raise ValueError("render slot names must not be private")
+    if not value.isidentifier() or keyword.iskeyword(value):
+        raise ValueError(f"invalid render slot name: {value!r}")
+    if value in _RESERVED_ENTITY_FIELDS or value == "id":
+        raise ValueError(f"reserved render slot name: {value!r}")
+    return value
+
+
+class RenderConfig(RootModel[dict[StrictStr, StrictStr]]):
+    """Generator-defined render slots mapped to direct Entity field names."""
+
+    @model_validator(mode="after")
+    def validate_slots(self) -> RenderConfig:
+        for slot, field_name in self.root.items():
+            _validate_render_slot_name(slot)
+            _validate_render_field_name(field_name)
+        return self
 
 
 class _SafeTemplateEnvironment(SandboxedEnvironment):
@@ -475,6 +519,98 @@ class Entity(FrozenModel):
             return _freeze_json(extra[name])
         raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 
+    def field_value(self, name: str) -> tuple[bool, object]:
+        """Return one direct field value without traversing nested data."""
+
+        if name == "id":
+            return True, self.id
+        extra = object.__getattribute__(self, "__pydantic_extra__") or {}
+        if name in extra:
+            return True, _freeze_json(extra[name])
+        return False, None
+
+
+class EntityRenderValue(FrozenModel):
+    """A frozen Pydantic model with Entity fields and resolved render slots."""
+
+    id: EntityId
+    _values: Mapping[str, object] = PrivateAttr(default_factory=dict)
+
+    @classmethod
+    def from_values(
+        cls,
+        *,
+        entity_id: EntityId,
+        values: Mapping[str, object],
+    ) -> EntityRenderValue:
+        """Build one render value while keeping its dynamic fields private to the model."""
+
+        instance = cls(id=entity_id)
+        object.__setattr__(instance, "_values", values)
+        return instance
+
+    def __getattr__(self, name: str) -> object:
+        if name.startswith("_") or name in _UNSAFE_TEMPLATE_ATTRIBUTES:
+            raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+        try:
+            values = object.__getattribute__(self, "_values")
+            return values[name]
+        except (AttributeError, KeyError) as error:
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}"
+            ) from error
+
+
+def _resolve_render_slot(
+    entity: Entity,
+    slot: str,
+    selected_field: str | None,
+    fallback: tuple[str, ...],
+    *,
+    generator_id: str,
+) -> object:
+    """Resolve one generator-specific slot from a configured field or fallback chain."""
+
+    if selected_field is not None:
+        found, value = entity.field_value(selected_field)
+        if not found:
+            raise PresentationError(
+                f"generator {generator_id!r} entity {entity.id!r} has no configured render "
+                f"field {selected_field!r} for slot {slot!r}"
+            )
+        return value
+
+    for field_name in fallback:
+        found, value = entity.field_value(field_name)
+        if found:
+            return value
+    return entity.id
+
+
+def resolve_entity_render_value(
+    entity: Entity,
+    *,
+    render_config: RenderConfig | None,
+    fallback_fields: Mapping[str, tuple[str, ...]],
+    generator_id: str,
+) -> EntityRenderValue:
+    """Resolve all generator-specific slots for one entity before Jinja rendering."""
+
+    selected_fields = {} if render_config is None else dict(render_config.root)
+    values = entity.model_dump(mode="python")
+    for slot, fallback in fallback_fields.items():
+        values[slot] = _resolve_render_slot(
+            entity,
+            slot,
+            selected_fields.get(slot),
+            fallback,
+            generator_id=generator_id,
+        )
+    return EntityRenderValue.from_values(
+        entity_id=entity.id,
+        values=cast(Mapping[str, object], _freeze_json(values)),
+    )
+
 
 class EntityGroup(FrozenModel):
     """An ordered, reusable list of concrete entity IDs."""
@@ -512,7 +648,13 @@ class ExerciseGenerator(FrozenModel, ABC):
     type: StrictStr
     front_template: TemplateSource | None = None
     back_template: TemplateSource | None = None
+    render_config: RenderConfig | None = Field(
+        default=None,
+        validation_alias=AliasChoices("render", "render_config"),
+        serialization_alias="render",
+    )
     template_context_names: ClassVar[frozenset[str]] = frozenset()
+    render_fields: ClassVar[dict[str, tuple[str, ...]]] = {}
     type_name: ClassVar[str]
     _registry: ClassVar[dict[str, type[ExerciseGenerator]]] = {}
 
@@ -532,6 +674,12 @@ class ExerciseGenerator(FrozenModel, ABC):
 
     @model_validator(mode="after")
     def validate_templates(self) -> ExerciseGenerator:
+        if self.render_config is not None:
+            unknown_slots = sorted(set(self.render_config.root).difference(self.render_fields))
+            if unknown_slots:
+                raise ValueError(
+                    f"render slot {unknown_slots[0]!r} is not used by generator {self.id!r}"
+                )
         for field_name in ("front_template", "back_template"):
             source = getattr(self, field_name)
             if source is None:
@@ -548,6 +696,35 @@ class ExerciseGenerator(FrozenModel, ABC):
             except TemplateError as error:
                 raise ValueError(f"{field_name} is not valid Jinja: {error}") from error
         return self
+
+    def render_entity(self, entity: Entity) -> EntityRenderValue:
+        """Resolve this generator's render slots for one entity."""
+
+        return resolve_entity_render_value(
+            entity,
+            render_config=self.render_config,
+            fallback_fields=self.render_fields,
+            generator_id=self.id,
+        )
+
+    def render_entities(
+        self,
+        entities: Mapping[str, Entity],
+        entity_ids: Sequence[str],
+    ) -> tuple[EntityRenderValue, ...]:
+        """Resolve this generator's render slots for an ordered entity collection."""
+
+        try:
+            return tuple(
+                self.render_entity(
+                    entities[entity_id],
+                )
+                for entity_id in entity_ids
+            )
+        except KeyError as error:
+            raise PresentationError(
+                f"generator {self.id!r} exercise references an unknown entity"
+            ) from error
 
     def validate_references(self, known_entity_ids: set[str]) -> None:
         """Validate references after the complete entity set is available."""
@@ -1034,7 +1211,10 @@ __all__ = [
     "Deck",
     "DeckDocument",
     "Entity",
+    "EntityRenderValue",
     "EntityGroup",
     "ExerciseGenerator",
     "ExerciseGeneratorContext",
+    "RenderConfig",
+    "resolve_entity_render_value",
 ]

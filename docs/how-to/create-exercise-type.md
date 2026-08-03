@@ -44,6 +44,29 @@ Use strict fields and validators for configuration. Implement `validate_referenc
 entity or group reference. Store all values needed for rendering in the semantic exercise so
 rendering remains stateless and does not sample new data.
 
+## Use the shared render contract
+
+`ExerciseGenerator` provides an optional typed `render` slot map. Each generator declares the
+slots that its templates need. Use `self.render_entity(entity)` for one entity and
+`self.render_entities(entities, ids)` for an ordered collection. These helpers resolve the
+configured slot or the generator's fallback chain before Jinja runs. Do not put resolved values in
+the `Exercise` model.
+
+For a generator with custom slots and fallback chains, declare these class variables:
+
+```python
+class ExampleGenerator(ExerciseGenerator):
+    render_fields = {
+        "question": ("question", "prompt", "id"),
+        "answer": ("answer", "id"),
+    }
+```
+
+Use the slots in the built-in template, for example `{{ target.question }}` and
+`{{ target.answer }}`. The resolved entity also keeps `id` and ordinary direct Entity fields, so
+custom templates can use the same type-specific slots and the documented contexts. Keep
+generation controls such as `cloze_field` and `image_path` as separate generator fields.
+
 ## Register and export it
 
 Decorate the generator with `@ExerciseGenerator.register`. Import the module from
@@ -62,7 +85,8 @@ Add an example deck in JSON, TOML, and YAML. Test all of the following behavior:
 2. Unknown entity and group references fail with a `ConfigError`.
 3. `generate` creates a stable `CardKey`, generator ID, target ID, and exercise payload.
 4. `render` returns a `CardView` for the front and back.
-5. Custom templates accept only the declared `template_context_names`.
+5. Custom templates accept only the declared context names and the resolved logical entity
+   values.
 6. Repeated rendering does not change the semantic exercise.
 
 Use deterministic RNG input in tests when the type samples or shuffles data. Run the full behavior

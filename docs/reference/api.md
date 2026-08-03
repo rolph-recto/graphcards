@@ -22,9 +22,11 @@ from graphcards.decks import (
     Deck,
     DeckDocument,
     Entity,
+    EntityRenderValue,
     EntityGroup,
     ExerciseGenerator,
     ExerciseGeneratorContext,
+    RenderConfig,
 )
 ```
 
@@ -53,6 +55,22 @@ from graphcards.models import Card, CardKey, CardView, Exercise, FrozenModel
 
 `ExerciseGeneratorContext` contains `deck_id`, the entity mapping, and the operation RNG.
 Generators implement `target_ids`, `validate_references`, `generate`, and `render`.
+
+`RenderConfig` is the typed configuration for the optional generator `render` mapping. Its keys
+are render slots declared by the exercise generator, and its values are direct top-level Entity
+field names. Slot and field names must be public identifiers and cannot be blank, reserved,
+dotted, or nested. An explicit slot replaces that generator's fallback chain; an omitted slot
+uses the chain. The first present field wins, including an empty value. `EntityRenderValue` exposes `id`, ordinary Entity fields, and the resolved
+generator-specific slots to Jinja as a frozen Pydantic model. A generator also exposes `render_entity()` and
+`render_entities()` for custom render implementations.
+
+Each exercise type owns its slot names and built-in templates. For example, `basic` uses
+`question` and `answer`, `multiple_choice` uses `question`, `choice_label`, and `answer`, and
+`scrambled_list` uses `target_label` and `item_label`. Templates receive type-specific contexts
+such as `target`, `source`, `choice`, `related`, `candidate`, `comparison`, and `row`. Cloze
+contexts expose `cloze_id`, `cloze_value`, `front`, and `back` directly; these remain derived from
+`cloze_field`. Image paths and other generation
+controls remain separate from `render`.
 
 ## References
 

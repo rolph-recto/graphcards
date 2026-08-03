@@ -97,6 +97,18 @@ def _render_clozes(parts: tuple[str | _ClozeMarker, ...], hidden_cloze_id: str |
     return "".join(rendered)
 
 
+def _cloze_answer(parts: tuple[str | _ClozeMarker, ...], cloze_id: str) -> str:
+    for part in parts:
+        if isinstance(part, _ClozeMarker):
+            if part.id == cloze_id:
+                return _render_clozes(part.content, None)
+            try:
+                return _cloze_answer(part.content, cloze_id)
+            except ValueError:
+                continue
+    raise ValueError(f"unknown cloze ID {cloze_id!r}")
+
+
 class ClozeSelection(FrozenModel):
     """One entity and the clozes selected from its configured sentence."""
 
@@ -122,8 +134,11 @@ class ClozeExerciseGenerator(ExerciseGenerator):
     entities: tuple[ClozeSelection, ...]
     cloze_field: StrictStr
     template_context_names: ClassVar[frozenset[str]] = frozenset(
-        {"back", "cloze_id", "entity", "front"}
+        {"back", "cloze_id", "cloze_value", "entity", "front", "target"}
     )
+    render_fields: ClassVar[dict[str, tuple[str, ...]]] = {
+        "entity_label": ("label", "back", "answer", "id"),
+    }
 
     @field_validator("entities", mode="before")
     @classmethod
@@ -281,11 +296,15 @@ class ClozeExerciseGenerator(ExerciseGenerator):
             markers = self._markers(entity, exercise.target_id)
             front = _render_clozes(markers, exercise.cloze_id)
             back = _render_clozes(markers, None)
+            render_entity = self.render_entity(entity)
+            cloze_value = _cloze_answer(markers, exercise.cloze_id)
             template_context = {
                 "back": back,
                 "cloze_id": exercise.cloze_id,
-                "entity": entity,
+                "cloze_value": cloze_value,
+                "entity": render_entity,
                 "front": front,
+                "target": render_entity,
             }
             return CardView(
                 card_key=exercise.card_key,

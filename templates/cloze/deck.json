@@ -3,10 +3,12 @@
   "entities": [
     {
       "id": "capital",
+      "label": "Capital cloze",
       "sentence": "The capital of [[c1::France]] is [[c2::Paris]]."
     },
     {
       "id": "nested",
+      "label": "Nested cloze",
       "sentence": "([[c1::The answer is [[c2::Answer 1]] NOT CORRECT]])"
     }
   ],
@@ -14,6 +16,7 @@
     {
       "id": "capital-clozes",
       "type": "cloze",
+      "render": {"entity_label": "label"},
       "cloze_field": "sentence",
       "entities": ["capital", {"id": "nested", "cloze_ids": ["c2"]}]
     }

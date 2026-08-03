@@ -21,13 +21,12 @@ FRONT_TEMPLATE = (
     "{% if omitted_before %}…\n{% endif %}"
     "{% for row in rows %}{{ row.position }}. "
     "{% if row.is_target %}?{% else %}"
-    "{{ row.entity.label|default(row.entity.back)|"
-    "default(row.entity.answer)|default(row.entity.id) }}"
+    "{{ row.entity.row_label }}"
     "{% endif %}"
     "{% if not loop.last or omitted_after %}\n{% endif %}"
     "{% endfor %}{% if omitted_after %}…{% endif %}"
 )
-BACK_TEMPLATE = "{{ target.label|default(target.back)|default(target.answer)|default(target.id) }}"
+BACK_TEMPLATE = "{{ target.answer }}"
 
 
 @ExerciseGenerator.register
@@ -37,8 +36,20 @@ class MissingSequenceItemExerciseGenerator(ExerciseGenerator):
     groups: dict[EntityId, EntityIdList]
     window_size: StrictInt = DEFAULT_WINDOW_SIZE
     template_context_names: ClassVar[frozenset[str]] = frozenset(
-        {"target", "ordered_entities", "rows", "omitted_before", "omitted_after"}
+        {
+            "target",
+            "ordered",
+            "ordered_entities",
+            "row",
+            "rows",
+            "omitted_before",
+            "omitted_after",
+        }
     )
+    render_fields: ClassVar[dict[str, tuple[str, ...]]] = {
+        "row_label": ("label", "back", "answer", "id"),
+        "answer": ("label", "back", "answer", "id"),
+    }
 
     @model_validator(mode="after")
     def validate_group_ids(self) -> MissingSequenceItemExerciseGenerator:
@@ -110,19 +121,26 @@ class MissingSequenceItemExerciseGenerator(ExerciseGenerator):
                 )
                 visible_end = visible_start + self.window_size
             visible_ids = exercise.ordered_ids[visible_start:visible_end]
-            render_context = {
-                "target": context.entities[exercise.target_id],
-                "ordered_entities": tuple(
-                    context.entities[member] for member in exercise.ordered_ids
-                ),
-                "rows": tuple(
+            render_target = self.render_entity(context.entities[exercise.target_id])
+            ordered_entities = self.render_entities(context.entities, exercise.ordered_ids)
+            rows = []
+            for index, member in enumerate(visible_ids):
+                row_entity = self.render_entity(context.entities[member])
+                rows.append(
                     {
+                        "id": row_entity.id,
                         "position": index + visible_start + 1,
-                        "entity": context.entities[member],
+                        "entity": row_entity,
                         "is_target": member == exercise.target_id,
                     }
-                    for index, member in enumerate(visible_ids)
-                ),
+                )
+            rows = tuple(rows)
+            render_context = {
+                "target": render_target,
+                "ordered": ordered_entities,
+                "ordered_entities": ordered_entities,
+                "row": rows,
+                "rows": rows,
                 "omitted_before": visible_start > 0,
                 "omitted_after": visible_end < len(exercise.ordered_ids),
             }

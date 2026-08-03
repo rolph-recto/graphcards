@@ -15,5 +15,6 @@ Each relation defines two explicit entity lists:
 
 The generator selects one entity from `odd` for each exercise. It never infers odd entities from
 the entities that are absent from `common`. The two lists must be exclusive. Candidate order is
-selected during generation, so templates only render the supplied `target`, `common_entities`,
-`candidate_entities`, and `odd_entity` values.
+selected during generation, so templates render the supplied resolved `target`, `common_entities`,
+`candidate_entities`, and `odd_entity` values. The generator uses separate `target_label`,
+`candidate_label`, `common_label`, and `odd_label` slots for displayed names.

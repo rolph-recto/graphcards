@@ -13,9 +13,11 @@ entities:
 exercises:
   - id: common-locations
     type: common_relation
+    render: {related_label: label, answer: label}
     relations:
       europe: [france, germany, italy]
   - id: common-borders
     type: common_relation
+    render: {related_label: label, answer: label}
     relations:
       france: [germany, italy, spain]

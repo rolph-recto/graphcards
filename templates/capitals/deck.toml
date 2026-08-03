@@ -25,9 +25,18 @@ id = "capitals-basic"
 type = "basic"
 entities = ["capital-france", "capital-germany"]
 
+[exercises.render]
+question = "front"
+answer = "back"
+
 [[exercises]]
 id = "capitals-choice"
 type = "multiple_choice"
+
+[exercises.render]
+question = "front"
+choice_label = "back"
+answer = "back"
 
 [exercises.choices]
 "capital-italy" = ["capital-france", "capital-germany"]

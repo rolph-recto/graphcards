@@ -11,6 +11,7 @@
     {
       "id": "planet-order",
       "type": "scrambled_list",
+      "render": {"target_label": "label", "item_label": "label"},
       "groups": {
         "solar-system": ["mercury", "venus", "earth", "mars"]
       }

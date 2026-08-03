@@ -19,6 +19,10 @@ back = "Rome"
 id = "capital-analogy"
 type = "analogy"
 
+[exercises.render]
+question = "front"
+answer = "back"
+
 [exercises.sources]
 germany = ["france"]
 italy = ["france"]

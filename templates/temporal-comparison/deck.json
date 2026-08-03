@@ -10,6 +10,7 @@
     {
       "id": "event-comparisons",
       "type": "temporal_comparison",
+      "render": {"event_label": "label"},
       "groups": {
         "european-events": ["magna-carta", "bouvines", "paris-treaty"]
       }

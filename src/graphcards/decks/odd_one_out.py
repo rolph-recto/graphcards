@@ -20,18 +20,13 @@ from graphcards.models import CardView, Exercise, FrozenModel
 from graphcards.references import EntityId, EntityIdList
 
 FRONT_TEMPLATE = (
-    "{{ target.label|default(target.back, true)|default(target.answer, true)|"
-    "default(target.id, true) }}:\n"
+    "{{ target.target_label }}:\n"
     "{% for candidate in candidate_entities %}"
-    "{{ candidate.label|default(candidate.back, true)|default(candidate.answer, true)|"
-    "default(candidate.id, true) }} — ?"
+    "{{ candidate.candidate_label }} — ?"
     "{% if not loop.last %}\n{% endif %}"
     "{% endfor %}"
 )
-BACK_TEMPLATE = (
-    "{{ odd_entity.label|default(odd_entity.back, true)|default(odd_entity.answer, true)|"
-    "default(odd_entity.id, true) }}"
-)
+BACK_TEMPLATE = "{{ odd_entity.odd_label }}"
 
 
 class OddOneOutRelation(FrozenModel):
@@ -68,8 +63,22 @@ class OddOneOutExerciseGenerator(ExerciseGenerator):
     min_candidates: StrictInt = Field(default=3, ge=3)
     max_candidates: StrictInt = Field(default=0, ge=0)
     template_context_names: ClassVar[frozenset[str]] = frozenset(
-        {"candidate_entities", "common_entities", "odd_entity", "target"}
+        {
+            "candidate",
+            "candidate_entities",
+            "common",
+            "common_entities",
+            "odd",
+            "odd_entity",
+            "target",
+        }
     )
+    render_fields: ClassVar[dict[str, tuple[str, ...]]] = {
+        "target_label": ("label", "back", "answer", "id"),
+        "candidate_label": ("label", "back", "answer", "id"),
+        "common_label": ("label", "back", "answer", "id"),
+        "odd_label": ("label", "back", "answer", "id"),
+    }
 
     @model_validator(mode="before")
     @classmethod
@@ -132,9 +141,12 @@ class OddOneOutExerciseGenerator(ExerciseGenerator):
         entity_id: str,
         odd_id: str,
         context: ExerciseGeneratorContext,
+        selected_common: tuple[EntityId, ...] | None = None,
     ) -> OddOneOutExercise:
         relation = self.relations[entity_id]
-        if self.max_candidates and self.max_candidates < len(relation.common) + 1:
+        if selected_common is not None:
+            selected_common = tuple(selected_common)
+        elif self.max_candidates and self.max_candidates < len(relation.common) + 1:
             selected_common = tuple(context.rng.sample(relation.common, self.max_candidates - 1))
         else:
             selected_common = relation.common
@@ -157,11 +169,28 @@ class OddOneOutExerciseGenerator(ExerciseGenerator):
         validation_context = ExerciseGeneratorContext(
             context.deck_id, context.entities, random.Random(0)
         )
-        return tuple(
-            self._build_exercise(target_id, odd_id, validation_context)
-            for target_id, relation in self.relations.items()
-            for odd_id in relation.odd
-        )
+        exercises: list[OddOneOutExercise] = []
+        for target_id, relation in self.relations.items():
+            if self.max_candidates and self.max_candidates < len(relation.common) + 1:
+                cap = self.max_candidates - 1
+                starts = list(range(0, len(relation.common) - cap + 1, cap))
+                last_start = len(relation.common) - cap
+                if starts[-1] != last_start:
+                    starts.append(last_start)
+                common_variants = tuple(relation.common[start : start + cap] for start in starts)
+            else:
+                common_variants = (relation.common,)
+            for odd_id in relation.odd:
+                for common_ids in common_variants:
+                    exercises.append(
+                        self._build_exercise(
+                            target_id,
+                            odd_id,
+                            validation_context,
+                            selected_common=common_ids,
+                        )
+                    )
+        return tuple(exercises)
 
     def render(self, exercise: Exercise, context: ExerciseGeneratorContext) -> CardView:
         if not isinstance(exercise, OddOneOutExercise):
@@ -190,17 +219,16 @@ class OddOneOutExerciseGenerator(ExerciseGenerator):
             expected_ids = set(exercise.common_ids) | {exercise.odd_id}
             if set(exercise.candidate_ids) != expected_ids:
                 raise ValueError("exercise candidates do not match its common and odd entities")
-            target = context.entities[exercise.target_id]
-            common_entities = tuple(
-                context.entities[entity_id] for entity_id in exercise.common_ids
-            )
-            candidate_entities = tuple(
-                context.entities[entity_id] for entity_id in exercise.candidate_ids
-            )
-            odd_entity = context.entities[exercise.odd_id]
+            target = self.render_entity(context.entities[exercise.target_id])
+            common_entities = self.render_entities(context.entities, exercise.common_ids)
+            candidate_entities = self.render_entities(context.entities, exercise.candidate_ids)
+            odd_entity = self.render_entity(context.entities[exercise.odd_id])
             render_context = {
+                "candidate": candidate_entities,
                 "candidate_entities": candidate_entities,
+                "common": common_entities,
                 "common_entities": common_entities,
+                "odd": odd_entity,
                 "odd_entity": odd_entity,
                 "target": target,
             }

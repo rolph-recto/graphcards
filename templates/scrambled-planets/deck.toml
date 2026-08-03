@@ -23,6 +23,7 @@ label = "Mars"
 [[exercises]]
 id = "planet-order"
 type = "scrambled_list"
+render = {target_label = "label", item_label = "label"}
 
 [exercises.groups]
 solar-system = ["mercury", "venus", "earth", "mars"]

@@ -36,6 +36,12 @@ label = "Africa"
 id = "location-odd-one-out"
 type = "odd_one_out"
 
+[exercises.render]
+target_label = "label"
+candidate_label = "label"
+common_label = "label"
+odd_label = "label"
+
 [exercises.relations.europe]
 common = ["france", "germany", "italy"]
 odd = ["egypt"]
@@ -43,6 +49,12 @@ odd = ["egypt"]
 [[exercises]]
 id = "border-odd-one-out"
 type = "odd_one_out"
+
+[exercises.render]
+target_label = "label"
+candidate_label = "label"
+common_label = "label"
+odd_label = "label"
 
 [exercises.relations.france]
 common = ["germany", "spain", "italy"]

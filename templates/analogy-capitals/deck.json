@@ -9,6 +9,7 @@
     {
       "id": "capital-analogy",
       "type": "analogy",
+      "render": {"question": "front", "answer": "back"},
       "sources": {"germany": ["france"], "italy": ["france"]}
     }
   ]

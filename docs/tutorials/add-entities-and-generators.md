@@ -21,6 +21,52 @@ The smallest JSON deck is:
 }
 ```
 
+## Select fields for rendering
+
+Each exercise type declares the render slots used by its built-in templates. The optional `render`
+object maps those slots to direct top-level Entity fields. A basic generator uses `question` and
+`answer` slots:
+
+```json
+{
+  "id": "capital-basic",
+  "type": "basic",
+  "entities": ["france"],
+  "render": {"question": "country", "answer": "capital"}
+}
+```
+
+The mapping is optional. An explicit slot replaces that slot's fallback chain. An omitted slot
+keeps the chain, so partial mappings are valid. The first present field in a fallback chain wins,
+including an empty value. Each selected field must exist on every entity that uses that slot. The
+field name must be public, non-blank, direct, and top-level. Private
+names, reserved Pydantic names, dotted paths, and nested paths are rejected. A selected field can
+contain a nested value, but the mapping itself cannot traverse it.
+
+The renderer resolves slots before it runs Jinja. The resolved value keeps `id` and the ordinary
+Entity fields, and adds the slots declared by the generator. Built-in templates document the
+slots they use:
+
+| Generator | Render slots | Collection item slots |
+| --- | --- | --- |
+| `basic` | `question`, `answer` | — |
+| `multiple_choice` | `question`, `answer` | `choice_label` |
+| `analogy` | `question`, `answer` | — |
+| `common_relation` | `answer` | `related_label` |
+| `missing_sequence_item` | `answer` | `row_label` |
+| `scrambled_list` | — | `target_label`, `item_label` |
+| `odd_one_out` | — | `target_label`, `candidate_label`, `common_label`, `odd_label` |
+| `temporal_comparison` | — | `event_label` |
+| `cloze` | — | `entity_label` |
+| `image_occlusion` | `answer` | — |
+
+For example, multiple-choice templates use `target.question`, `choice.choice_label`, and
+`target.answer`; analogy templates use `source.question`, `source.answer`, and `target.question`.
+The `source`, `target`, `choice`, `related`, `candidate`, `comparison`, and `row` contexts remain
+type-specific. Cloze templates receive `cloze_id`, `cloze_value`, `front`, and `back` directly.
+`cloze_field` and `image_path` remain generation controls, not render mappings. Semantic exercise
+data, card identity, and review state do not contain resolved display values.
+
 Generator references must name existing entities. Named groups can provide an ordered alias:
 
 ```json

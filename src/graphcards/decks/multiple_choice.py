@@ -19,12 +19,12 @@ from graphcards.references import EntityId, EntityIdList
 
 DEFAULT_MAX_CHOICES = 4
 FRONT_TEMPLATE = (
-    "{{ target.front|default(target.prompt)|default(target.question)|default(target.id) }}"
+    "{{ target.question }}"
     "{% for choice in choice_entities %}\n  {{ loop.index }}. "
-    "{{ choice.label|default(choice.back)|default(choice.answer)|default(choice.id) }}"
+    "{{ choice.choice_label }}"
     "{% endfor %}"
 )
-BACK_TEMPLATE = "{{ target.label|default(target.back)|default(target.answer)|default(target.id) }}"
+BACK_TEMPLATE = "{{ target.answer }}"
 
 
 @ExerciseGenerator.register
@@ -33,7 +33,14 @@ class MultipleChoiceExerciseGenerator(ExerciseGenerator):
     type_name = "multiple_choice"
     choices: dict[EntityId, EntityIdList]
     max_choices: Annotated[StrictInt, Field(default=DEFAULT_MAX_CHOICES, ge=2)]
-    template_context_names: ClassVar[frozenset[str]] = frozenset({"target", "choice_entities"})
+    template_context_names: ClassVar[frozenset[str]] = frozenset(
+        {"target", "choice", "choices", "choice_entities"}
+    )
+    render_fields: ClassVar[dict[str, tuple[str, ...]]] = {
+        "question": ("front", "prompt", "question", "id"),
+        "choice_label": ("label", "back", "answer", "id"),
+        "answer": ("label", "back", "answer", "id"),
+    }
 
     @model_validator(mode="after")
     def validate_pool_ids(self) -> MultipleChoiceExerciseGenerator:
@@ -78,14 +85,42 @@ class MultipleChoiceExerciseGenerator(ExerciseGenerator):
             choices=tuple(choices),
         )
 
+    def validation_exercises(self, context: ExerciseGeneratorContext) -> tuple[Exercise, ...]:
+        """Cover every configured choice entity during deterministic render preflight."""
+
+        exercises: list[MultipleChoiceExercise] = []
+        pool_size = self.max_choices - 1
+        for target_id, pool in self.choices.items():
+            chunks = (
+                (pool,)
+                if len(pool) <= pool_size
+                else tuple(
+                    pool[start : start + pool_size] for start in range(0, len(pool), pool_size)
+                )
+            )
+            for chunk in chunks:
+                exercises.append(
+                    MultipleChoiceExercise(
+                        card_key=self._key(target_id, context.deck_id),
+                        generator_id=self.id,
+                        target_id=target_id,
+                        choices=(target_id, *chunk),
+                    )
+                )
+        return tuple(exercises)
+
     def render(self, exercise: Exercise, context: ExerciseGeneratorContext) -> CardView:
         if not isinstance(exercise, MultipleChoiceExercise):
             raise PresentationError(f"generator {self.id!r} cannot render this exercise type")
         try:
             target = context.entities[exercise.target_id]
+            render_target = self.render_entity(target)
+            choice_entities = self.render_entities(context.entities, exercise.choices)
             render_context = {
-                "target": target,
-                "choice_entities": tuple(context.entities[choice] for choice in exercise.choices),
+                "target": render_target,
+                "choice": choice_entities,
+                "choices": choice_entities,
+                "choice_entities": choice_entities,
             }
             front_template = self.front_template or FRONT_TEMPLATE
             back_template = self.back_template or BACK_TEMPLATE

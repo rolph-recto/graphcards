@@ -20,12 +20,11 @@ from graphcards.references import EntityId, EntityIdList
 
 FRONT_TEMPLATE = (
     "{% for related_entity in related_entities %}"
-    "{{ related_entity.label|default(related_entity.back)|"
-    "default(related_entity.answer)|default(related_entity.id) }} — ?"
+    "{{ related_entity.related_label }} — ?"
     "{% if not loop.last %}\n{% endif %}"
     "{% endfor %}"
 )
-BACK_TEMPLATE = "{{ target.label|default(target.back)|default(target.answer)|default(target.id) }}"
+BACK_TEMPLATE = "{{ target.answer }}"
 
 
 @ExerciseGenerator.register
@@ -35,7 +34,13 @@ class CommonRelationExerciseGenerator(ExerciseGenerator):
     relations: dict[EntityId, EntityIdList]
     min_examples: StrictInt = Field(default=2, ge=2)
     max_related: StrictInt = Field(default=0, ge=0)
-    template_context_names: ClassVar[frozenset[str]] = frozenset({"target", "related_entities"})
+    template_context_names: ClassVar[frozenset[str]] = frozenset(
+        {"target", "related", "related_entities"}
+    )
+    render_fields: ClassVar[dict[str, tuple[str, ...]]] = {
+        "related_label": ("label", "back", "answer", "id"),
+        "answer": ("label", "back", "answer", "id"),
+    }
 
     @model_validator(mode="before")
     @classmethod
@@ -153,11 +158,11 @@ class CommonRelationExerciseGenerator(ExerciseGenerator):
             if exercise.card_key != self._key(exercise.target_id, context.deck_id):
                 raise ValueError("exercise card identity does not match generator")
             target = context.entities[exercise.target_id]
-            related_entities = tuple(
-                context.entities[related_id] for related_id in exercise.related_ids
-            )
+            render_target = self.render_entity(target)
+            related_entities = self.render_entities(context.entities, exercise.related_ids)
             render_context = {
-                "target": target,
+                "target": render_target,
+                "related": related_entities,
                 "related_entities": related_entities,
             }
             return CardView(

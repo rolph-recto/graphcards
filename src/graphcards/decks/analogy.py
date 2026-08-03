@@ -16,13 +16,8 @@ from graphcards.errors import PresentationError
 from graphcards.models import CardView, Exercise
 from graphcards.references import EntityId, EntityIdList
 
-FRONT_TEMPLATE = (
-    "{{ source.front|default(source.prompt)|default(source.question)|default(source.id) }}"
-    " is to {{ source.back|default(source.answer)|default(source.label)|default(source.id) }}"
-    " as {{ target.front|default(target.prompt)|default(target.question)|default(target.id) }}"
-    " is to ?"
-)
-BACK_TEMPLATE = "{{ target.back|default(target.answer)|default(target.label)|default(target.id) }}"
+FRONT_TEMPLATE = "{{ source.question }} is to {{ source.answer }} as {{ target.question }} is to ?"
+BACK_TEMPLATE = "{{ target.answer }}"
 
 
 @ExerciseGenerator.register
@@ -31,6 +26,10 @@ class AnalogyExerciseGenerator(ExerciseGenerator):
     type_name = "analogy"
     sources: dict[EntityId, EntityIdList]
     template_context_names: ClassVar[frozenset[str]] = frozenset({"source", "target"})
+    render_fields: ClassVar[dict[str, tuple[str, ...]]] = {
+        "question": ("front", "prompt", "question", "id"),
+        "answer": ("back", "answer", "label", "id"),
+    }
 
     @model_validator(mode="after")
     def validate_source_ids(self) -> AnalogyExerciseGenerator:
@@ -90,7 +89,12 @@ class AnalogyExerciseGenerator(ExerciseGenerator):
         try:
             source = context.entities[exercise.source_id]
             target = context.entities[exercise.target_id]
-            template_context = {"source": source, "target": target}
+            render_source = self.render_entity(source)
+            render_target = self.render_entity(target)
+            template_context = {
+                "source": render_source,
+                "target": render_target,
+            }
             return CardView(
                 card_key=exercise.card_key,
                 front=_render_template(self.front_template or FRONT_TEMPLATE, template_context),

@@ -7,13 +7,18 @@ entities:
     front: Germany
     back: Berlin
   - id: italy
+    front: Italy
+    back: Rome
     label: Rome
   - id: spain
+    front: Spain
+    back: Madrid
     label: Madrid
 exercises:
   - id: priority-choice
     type: multiple_choice
     max_choices: 3
+    render: {question: front, choice_label: back, answer: back}
     choices:
       france: [italy, spain]
       germany: [italy, spain]

@@ -9,6 +9,7 @@ exercises:
     type: image_occlusion
     image_path: assets/solar-system.jpg
     image_alt: The solar system
+    render: {answer: answer}
     occlusions:
       - target_id: sun
         x: 0.00

@@ -24,6 +24,7 @@ label = "Mars"
 id = "planet-order"
 type = "missing_sequence_item"
 window_size = 3
+render = {row_label = "label", answer = "label"}
 
 [exercises.groups]
 solar-system = ["mercury", "venus", "earth", "mars"]

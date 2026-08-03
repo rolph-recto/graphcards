@@ -23,3 +23,8 @@ Selecting `c1` hides the complete nested answer. Selecting `c2` keeps the outer 
 hides only `c2`.
 
 The same deck content can use JSON, TOML, or YAML. The template includes all three deck files.
+
+`cloze_field` controls the source sentence and is separate from the optional `render` mapping.
+The `entity_label` slot selects a direct field for custom labels. Custom templates also receive
+`cloze_id`, `cloze_value`, `front`, and `back` directly, plus the resolved `entity`/`target`
+values.

@@ -19,12 +19,14 @@ entities:
 exercises:
   - id: location-odd-one-out
     type: odd_one_out
+    render: {target_label: label, candidate_label: label, common_label: label, odd_label: label}
     relations:
       europe:
         common: [france, germany, italy]
         odd: [egypt]
   - id: border-odd-one-out
     type: odd_one_out
+    render: {target_label: label, candidate_label: label, common_label: label, odd_label: label}
     relations:
       france:
         common: [germany, spain, italy]

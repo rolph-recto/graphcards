@@ -14,10 +14,8 @@ from graphcards.errors import PresentationError
 from graphcards.models import CardView, Exercise
 from graphcards.references import EntityIdList
 
-FRONT_TEMPLATE = (
-    "{{ entity.front|default(entity.prompt)|default(entity.question)|default(entity.id) }}"
-)
-BACK_TEMPLATE = "{{ entity.back|default(entity.answer)|default(entity.id) }}"
+FRONT_TEMPLATE = "{{ entity.question }}"
+BACK_TEMPLATE = "{{ entity.answer }}"
 
 
 @ExerciseGenerator.register
@@ -25,7 +23,11 @@ class BasicExerciseGenerator(ExerciseGenerator):
     type: Literal["basic"] = "basic"
     type_name = "basic"
     entities: EntityIdList
-    template_context_names: ClassVar[frozenset[str]] = frozenset({"entity"})
+    template_context_names: ClassVar[frozenset[str]] = frozenset({"entity", "target"})
+    render_fields: ClassVar[dict[str, tuple[str, ...]]] = {
+        "question": ("front", "prompt", "question", "id"),
+        "answer": ("back", "answer", "id"),
+    }
 
     def validate_references(self, known_entity_ids: set[str]) -> None:
         _require_refs(self.id, self.entities, known_entity_ids, "entity")
@@ -45,11 +47,15 @@ class BasicExerciseGenerator(ExerciseGenerator):
             raise PresentationError(f"generator {self.id!r} cannot render this exercise type")
         try:
             entity = context.entities[exercise.target_id]
-            template_context = {"entity": entity}
+            render_entity = self.render_entity(entity)
         except (KeyError, TypeError) as error:
             raise PresentationError(
                 f"generator {self.id!r} exercise references an unknown entity"
             ) from error
+        template_context = {
+            "entity": render_entity,
+            "target": render_entity,
+        }
         return CardView(
             card_key=exercise.card_key,
             front=_render_template(self.front_template or FRONT_TEMPLATE, template_context),

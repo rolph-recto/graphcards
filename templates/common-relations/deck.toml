@@ -24,12 +24,20 @@ label = "Spain"
 id = "common-locations"
 type = "common_relation"
 
+[exercises.render]
+related_label = "label"
+answer = "label"
+
 [exercises.relations]
 europe = ["france", "germany", "italy"]
 
 [[exercises]]
 id = "common-borders"
 type = "common_relation"
+
+[exercises.render]
+related_label = "label"
+answer = "label"
 
 [exercises.relations]
 france = ["germany", "italy", "spain"]

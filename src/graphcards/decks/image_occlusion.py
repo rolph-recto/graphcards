@@ -32,7 +32,7 @@ FRONT_TEMPLATE = (
 )
 BACK_TEMPLATE = """
 <p class="image-occlusion__answer-text">
-  {{ target.answer|default(target.label)|default(target.back)|default(target.id)|e }}
+  {{ target.answer|e }}
 </p>
 """.strip()
 
@@ -92,6 +92,9 @@ class ImageOcclusionExerciseGenerator(ExerciseGenerator):
     template_context_names: ClassVar[frozenset[str]] = frozenset(
         {"image_url", "image_alt", "target", "placement"}
     )
+    render_fields: ClassVar[dict[str, tuple[str, ...]]] = {
+        "answer": ("answer", "label", "back", "id"),
+    }
 
     @model_validator(mode="after")
     def validate_image_path(self) -> ImageOcclusionExerciseGenerator:
@@ -132,7 +135,7 @@ class ImageOcclusionExerciseGenerator(ExerciseGenerator):
         if not isinstance(exercise, ImageOcclusionExercise):
             raise PresentationError(f"generator {self.id!r} cannot render this exercise type")
         try:
-            target = context.entities[exercise.target_id]
+            target = self.render_entity(context.entities[exercise.target_id])
             placement = next(
                 item for item in exercise.occlusions if item.target_id == exercise.target_id
             )

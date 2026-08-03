@@ -19,6 +19,7 @@ label = "Treaty of Paris"
 [[exercises]]
 id = "event-comparisons"
 type = "temporal_comparison"
+render = {event_label = "label"}
 
 [exercises.groups]
 european-events = ["magna-carta", "bouvines", "paris-treaty"]
